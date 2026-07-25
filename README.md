@@ -6,15 +6,14 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)](https://github.com/gocode-cli/gocode)
 
 [Features](#features) •
 [Quick Start](#quick-start) •
+[Running Providers](#running-providers) •
 [Configuration](#configuration) •
 [Tools & Security](#tools--security) •
-[Architecture](#architecture) •
-[Contributing](#contributing)
+[Architecture](#architecture)
 
 ---
 
@@ -24,7 +23,7 @@
 
 **GoCode** is a lightweight, high-performance terminal AI coding agent written in Go. It operates directly inside your terminal, assisting you with code generation, debugging, refactoring, file inspection, and command execution.
 
-Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It runs with **Ollama** locally by default, and also seamlessly supports gateway proxy providers (like **OmniRoute**) and cloud LLMs.
+Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It gives you the flexibility to run **local Ollama models** directly or connect to **OmniRoute** gateway proxies.
 
 ```
 GoCode — Terminal Coding Agent
@@ -40,10 +39,10 @@ Type your message (or 'exit' to quit)
 
 ## Features
 
-- **Local-First & Private (Ollama Default)** — Runs with local LLMs via Ollama out of the box (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `gemma`, etc.).
-- **OmniRoute Gateway Support** — Built-in OpenAI-compatible proxy adapter for OmniRoute (`http://localhost:20128/v1`).
-- **Provider Agnostic** — Switch between Ollama (default), OmniRoute, and external providers on the fly using `/provider <name>`.
-- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via OmniRoute.
+- **Dual Provider Support** — Seamlessly choose between **Ollama** (default) or **OmniRoute** gateway proxy.
+- **Local-First & Private** — Runs with local LLMs out of the box (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `gemma`, etc.).
+- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via OmniRoute (`auto`, `auto/coding`).
+- **On-the-Fly Switching** — Switch providers or models instantly inside an active session using `/provider` and `/model`.
 - **Human-in-the-Loop Security** — All file writes and shell execution commands require your explicit approval before execution.
 - **Single Binary, Zero Overhead** — Native Go executable with no Node.js runtime and minimal startup latency.
 - **Diagnostic Doctor Subcommand** — Run `gocode doctor` to instantly check provider health and reachability for both Ollama and OmniRoute.
@@ -58,7 +57,6 @@ Type your message (or 'exit' to quit)
 - **Ollama** (Default local provider):
   ```bash
   ollama pull codellama
-  # Or pull any model: ollama pull llama3.1
   ```
 - **OmniRoute** (Optional gateway proxy provider):
   ```bash
@@ -90,35 +88,60 @@ go build -o gocode ./cmd/gocode/
 
 ---
 
-## Usage
+## Running Providers
 
-Start GoCode with default settings (launches with Ollama as the default provider):
+GoCode supports two primary provider options out of the box:
+
+### Option 1: Running with Ollama (Default)
+
+GoCode connects to your local Ollama instance (`http://localhost:11434`) by default:
 
 ```bash
+# Launch with Ollama (auto-detects installed models)
 gocode
+
+# Launch with a specific Ollama model
+gocode --provider ollama --model llama3.1:8b
+```
+
+### Option 2: Running with OmniRoute Gateway Proxy
+
+GoCode connects to your OmniRoute instance (`http://localhost:20128/v1`):
+
+```bash
+# Launch with OmniRoute provider
+gocode --provider omniroute
+
+# Specify OmniRoute model routing
+gocode --provider omniroute --model auto/coding
+```
+
+### Switching Mid-Session
+
+You can switch between Ollama and OmniRoute at any time inside an active terminal session:
+
+```text
+> /provider ollama
+[Provider switched to ollama]
+
+> /provider omniroute
+[Provider switched to omniroute]
+
+> /model auto
+[Model set to auto]
 ```
 
 ### Health Check (`gocode doctor`)
 
-Verify connectivity and reachability of Ollama and OmniRoute:
+Verify connectivity and reachability of both providers simultaneously:
 
 ```bash
 gocode doctor
 ```
 
-### Command Flags
+---
 
-Specify provider, model, or configuration file via CLI flags:
-
-```bash
-# Launch with Ollama and a specific model
-gocode --provider ollama --model llama3.1:8b
-
-# Launch with OmniRoute gateway proxy
-gocode --provider omniroute --model auto
-```
-
-### Interactive Slash Commands
+## Interactive Slash Commands
 
 During an active session, use built-in slash commands:
 
@@ -127,8 +150,8 @@ During an active session, use built-in slash commands:
 | `exit` / `quit` | Exit the GoCode agent session |
 | `/clear` | Reset conversation history while keeping system instructions intact |
 | `/providers` | List all registered providers, active provider, and available models |
-| `/provider <name>` | Switch active provider on the fly (e.g. `/provider ollama` or `/provider omniroute`) |
-| `/model <name>` | Switch active model on the fly (e.g. `/model llama3.1:8b` or `/model auto`) |
+| `/provider <name>` | Switch active provider on the fly (`/provider ollama` or `/provider omniroute`) |
+| `/model <name>` | Switch active model on the fly (`/model llama3.1:8b` or `/model auto`) |
 
 ---
 
@@ -158,7 +181,7 @@ GoCode automatically loads its configuration from standard platform paths:
 
 ```toml
 [provider]
-default = "ollama"
+default = "ollama"  # Set to "ollama" or "omniroute"
 
 [provider.ollama]
 host = "http://localhost:11434"
@@ -190,21 +213,9 @@ gocode/
 │   ├── config/           # XDG directory management & TOML configuration
 │   ├── provider/         # Provider registry, Ollama (default) & GatewayProxy (OmniRoute)
 │   └── tools/            # Tool registry, execution safety & approval gates
-├── CONTRIBUTING.md       # Developer contribution guidelines
 ├── go.mod                # Module dependencies
 └── README.md             # Documentation
 ```
-
----
-
-## Contributing
-
-Contributions are welcome. Whether you are interested in fixing bugs, adding new tools, expanding provider support, or improving docs:
-
-1. Read our [**Contributing Guide**](CONTRIBUTING.md) for setup and development standards.
-2. Fork the repository and create your feature branch (`git checkout -b feat/awesome-feature`).
-3. Ensure all tests pass (`go test ./...` and `go vet ./...`).
-4. Submit a Pull Request.
 
 ---
 
