@@ -24,7 +24,7 @@
 
 **GoCode** is a lightweight, high-performance terminal AI coding agent written in Go. It operates directly inside your terminal, assisting you with code generation, debugging, refactoring, file inspection, and command execution.
 
-Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It connects seamlessly to any model hosted on your local Ollama instance or external provider APIs.
+Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It runs with **Ollama** locally by default, and also seamlessly supports gateway proxy providers (like **OmniRoute**) and cloud LLMs.
 
 ```
 GoCode — Terminal Coding Agent
@@ -40,13 +40,13 @@ Type your message (or 'exit' to quit)
 
 ## Features
 
-- **Local-First & Private** — Runs with any local LLM via Ollama out of the box. Zero data leaves your machine unless explicitly configured.
-- **Model Agnostic** — Automatically detects and works with any model pulled in Ollama (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `qwen2.5-coder`, `gemma`, etc.).
-- **Provider Agnostic** — Seamlessly switch between Ollama, OpenAI-compatible APIs, and cloud providers through a unified interface.
+- **Local-First & Private (Ollama Default)** — Runs with local LLMs via Ollama out of the box (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `gemma`, etc.).
+- **OmniRoute Gateway Support** — Built-in OpenAI-compatible proxy adapter for OmniRoute (`http://localhost:20128/v1`).
+- **Provider Agnostic** — Switch between Ollama (default), OmniRoute, and external providers on the fly using `/provider <name>`.
+- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via OmniRoute.
 - **Human-in-the-Loop Security** — All file writes and shell execution commands require your explicit approval before execution.
-- **Single Binary, Zero Overhead** — Native Go executable with no Node.js runtime, no `npm install`, and minimal startup latency.
-- **Extensible Tool Engine** — Easily add custom commands, file processors, or provider implementations.
-- **Zero Telemetry** — No analytics, tracking scripts, or external phone-home calls.
+- **Single Binary, Zero Overhead** — Native Go executable with no Node.js runtime and minimal startup latency.
+- **Diagnostic Doctor Subcommand** — Run `gocode doctor` to instantly check provider health and reachability for both Ollama and OmniRoute.
 
 ---
 
@@ -55,12 +55,15 @@ Type your message (or 'exit' to quit)
 ### Prerequisites
 
 - **Go 1.22+** installed on your system.
-- **Ollama** (Recommended for local offline execution with any pulled model):
+- **Ollama** (Default local provider):
   ```bash
-  # Pull any Ollama model of your choice
   ollama pull codellama
-  # Or: ollama pull llama3.1
-  # Or: ollama pull mistral
+  # Or pull any model: ollama pull llama3.1
+  ```
+- **OmniRoute** (Optional gateway proxy provider):
+  ```bash
+  npm install -g omniroute
+  omniroute
   ```
 
 ### Installation
@@ -89,10 +92,18 @@ go build -o gocode ./cmd/gocode/
 
 ## Usage
 
-Start GoCode with default settings (automatically detects any model available in local Ollama):
+Start GoCode with default settings (launches with Ollama as the default provider):
 
 ```bash
 gocode
+```
+
+### Health Check (`gocode doctor`)
+
+Verify connectivity and reachability of Ollama and OmniRoute:
+
+```bash
+gocode doctor
 ```
 
 ### Command Flags
@@ -100,14 +111,14 @@ gocode
 Specify provider, model, or configuration file via CLI flags:
 
 ```bash
-# Launch with a specific model installed in Ollama
-gocode --model llama3.1:8b
+# Launch with Ollama and a specific model
+gocode --provider ollama --model llama3.1:8b
 
-# Override provider and config file path
-gocode --provider ollama --model deepseek-coder:6.7b --config path/to/config.toml
+# Launch with OmniRoute gateway proxy
+gocode --provider omniroute --model auto
 ```
 
-### Interactive Commands
+### Interactive Slash Commands
 
 During an active session, use built-in slash commands:
 
@@ -115,6 +126,9 @@ During an active session, use built-in slash commands:
 | :--- | :--- |
 | `exit` / `quit` | Exit the GoCode agent session |
 | `/clear` | Reset conversation history while keeping system instructions intact |
+| `/providers` | List all registered providers, active provider, and available models |
+| `/provider <name>` | Switch active provider on the fly (e.g. `/provider ollama` or `/provider omniroute`) |
+| `/model <name>` | Switch active model on the fly (e.g. `/model llama3.1:8b` or `/model auto`) |
 
 ---
 
@@ -148,7 +162,12 @@ default = "ollama"
 
 [provider.ollama]
 host = "http://localhost:11434"
-default_model = ""  # Leave empty to auto-detect any pulled Ollama model
+default_model = ""  # Auto-detects any pulled local Ollama model
+
+[provider.omniroute]
+base_url = "http://localhost:20128/v1"
+api_key = ""
+default_model = "auto"
 
 [approval]
 auto_approve_reads = true
@@ -165,11 +184,11 @@ GoCode is built with clean architecture and low package coupling:
 ```
 gocode/
 ├── cmd/
-│   └── gocode/           # CLI entry point, flag parsing & dependency wiring
+│   └── gocode/           # CLI entry point, flag parsing, doctor command & wiring
 ├── internal/
-│   ├── agent/            # Core agent loop, session memory & context state
-│   ├── config/           # XDG directory management & TOML parser
-│   ├── provider/         # Provider registry & LLM API streaming adapters
+│   ├── agent/            # Core agent loop, session memory & slash command router
+│   ├── config/           # XDG directory management & TOML configuration
+│   ├── provider/         # Provider registry, Ollama (default) & GatewayProxy (OmniRoute)
 │   └── tools/            # Tool registry, execution safety & approval gates
 ├── CONTRIBUTING.md       # Developer contribution guidelines
 ├── go.mod                # Module dependencies

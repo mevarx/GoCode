@@ -18,8 +18,16 @@ type Config struct {
 type ProviderConfig struct {
 	Default    string           `toml:"default"`
 	Ollama     OllamaConfig     `toml:"ollama"`
+	OmniRoute  GatewayConfig    `toml:"omniroute"`
 	OpenRouter OpenRouterConfig `toml:"openrouter"`
 	Anthropic  AnthropicConfig  `toml:"anthropic"`
+}
+
+// GatewayConfig configures an OpenAI-compatible gateway proxy (e.g., OmniRoute).
+type GatewayConfig struct {
+	BaseURL      string `toml:"base_url"`
+	APIKey       string `toml:"api_key"`
+	DefaultModel string `toml:"default_model"`
 }
 
 // OllamaConfig configures local Ollama instance.
@@ -61,6 +69,11 @@ func DefaultConfig() Config {
 			Ollama: OllamaConfig{
 				Host:         "http://localhost:11434",
 				DefaultModel: "",
+			},
+			OmniRoute: GatewayConfig{
+				BaseURL:      "http://localhost:20128/v1",
+				APIKey:       "",
+				DefaultModel: "auto",
 			},
 			OpenRouter: OpenRouterConfig{
 				APIKeyEnv:    "OPENROUTER_API_KEY",
