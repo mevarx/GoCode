@@ -61,11 +61,11 @@ func DefaultConfig() Config {
 		Provider: ProviderConfig{
 			Default: "ollama",
 			Ollama: OllamaConfig{
-				Host:         "http://localhost:11434",
+				Host:         "http://127.0.0.1:11434",
 				DefaultModel: "",
 			},
 			OmniRoute: GatewayConfig{
-				BaseURL:      "http://localhost:20128/v1",
+				BaseURL:      "http://127.0.0.1:20128/v1",
 				DefaultModel: "auto",
 			},
 			OpenAI: GatewayConfig{
