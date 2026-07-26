@@ -124,7 +124,7 @@ Be concise and direct. When you need to perform actions, use the available tools
 		})
 
 		if err := a.streamResponse(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+			fmt.Printf("\nError: %v\n", err)
 			continue
 		}
 	}
@@ -167,6 +167,8 @@ func (a *AgentLoop) streamResponse(ctx context.Context) error {
 
 	if fullResponse.Len() > 0 {
 		fmt.Println()
+	} else if len(toolCalls) == 0 {
+		fmt.Printf("[No response received from provider %q. Verify provider API keys/credentials or switch with /provider]\n", a.Registry.ActiveName())
 	}
 
 	assistantMsg := provider.Message{
