@@ -1,19 +1,21 @@
 <div align="center">
 
-# GoCode
+# GoCode — Open-Source AI Terminal Coding Agent
 
-**A Go-native, local-first, provider-agnostic AI terminal coding agent.**
+**A high-performance, Go-native, local-first AI coding agent for your command line.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)](https://github.com/mevarx/GoCode)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 
+[Overview](#overview) •
 [Features](#features) •
 [Quick Start](#quick-start) •
-[Running Providers](#running-providers) •
-[Configuration](#configuration) •
-[Tools & Security](#tools--security) •
-[Architecture](#architecture)
+[Supported Providers](#supported-ai-providers) •
+[Comparison](#gocode-vs-other-ai-coding-agents) •
+[Configuration](#configuration-guide) •
+[FAQ](#frequently-asked-questions-faq)
 
 ---
 
@@ -21,32 +23,34 @@
 
 ## Overview
 
-**GoCode** is a lightweight, high-performance terminal AI coding agent written in Go. It operates directly inside your terminal, assisting you with code generation, debugging, refactoring, file inspection, and command execution.
+> **What is GoCode?**
+> **GoCode** is a lightweight, open-source AI terminal coding agent written in Go. It turns your command line into an interactive pair programming environment capable of reading project files, editing code via structured patches, executing shell commands, and debugging errors in real time—all with strict human-in-the-loop approval.
 
-Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It gives you the flexibility to run **local Ollama models** directly, connect to **cloud API providers** (OpenAI, Gemini, Groq, Anthropic, OpenRouter, Qwen, Kimi), or route through **gateway proxies** like OmniRoute.
+Unlike heavy Python-based or Node.js-based AI CLI tools, GoCode compiles into a **single, zero-dependency binary** with instant startup latency and minimal memory footprint.
 
-```
+GoCode is **provider-agnostic** and **local-first**: run completely offline with local LLMs via **Ollama**, or connect seamlessly to leading cloud AI models from **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Groq**, **OpenRouter**, **Qwen (DashScope)**, **Kimi (Moonshot)**, and **OmniRoute** gateway proxies.
+
+```text
 GoCode — Terminal Coding Agent
 Provider: gemini | Model: gemini-2.5-flash
 Tools: shell_exec, file_read, file_write, file_patch
 Type your message (or 'exit' to quit)
 ──────────────────────────────────────────────────
 
-> Explain main.go and list all open issues
+> Refactor main.go to use context timeouts and add unit tests
 ```
 
 ---
 
 ## Features
 
-- **9 Provider Support** — Seamlessly choose between **Ollama**, **OmniRoute**, **OpenAI**, **Gemini**, **Groq**, **OpenRouter**, **Anthropic**, **Qwen**, and **Kimi**.
-- **Local-First & Private** — Runs with local LLMs out of the box (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `gemma`, etc.).
-- **Cloud-Ready** — Connect to any OpenAI-compatible API or native Anthropic Messages API with a single environment variable.
-- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via gateway endpoints.
-- **On-the-Fly Switching** — Switch providers or models instantly inside an active session using `/provider` and `/model`.
-- **Human-in-the-Loop Security** — All file writes and shell execution commands require your explicit approval before execution.
-- **Single Binary, Zero Overhead** — Native Go executable with no Node.js runtime and minimal startup latency.
-- **Diagnostic Doctor Subcommand** — Run `gocode doctor` to instantly check provider health, API key status, and reachability across all configured providers.
+- 🚀 **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies.
+- 🔒 **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama (`codellama`, `llama3.3`, `deepseek-coder`, `qwen2.5-coder`, etc.).
+- 🌐 **9 Multi-Provider Gateways** — Connect to **Ollama**, **OpenAI**, **Google Gemini**, **Anthropic Claude**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, and **OmniRoute**.
+- 🛡️ **Human-in-the-Loop Approval Gate** — Safety-first architecture requiring explicit confirmation before executing terminal commands or modifying files.
+- 🔄 **On-the-Fly Switching** — Switch providers or models dynamically inside an active terminal session using `/provider` and `/model` commands.
+- 🩺 **Built-in Diagnostic Doctor** — Instantly check API key configurations, network reachability, and model availability with `gocode doctor`.
+- 🛠️ **Autonomous Tool Execution** — Equipped with `file_read`, `file_write`, `file_patch`, and `shell_exec` tools for full-lifecycle coding assistance.
 
 ---
 
@@ -54,12 +58,12 @@ Type your message (or 'exit' to quit)
 
 ### Prerequisites
 
-- **Go 1.22+** installed on your system.
-- **At least one provider** configured (see [Running Providers](#running-providers)).
+- **Go 1.22+** installed (if building from source).
+- An active AI provider: **Ollama** for local execution, or an API key for cloud providers (**OpenAI**, **Gemini**, **Claude**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**).
 
 ### Installation
 
-#### Option 1: Install via `go install`
+#### Option 1: Install via `go install` (Recommended)
 
 ```bash
 go install github.com/mevarx/GoCode/cmd/gocode@latest
@@ -81,183 +85,136 @@ go build -o gocode ./cmd/gocode/
 
 ---
 
-## Running Providers
+## Supported AI Providers
 
-GoCode supports 9 providers out of the box. Set the `--provider` flag or update `config.toml` to choose your preferred backend.
+GoCode supports **9 AI model providers and gateway proxies** out of the box. Select your provider using the `--provider` flag or by setting default preferences in `config.toml`.
 
-### Local Providers
+### Cloud Providers Cheat Sheet
 
-#### Ollama (Default)
+| Provider | `--provider` | Environment Variable | Default Model | Base URL |
+| :--- | :--- | :--- | :--- | :--- |
+| **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | `https://api.anthropic.com/v1` |
+| **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-4o` | `https://api.openai.com/v1` |
+| **Groq** | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+| **OpenRouter** | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` | `https://openrouter.ai/api/v1` |
+| **Qwen (DashScope)** | `qwen` | `DASHSCOPE_API_KEY` | `qwen-max` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **Kimi (Moonshot)** | `kimi` | `MOONSHOT_API_KEY` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
+| **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
+| **Ollama (Local)** | `ollama` | *None (Local Server)* | *Auto-detected* | `http://localhost:11434` |
 
-GoCode connects to your local Ollama instance (`http://localhost:11434`) by default:
-
-```bash
-# Launch with Ollama (auto-detects installed models)
-gocode
-
-# Launch with a specific Ollama model
-gocode --provider ollama --model llama3.1:8b
-```
-
-#### OmniRoute Gateway Proxy
-
-GoCode connects to your local OmniRoute instance (`http://localhost:20128/v1`):
+### Usage Examples
 
 ```bash
-# Launch with OmniRoute provider
-gocode --provider omniroute
+# 1. Run local LLM with Ollama (Default)
+gocode --provider ollama --model deepseek-coder
 
-# Specify OmniRoute model routing
-gocode --provider omniroute --model auto/coding
-```
+# 2. Run with Google Gemini API
+export GEMINI_API_KEY="your-gemini-api-key"
+gocode --provider gemini --model gemini-2.5-flash
 
-### Cloud Providers
+# 3. Run with Anthropic Claude API
+export ANTHROPIC_API_KEY="sk-ant-api..."
+gocode --provider anthropic --model claude-3-5-sonnet-20241022
 
-All cloud providers read API keys from environment variables. Set the appropriate variable before launching GoCode.
-
-| Provider | Env Variable | Default Model | Base URL |
-| :--- | :--- | :--- | :--- |
-| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` | `https://api.openai.com/v1` |
-| **Gemini** | `GEMINI_API_KEY` | `gemini-2.5-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
-| **OpenRouter** | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` | `https://openrouter.ai/api/v1` |
-| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | `https://api.anthropic.com/v1` |
-| **Qwen** | `DASHSCOPE_API_KEY` | `qwen-max` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| **Kimi** | `MOONSHOT_API_KEY` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
-
-```bash
-# Example: Launch with Gemini
-export GEMINI_API_KEY="your-api-key-here"
-gocode --provider gemini
-
-# Example: Launch with OpenAI using a specific model
+# 4. Run with OpenAI API
 export OPENAI_API_KEY="sk-..."
-gocode --provider openai --model gpt-4o-mini
+gocode --provider openai --model gpt-4o
 
-# Example: Launch with Groq
+# 5. Run with Groq ultra-fast inference
 export GROQ_API_KEY="gsk_..."
-gocode --provider groq
+gocode --provider groq --model llama-3.3-70b-versatile
 
-# Example: Launch with Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-gocode --provider anthropic --model claude-sonnet-4-20250514
-
-# Example: Launch with OpenRouter
+# 6. Run with OpenRouter gateway
 export OPENROUTER_API_KEY="sk-or-..."
 gocode --provider openrouter
 
-# Example: Launch with Qwen
+# 7. Run with Qwen (Aliyun DashScope)
 export DASHSCOPE_API_KEY="sk-..."
 gocode --provider qwen
 
-# Example: Launch with Kimi
+# 8. Run with Kimi (Moonshot AI)
 export MOONSHOT_API_KEY="sk-..."
 gocode --provider kimi
 ```
 
-### Switching Mid-Session
+### In-Session Terminal Slash Commands
 
-You can switch between any provider at any time inside an active terminal session:
+Control GoCode dynamically without restarting your session:
 
-```text
-> /provider gemini
-[Provider switched to gemini]
+- `/providers` — View active provider and list all available model endpoints.
+- `/provider <name>` — Switch active provider (e.g. `/provider gemini` or `/provider ollama`).
+- `/model <name>` — Change model on the fly (e.g. `/model gpt-4o-mini`).
+- `/clear` — Clear conversation history while retaining system instructions.
+- `exit` or `quit` — Exit the agent session.
 
-> /provider openai
-[Provider switched to openai]
+### Provider Diagnostic Check (`gocode doctor`)
 
-> /provider anthropic
-[Provider switched to anthropic]
-
-> /model gpt-4o-mini
-[Model set to gpt-4o-mini]
-```
-
-### Health Check (`gocode doctor`)
-
-Verify connectivity, API key status, and reachability of all providers simultaneously:
+Run `gocode doctor` to inspect network reachability, API key validation, and model discovery for all 9 providers:
 
 ```bash
 gocode doctor
 ```
 
-```
-GoCode Doctor — Diagnostic Health Check
-──────────────────────────────────────────
-✓ ollama         reachable at http://localhost:11434 (3 models available)
-✗ omniroute      unreachable at http://localhost:20128/v1
-⚠ openai         no API key (set OPENAI_API_KEY env var or api_key in config)
-✓ gemini         reachable at https://generativelanguage.googleapis.com/v1beta/openai (default: gemini-2.5-flash, 12 models)
-✓ groq           reachable at https://api.groq.com/openai/v1 (default: llama-3.3-70b-versatile, 8 models)
-⚠ openrouter     no API key (set OPENROUTER_API_KEY env var or api_key in config)
-✓ anthropic      configured (default: claude-sonnet-4-20250514, 5 models known)
-⚠ qwen           no API key (set DASHSCOPE_API_KEY env var or api_key in config)
-⚠ kimi           no API key (set MOONSHOT_API_KEY env var or api_key in config)
-──────────────────────────────────────────
-```
+---
+
+## GoCode vs. Other AI Coding Agents
+
+| Feature | GoCode | Cursor | Aider | GitHub Copilot CLI |
+| :--- | :---: | :---: | :---: | :---: |
+| **Open Source** | ✅ MIT | ❌ Proprietary | ✅ Apache-2.0 | ❌ Proprietary |
+| **Language & Runtime** | Native Go Binary | Electron / TS | Python Runtime | Node.js / CLI |
+| **Local LLM Support (Ollama)** | ✅ Built-in | ⚠️ Limited | ✅ Yes | ❌ Cloud-only |
+| **Cloud Providers Supported** | 9 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
+| **Human Approval Control** | ✅ Explicit Gate | ⚠️ Semi-auto | ⚠️ Auto/Prompt | ⚠️ Auto |
+| **Memory Footprint** | Extremely Low (<20MB) | High (Electron) | Moderate (Python) | Moderate (Node) |
 
 ---
 
-## Interactive Slash Commands
+## Tools & Security Architecture
 
-During an active session, use built-in slash commands:
+GoCode operates under a strict **Human-in-the-Loop Security Architecture**. The agent cannot mutate your workspace or run commands without explicit terminal authorization.
 
-| Command | Action |
-| :--- | :--- |
-| `exit` / `quit` | Exit the GoCode agent session |
-| `/clear` | Reset conversation history while keeping system instructions intact |
-| `/providers` | List all registered providers, active provider, and available models |
-| `/provider <name>` | Switch active provider (e.g. `/provider gemini`, `/provider anthropic`) |
-| `/model <name>` | Switch active model (e.g. `/model gpt-4o-mini`, `/model gemini-2.5-flash`) |
-
----
-
-## Tools & Security
-
-GoCode includes built-in tools that enable the AI model to interact with your local environment safely.
-
-| Tool Name | Capability | Requires Approval |
+| Tool Name | Purpose & Function | Approval Gate |
 | :--- | :--- | :---: |
-| `file_read` | Read contents of workspace files | Automatic |
-| `file_write` | Create or overwrite files | **Yes** |
-| `file_patch` | Perform target string replacements / code edits | **Yes** |
-| `shell_exec` | Execute terminal commands (builds, tests, git) | **Yes** |
-
-**Approval Gate**: Whenever GoCode attempts to modify a file or execute a shell command, you will be prompted in the terminal to inspect the proposed action and approve (`y`) or reject (`n`).
+| `file_read` | Inspect file contents and workspace context | Automatic |
+| `file_write` | Create new files or overwrite existing files | **Requires Confirmation (y/n)** |
+| `file_patch` | Perform target string replacements & targeted code edits | **Requires Confirmation (y/n)** |
+| `shell_exec` | Run terminal commands (builds, tests, git operations) | **Requires Confirmation (y/n)** |
 
 ---
 
-## Configuration
+## Configuration Guide
 
-GoCode automatically loads its configuration from standard platform paths:
+GoCode reads configuration options from standard platform paths:
 
 - **Linux / macOS**: `~/.config/gocode/config.toml`
 - **Windows**: `%APPDATA%\gocode\config.toml`
 
-### Example `config.toml`
+### Comprehensive `config.toml` Example
 
 ```toml
 [provider]
-default = "gemini"  # ollama | omniroute | openai | gemini | groq | openrouter | anthropic | qwen | kimi
+default = "gemini"  # Default provider: ollama | omniroute | openai | gemini | groq | openrouter | anthropic | qwen | kimi
 
 [provider.ollama]
 host = "http://localhost:11434"
-default_model = ""  # Auto-detects any pulled local Ollama model
-
-[provider.omniroute]
-base_url = "http://localhost:20128/v1"
-default_model = "auto"
-
-[provider.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-# api_key = "sk-..."  # Or set the key directly (not recommended)
-default_model = "gpt-4o"
+default_model = ""  # Auto-detects installed models
 
 [provider.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"
 default_model = "gemini-2.5-flash"
+
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-20250514"
+
+[provider.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4o"
 
 [provider.groq]
 base_url = "https://api.groq.com/openai/v1"
@@ -269,11 +226,6 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 default_model = "anthropic/claude-sonnet-4.5"
 
-[provider.anthropic]
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
-
 [provider.qwen]
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
@@ -284,6 +236,10 @@ base_url = "https://api.moonshot.cn/v1"
 api_key_env = "MOONSHOT_API_KEY"
 default_model = "moonshot-v1-8k"
 
+[provider.omniroute]
+base_url = "http://localhost:20128/v1"
+default_model = "auto"
+
 [approval]
 auto_approve_reads = true
 auto_approve_writes = false
@@ -292,20 +248,37 @@ auto_approve_shell = false
 
 ---
 
-## Architecture
+## Frequently Asked Questions (FAQ)
 
-GoCode is built with clean architecture and low package coupling:
+### What is GoCode used for?
+GoCode is an open-source terminal AI coding assistant used for automated code generation, code refactoring, bug fixing, test writing, project directory inspection, and command-line automation.
 
-```
+### Can GoCode run completely offline?
+Yes. GoCode connects natively to **Ollama** running locally on your machine (`http://localhost:11434`). You can run open-weights models like `codellama`, `llama3.3`, `deepseek-coder`, or `qwen2.5-coder` with zero internet access and complete data privacy.
+
+### How does GoCode compare to Cursor or Aider?
+Unlike Cursor (which is an Electron IDE extension) or Aider (which runs on Python), GoCode is a compiled **Go binary** that runs directly in any terminal (Linux, macOS, Windows). It offers sub-millisecond startup, minimal memory consumption, and a human-in-the-loop approval gate for safe command execution.
+
+### Which LLM API providers does GoCode support?
+GoCode supports 9 major provider gateways: Google Gemini, Anthropic Claude, OpenAI, Groq, OpenRouter, Qwen (Aliyun DashScope), Kimi (Moonshot AI), local Ollama servers, and OmniRoute proxies.
+
+### Is GoCode free to use?
+Yes, GoCode is 100% free and open-source software licensed under the MIT License. When paired with local Ollama models, it is completely free to operate with no subscription or API costs.
+
+---
+
+## Architecture & Codebase Structure
+
+```text
 gocode/
 ├── cmd/
-│   └── gocode/           # CLI entry point, flag parsing, doctor command & wiring
+│   └── gocode/           # CLI entry point, flag parsing, doctor subcommand
 ├── internal/
 │   ├── agent/            # Core agent loop, session memory & slash command router
-│   ├── config/           # XDG directory management & TOML configuration
-│   ├── provider/         # Provider registry, Ollama, GatewayProxy (OpenAI-compatible), Anthropic (native)
-│   └── tools/            # Tool registry, execution safety & approval gates
-├── go.mod                # Module dependencies
+│   ├── config/           # Platform directory management & TOML configuration parser
+│   ├── provider/         # Unified provider registry (Ollama, OpenAI-compatible, Anthropic native)
+│   └── tools/            # Tool registry, shell execution, patch engine & approval gates
+├── go.mod                # Module definition
 └── README.md             # Documentation
 ```
 
@@ -313,4 +286,4 @@ gocode/
 
 ## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+GoCode is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
