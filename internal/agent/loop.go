@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gocode-cli/gocode/internal/provider"
-	"github.com/gocode-cli/gocode/internal/tools"
+	"github.com/mevarx/GoCode/internal/provider"
+	"github.com/mevarx/GoCode/internal/tools"
 )
 
 // AgentLoop coordinates user prompts, model interactions, and tool executions.

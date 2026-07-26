@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"github.com/gocode-cli/gocode/internal/provider"
+	"github.com/mevarx/GoCode/internal/provider"
 )
 
 // Session tracks conversation state and message history.

@@ -1,4 +1,4 @@
-module github.com/gocode-cli/gocode
+module github.com/mevarx/GoCode
 
 go 1.26.5
 

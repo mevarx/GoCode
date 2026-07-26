@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gocode-cli/gocode/internal/config"
+	"github.com/mevarx/GoCode/internal/config"
 )
 
 func TestGatewayProxyProvider_Models(t *testing.T) {

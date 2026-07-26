@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gocode-cli/gocode/internal/agent"
-	"github.com/gocode-cli/gocode/internal/config"
-	"github.com/gocode-cli/gocode/internal/provider"
-	"github.com/gocode-cli/gocode/internal/tools"
+	"github.com/mevarx/GoCode/internal/agent"
+	"github.com/mevarx/GoCode/internal/config"
+	"github.com/mevarx/GoCode/internal/provider"
+	"github.com/mevarx/GoCode/internal/tools"
 )
 
 var (

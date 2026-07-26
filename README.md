@@ -6,7 +6,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)](https://github.com/gocode-cli/gocode)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?style=flat-square)](https://github.com/mevarx/GoCode)
 
 [Features](#features) •
 [Quick Start](#quick-start) •
@@ -69,14 +69,14 @@ Type your message (or 'exit' to quit)
 #### Option 1: Install via `go install`
 
 ```bash
-go install github.com/gocode-cli/gocode/cmd/gocode@latest
+go install github.com/mevarx/GoCode/cmd/gocode@latest
 ```
 
 #### Option 2: Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/gocode-cli/gocode.git
+git clone https://github.com/mevarx/GoCode.git
 cd gocode
 
 # Build executable
