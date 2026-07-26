@@ -15,14 +15,13 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// GatewayProxyProvider implements Provider for OpenAI-compatible gateway proxies like OmniRoute.
+// GatewayProxyProvider implements Provider for OpenAI-compatible gateway proxies and APIs.
 type GatewayProxyProvider struct {
 	name   string
 	cfg    config.GatewayConfig
 	client *http.Client
 }
 
-// NewGatewayProxyProvider initializes a GatewayProxyProvider instance.
 func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProxyProvider {
 	return &GatewayProxyProvider{
 		name:   name,
@@ -31,17 +30,14 @@ func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProx
 	}
 }
 
-// Name returns the provider name identifier.
 func (p *GatewayProxyProvider) Name() string {
 	return p.name
 }
 
-// BaseURL returns the configured base URL.
 func (p *GatewayProxyProvider) BaseURL() string {
 	return p.cfg.BaseURL
 }
 
-// getAPIKey resolves the API key from config or environment variable.
 func (p *GatewayProxyProvider) getAPIKey() string {
 	if p.cfg.APIKey != "" {
 		return p.cfg.APIKey
@@ -54,25 +50,20 @@ func (p *GatewayProxyProvider) getAPIKey() string {
 	return ""
 }
 
-// setCustomHeaders applies provider-specific headers to the request.
 func (p *GatewayProxyProvider) setCustomHeaders(req *http.Request) {
-	apiKey := p.getAPIKey()
-	if apiKey != "" {
+	if apiKey := p.getAPIKey(); apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	// OpenRouter requires additional headers for analytics/routing.
 	if p.name == "openrouter" {
 		req.Header.Set("HTTP-Referer", "https://github.com/mevarx/GoCode")
 		req.Header.Set("X-Title", "GoCode")
 	}
 }
 
-// DefaultModel returns the configured default model.
 func (p *GatewayProxyProvider) DefaultModel() string {
 	return p.cfg.DefaultModel
 }
 
-// Models fetches available model IDs from the gateway's /v1/models endpoint.
 func (p *GatewayProxyProvider) Models(ctx context.Context) ([]string, error) {
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -160,7 +151,6 @@ type openAIStreamChunk struct {
 	} `json:"choices"`
 }
 
-// Stream sends a chat completion request and streams response chunks using SSE.
 func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error) {
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/chat/completions"
 
@@ -238,7 +228,6 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 		defer close(ch)
 
 		scanner := bufio.NewScanner(resp.Body)
-		// Accumulate tool call argument chunks indexed by tool call position
 		type pendingToolCall struct {
 			id   string
 			name string
@@ -258,7 +247,6 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				// Flush any pending tool calls before completion
 				var finalToolCalls []ToolCall
 				for _, pt := range pendingTools {
 					finalToolCalls = append(finalToolCalls, ToolCall{

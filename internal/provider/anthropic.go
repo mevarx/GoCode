@@ -15,14 +15,12 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// AnthropicProvider implements Provider for the native Anthropic Messages API.
 type AnthropicProvider struct {
 	name   string
 	cfg    config.GatewayConfig
 	client *http.Client
 }
 
-// NewAnthropicProvider initializes an AnthropicProvider instance.
 func NewAnthropicProvider(cfg config.GatewayConfig) *AnthropicProvider {
 	return &AnthropicProvider{
 		name:   "anthropic",
@@ -31,12 +29,10 @@ func NewAnthropicProvider(cfg config.GatewayConfig) *AnthropicProvider {
 	}
 }
 
-// Name returns the provider name identifier.
 func (p *AnthropicProvider) Name() string {
 	return p.name
 }
 
-// getAPIKey resolves the API key from config or environment variable.
 func (p *AnthropicProvider) getAPIKey() string {
 	if p.cfg.APIKey != "" {
 		return p.cfg.APIKey
@@ -49,8 +45,6 @@ func (p *AnthropicProvider) getAPIKey() string {
 	return ""
 }
 
-// Models returns available Anthropic model identifiers.
-// Anthropic does not expose a /models endpoint, so we return a static list.
 func (p *AnthropicProvider) Models(ctx context.Context) ([]string, error) {
 	return []string{
 		"claude-sonnet-4-20250514",
@@ -60,8 +54,6 @@ func (p *AnthropicProvider) Models(ctx context.Context) ([]string, error) {
 		"claude-3-opus-20240229",
 	}, nil
 }
-
-// --- Anthropic API types ---
 
 type anthropicRequest struct {
 	Model     string             `json:"model"`
@@ -73,8 +65,8 @@ type anthropicRequest struct {
 }
 
 type anthropicMessage struct {
-	Role    string                `json:"role"`
-	Content json.RawMessage       `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 type anthropicContentBlock struct {
@@ -93,12 +85,10 @@ type anthropicTool struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
-// --- Anthropic SSE event types ---
-
 type anthropicStreamEvent struct {
-	Type  string          `json:"type"`
-	Index int             `json:"index,omitempty"`
-	Delta json.RawMessage `json:"delta,omitempty"`
+	Type         string          `json:"type"`
+	Index        int             `json:"index,omitempty"`
+	Delta        json.RawMessage `json:"delta,omitempty"`
 	ContentBlock *struct {
 		Type string `json:"type"`
 		ID   string `json:"id,omitempty"`
@@ -112,12 +102,10 @@ type anthropicDelta struct {
 	PartialJSON string `json:"partial_json,omitempty"`
 }
 
-// Stream sends a chat completion request using the Anthropic Messages API with SSE streaming.
 func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error) {
 	baseURL := strings.TrimRight(p.cfg.BaseURL, "/")
 	url := baseURL + "/messages"
 
-	// Separate system message from conversation history.
 	var systemPrompt string
 	var convMessages []Message
 	for _, msg := range history {
@@ -128,7 +116,6 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 		}
 	}
 
-	// Convert messages to Anthropic format.
 	anthropicMsgs := make([]anthropicMessage, 0, len(convMessages))
 	for _, msg := range convMessages {
 		switch msg.Role {
@@ -175,7 +162,6 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 		}
 	}
 
-	// Build request body.
 	reqBody := anthropicRequest{
 		Model:     model,
 		MaxTokens: 8192,
@@ -208,8 +194,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	apiKey := p.getAPIKey()
-	if apiKey != "" {
+	if apiKey := p.getAPIKey(); apiKey != "" {
 		req.Header.Set("x-api-key", apiKey)
 	}
 
@@ -232,7 +217,6 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 
 		scanner := bufio.NewScanner(resp.Body)
 
-		// Track pending tool calls by content block index.
 		type pendingToolCall struct {
 			id   string
 			name string
