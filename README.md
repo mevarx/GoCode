@@ -44,13 +44,13 @@ Type your message (or 'exit' to quit)
 
 ## Features
 
-- 🚀 **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies.
-- 🔒 **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama (`codellama`, `llama3.3`, `deepseek-coder`, `qwen2.5-coder`, etc.).
-- 🌐 **9 Multi-Provider Gateways** — Connect to **Ollama**, **OpenAI**, **Google Gemini**, **Anthropic Claude**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, and **OmniRoute**.
-- 🛡️ **Human-in-the-Loop Approval Gate** — Safety-first architecture requiring explicit confirmation before executing terminal commands or modifying files.
-- 🔄 **On-the-Fly Switching** — Switch providers or models dynamically inside an active terminal session using `/provider` and `/model` commands.
-- 🩺 **Built-in Diagnostic Doctor** — Instantly check API key configurations, network reachability, and model availability with `gocode doctor`.
-- 🛠️ **Autonomous Tool Execution** — Equipped with `file_read`, `file_write`, `file_patch`, and `shell_exec` tools for full-lifecycle coding assistance.
+- **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies.
+- **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama (`codellama`, `llama3.3`, `deepseek-coder`, `qwen2.5-coder`, etc.).
+- **9 Multi-Provider Gateways** — Connect to **Ollama**, **OpenAI**, **Google Gemini**, **Anthropic Claude**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, and **OmniRoute**.
+- **Human-in-the-Loop Approval Gate** — Safety-first architecture requiring explicit confirmation before executing terminal commands or modifying files.
+- **On-the-Fly Switching** — Switch providers or models dynamically inside an active terminal session using `/provider` and `/model` commands.
+- **Built-in Diagnostic Doctor** — Instantly check API key configurations, network reachability, and model availability with `gocode doctor`.
+- **Autonomous Tool Execution** — Equipped with `file_read`, `file_write`, `file_patch`, and `shell_exec` tools for full-lifecycle coding assistance.
 
 ---
 
@@ -162,11 +162,11 @@ gocode doctor
 
 | Feature | GoCode | Cursor | Aider | GitHub Copilot CLI |
 | :--- | :---: | :---: | :---: | :---: |
-| **Open Source** | ✅ MIT | ❌ Proprietary | ✅ Apache-2.0 | ❌ Proprietary |
+| **Open Source** | MIT (Open Source) | Proprietary | Apache-2.0 | Proprietary |
 | **Language & Runtime** | Native Go Binary | Electron / TS | Python Runtime | Node.js / CLI |
-| **Local LLM Support (Ollama)** | ✅ Built-in | ⚠️ Limited | ✅ Yes | ❌ Cloud-only |
+| **Local LLM Support (Ollama)** | Built-in | Limited | Yes | Cloud-only |
 | **Cloud Providers Supported** | 9 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
-| **Human Approval Control** | ✅ Explicit Gate | ⚠️ Semi-auto | ⚠️ Auto/Prompt | ⚠️ Auto |
+| **Human Approval Control** | Explicit Gate | Semi-auto | Auto/Prompt | Auto |
 | **Memory Footprint** | Extremely Low (<20MB) | High (Electron) | Moderate (Python) | Moderate (Node) |
 
 ---
