@@ -45,6 +45,31 @@ func main() {
 	}
 }
 
+// gatewayProviders maps provider name → config accessor for all OpenAI-compatible gateways.
+// The order here also determines registration & doctor output order.
+var gatewayProviderNames = []string{"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi"}
+
+func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConfig {
+	switch name {
+	case "omniroute":
+		return cfg.OmniRoute
+	case "openai":
+		return cfg.OpenAI
+	case "gemini":
+		return cfg.Gemini
+	case "groq":
+		return cfg.Groq
+	case "openrouter":
+		return cfg.OpenRouter
+	case "qwen":
+		return cfg.Qwen
+	case "kimi":
+		return cfg.Kimi
+	default:
+		return config.GatewayConfig{}
+	}
+}
+
 func runAgent(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -57,15 +82,24 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	providerRegistry := provider.NewRegistry()
 
+	// 1. Register Ollama (local).
 	ollamaProvider, err := provider.NewOllamaProvider(cfg.Provider.Ollama.Host)
 	if err != nil {
 		return fmt.Errorf("failed to initialize ollama provider: %w", err)
 	}
 	providerRegistry.Register(ollamaProvider)
 
-	omniProvider := provider.NewGatewayProxyProvider("omniroute", cfg.Provider.OmniRoute)
-	providerRegistry.Register(omniProvider)
+	// 2. Register all OpenAI-compatible gateway providers.
+	for _, name := range gatewayProviderNames {
+		gCfg := gatewayConfigFor(cfg.Provider, name)
+		providerRegistry.Register(provider.NewGatewayProxyProvider(name, gCfg))
+	}
 
+	// 3. Register Anthropic (native Messages API).
+	anthropicProvider := provider.NewAnthropicProvider(cfg.Provider.Anthropic)
+	providerRegistry.Register(anthropicProvider)
+
+	// Select active provider.
 	providerName := cfg.Provider.Default
 	if flagProvider != "" {
 		providerName = flagProvider
@@ -74,6 +108,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to select provider: %w", err)
 	}
 
+	// Resolve default model.
 	var model string
 	if flagModel != "" {
 		model = flagModel
@@ -88,11 +123,12 @@ func runAgent(cmd *cobra.Command, args []string) error {
 					model = "codellama"
 				}
 			}
-		case "omniroute":
-			model = cfg.Provider.OmniRoute.DefaultModel
-			if model == "" {
-				model = "auto"
-			}
+		case "anthropic":
+			model = cfg.Provider.Anthropic.DefaultModel
+		default:
+			// All gateway providers use GatewayConfig.DefaultModel.
+			gCfg := gatewayConfigFor(cfg.Provider, providerName)
+			model = gCfg.DefaultModel
 		}
 	}
 
@@ -132,30 +168,57 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	fmt.Println("GoCode Doctor — Diagnostic Health Check")
 	fmt.Println("──────────────────────────────────────────")
 
-	// 1. Check Ollama
+	// 1. Check Ollama (local).
 	ollamaProvider, err := provider.NewOllamaProvider(cfg.Provider.Ollama.Host)
 	if err != nil {
-		fmt.Printf("✗ ollama       failed initialization: %v\n", err)
+		fmt.Printf("✗ %-14s failed initialization: %v\n", "ollama", err)
 	} else {
 		models, err := ollamaProvider.Models(ctx)
 		if err != nil {
-			fmt.Printf("✗ ollama       unreachable at %s — is Ollama running?\n", cfg.Provider.Ollama.Host)
+			fmt.Printf("✗ %-14s unreachable at %s — is Ollama running?\n", "ollama", cfg.Provider.Ollama.Host)
 		} else {
-			fmt.Printf("✓ ollama       reachable at %s (%d models available)\n", cfg.Provider.Ollama.Host, len(models))
+			fmt.Printf("✓ %-14s reachable at %s (%d models available)\n", "ollama", cfg.Provider.Ollama.Host, len(models))
 		}
 	}
 
-	// 2. Check OmniRoute
-	omniProvider := provider.NewGatewayProxyProvider("omniroute", cfg.Provider.OmniRoute)
-	models, err := omniProvider.Models(ctx)
-	if err != nil {
-		fmt.Printf("✗ omniroute    unreachable at %s — run `npm install -g omniroute && omniroute` first\n", cfg.Provider.OmniRoute.BaseURL)
-	} else {
-		defaultModel := cfg.Provider.OmniRoute.DefaultModel
-		if defaultModel == "" {
-			defaultModel = "auto"
+	// 2. Check all OpenAI-compatible gateway providers.
+	for _, name := range gatewayProviderNames {
+		gCfg := gatewayConfigFor(cfg.Provider, name)
+		gw := provider.NewGatewayProxyProvider(name, gCfg)
+
+		// Check if API key is configured.
+		hasKey := gCfg.APIKey != ""
+		if !hasKey && gCfg.APIKeyEnv != "" {
+			hasKey = os.Getenv(gCfg.APIKeyEnv) != ""
 		}
-		fmt.Printf("✓ omniroute    reachable at %s (default model: %s, %d models reported)\n", cfg.Provider.OmniRoute.BaseURL, defaultModel, len(models))
+
+		if !hasKey && gCfg.BaseURL != "" && gCfg.APIKeyEnv != "" {
+			fmt.Printf("⚠ %-14s no API key (set %s env var or api_key in config)\n", name, gCfg.APIKeyEnv)
+			continue
+		}
+
+		models, err := gw.Models(ctx)
+		if err != nil {
+			fmt.Printf("✗ %-14s unreachable at %s\n", name, gCfg.BaseURL)
+		} else {
+			defaultModel := gCfg.DefaultModel
+			fmt.Printf("✓ %-14s reachable at %s (default: %s, %d models)\n", name, gCfg.BaseURL, defaultModel, len(models))
+		}
+	}
+
+	// 3. Check Anthropic (native API).
+	anthropicCfg := cfg.Provider.Anthropic
+	hasAnthropicKey := anthropicCfg.APIKey != ""
+	if !hasAnthropicKey && anthropicCfg.APIKeyEnv != "" {
+		hasAnthropicKey = os.Getenv(anthropicCfg.APIKeyEnv) != ""
+	}
+
+	if !hasAnthropicKey {
+		fmt.Printf("⚠ %-14s no API key (set %s env var or api_key in config)\n", "anthropic", anthropicCfg.APIKeyEnv)
+	} else {
+		ap := provider.NewAnthropicProvider(anthropicCfg)
+		models, _ := ap.Models(ctx)
+		fmt.Printf("✓ %-14s configured (default: %s, %d models known)\n", "anthropic", anthropicCfg.DefaultModel, len(models))
 	}
 
 	fmt.Println("──────────────────────────────────────────")

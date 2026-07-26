@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -40,6 +41,32 @@ func (p *GatewayProxyProvider) BaseURL() string {
 	return p.cfg.BaseURL
 }
 
+// getAPIKey resolves the API key from config or environment variable.
+func (p *GatewayProxyProvider) getAPIKey() string {
+	if p.cfg.APIKey != "" {
+		return p.cfg.APIKey
+	}
+	if p.cfg.APIKeyEnv != "" {
+		if key := os.Getenv(p.cfg.APIKeyEnv); key != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+// setCustomHeaders applies provider-specific headers to the request.
+func (p *GatewayProxyProvider) setCustomHeaders(req *http.Request) {
+	apiKey := p.getAPIKey()
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	// OpenRouter requires additional headers for analytics/routing.
+	if p.name == "openrouter" {
+		req.Header.Set("HTTP-Referer", "https://github.com/mevarx/GoCode")
+		req.Header.Set("X-Title", "GoCode")
+	}
+}
+
 // DefaultModel returns the configured default model.
 func (p *GatewayProxyProvider) DefaultModel() string {
 	return p.cfg.DefaultModel
@@ -53,13 +80,11 @@ func (p *GatewayProxyProvider) Models(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to create request for %s: %w", p.name, err)
 	}
 
-	if p.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	}
+	p.setCustomHeaders(req)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gateway %q unreachable at %s — is it running? (npm install -g %s && %s): %w", p.name, p.cfg.BaseURL, p.name, p.name, err)
+		return nil, fmt.Errorf("provider %q unreachable at %s: %w", p.name, p.cfg.BaseURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -193,13 +218,11 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if p.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	}
+	p.setCustomHeaders(req)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gateway %q unreachable at %s — is it running? (npm install -g %s && %s): %w", p.name, p.cfg.BaseURL, p.name, p.name, err)
+		return nil, fmt.Errorf("provider %q unreachable at %s: %w", p.name, p.cfg.BaseURL, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {

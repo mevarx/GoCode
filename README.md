@@ -23,11 +23,11 @@
 
 **GoCode** is a lightweight, high-performance terminal AI coding agent written in Go. It operates directly inside your terminal, assisting you with code generation, debugging, refactoring, file inspection, and command execution.
 
-Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It gives you the flexibility to run **local Ollama models** directly or connect to **OmniRoute** gateway proxies.
+Unlike cloud-locked AI tools, GoCode puts privacy, security, and developer control first. It gives you the flexibility to run **local Ollama models** directly, connect to **cloud API providers** (OpenAI, Gemini, Groq, Anthropic, OpenRouter, Qwen, Kimi), or route through **gateway proxies** like OmniRoute.
 
 ```
 GoCode — Terminal Coding Agent
-Provider: ollama | Model: codellama
+Provider: gemini | Model: gemini-2.5-flash
 Tools: shell_exec, file_read, file_write, file_patch
 Type your message (or 'exit' to quit)
 ──────────────────────────────────────────────────
@@ -39,13 +39,14 @@ Type your message (or 'exit' to quit)
 
 ## Features
 
-- **Dual Provider Support** — Seamlessly choose between **Ollama** (default) or **OmniRoute** gateway proxy.
+- **9 Provider Support** — Seamlessly choose between **Ollama**, **OmniRoute**, **OpenAI**, **Gemini**, **Groq**, **OpenRouter**, **Anthropic**, **Qwen**, and **Kimi**.
 - **Local-First & Private** — Runs with local LLMs out of the box (`codellama`, `llama3`, `mistral`, `deepseek-coder`, `gemma`, etc.).
-- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via OmniRoute (`auto`, `auto/coding`).
+- **Cloud-Ready** — Connect to any OpenAI-compatible API or native Anthropic Messages API with a single environment variable.
+- **Model Agnostic** — Automatically detects and runs any model pulled in Ollama or exposed via gateway endpoints.
 - **On-the-Fly Switching** — Switch providers or models instantly inside an active session using `/provider` and `/model`.
 - **Human-in-the-Loop Security** — All file writes and shell execution commands require your explicit approval before execution.
 - **Single Binary, Zero Overhead** — Native Go executable with no Node.js runtime and minimal startup latency.
-- **Diagnostic Doctor Subcommand** — Run `gocode doctor` to instantly check provider health and reachability for both Ollama and OmniRoute.
+- **Diagnostic Doctor Subcommand** — Run `gocode doctor` to instantly check provider health, API key status, and reachability across all configured providers.
 
 ---
 
@@ -54,15 +55,7 @@ Type your message (or 'exit' to quit)
 ### Prerequisites
 
 - **Go 1.22+** installed on your system.
-- **Ollama** (Default local provider):
-  ```bash
-  ollama pull codellama
-  ```
-- **OmniRoute** (Optional gateway proxy provider):
-  ```bash
-  npm install -g omniroute
-  omniroute
-  ```
+- **At least one provider** configured (see [Running Providers](#running-providers)).
 
 ### Installation
 
@@ -90,9 +83,11 @@ go build -o gocode ./cmd/gocode/
 
 ## Running Providers
 
-GoCode supports two primary provider options out of the box:
+GoCode supports 9 providers out of the box. Set the `--provider` flag or update `config.toml` to choose your preferred backend.
 
-### Option 1: Running with Ollama (Default)
+### Local Providers
+
+#### Ollama (Default)
 
 GoCode connects to your local Ollama instance (`http://localhost:11434`) by default:
 
@@ -104,9 +99,9 @@ gocode
 gocode --provider ollama --model llama3.1:8b
 ```
 
-### Option 2: Running with OmniRoute Gateway Proxy
+#### OmniRoute Gateway Proxy
 
-GoCode connects to your OmniRoute instance (`http://localhost:20128/v1`):
+GoCode connects to your local OmniRoute instance (`http://localhost:20128/v1`):
 
 ```bash
 # Launch with OmniRoute provider
@@ -116,27 +111,89 @@ gocode --provider omniroute
 gocode --provider omniroute --model auto/coding
 ```
 
+### Cloud Providers
+
+All cloud providers read API keys from environment variables. Set the appropriate variable before launching GoCode.
+
+| Provider | Env Variable | Default Model | Base URL |
+| :--- | :--- | :--- | :--- |
+| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` | `https://api.openai.com/v1` |
+| **Gemini** | `GEMINI_API_KEY` | `gemini-2.5-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+| **OpenRouter** | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` | `https://openrouter.ai/api/v1` |
+| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | `https://api.anthropic.com/v1` |
+| **Qwen** | `DASHSCOPE_API_KEY` | `qwen-max` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **Kimi** | `MOONSHOT_API_KEY` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
+
+```bash
+# Example: Launch with Gemini
+export GEMINI_API_KEY="your-api-key-here"
+gocode --provider gemini
+
+# Example: Launch with OpenAI using a specific model
+export OPENAI_API_KEY="sk-..."
+gocode --provider openai --model gpt-4o-mini
+
+# Example: Launch with Groq
+export GROQ_API_KEY="gsk_..."
+gocode --provider groq
+
+# Example: Launch with Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+gocode --provider anthropic --model claude-sonnet-4-20250514
+
+# Example: Launch with OpenRouter
+export OPENROUTER_API_KEY="sk-or-..."
+gocode --provider openrouter
+
+# Example: Launch with Qwen
+export DASHSCOPE_API_KEY="sk-..."
+gocode --provider qwen
+
+# Example: Launch with Kimi
+export MOONSHOT_API_KEY="sk-..."
+gocode --provider kimi
+```
+
 ### Switching Mid-Session
 
-You can switch between Ollama and OmniRoute at any time inside an active terminal session:
+You can switch between any provider at any time inside an active terminal session:
 
 ```text
-> /provider ollama
-[Provider switched to ollama]
+> /provider gemini
+[Provider switched to gemini]
 
-> /provider omniroute
-[Provider switched to omniroute]
+> /provider openai
+[Provider switched to openai]
 
-> /model auto
-[Model set to auto]
+> /provider anthropic
+[Provider switched to anthropic]
+
+> /model gpt-4o-mini
+[Model set to gpt-4o-mini]
 ```
 
 ### Health Check (`gocode doctor`)
 
-Verify connectivity and reachability of both providers simultaneously:
+Verify connectivity, API key status, and reachability of all providers simultaneously:
 
 ```bash
 gocode doctor
+```
+
+```
+GoCode Doctor — Diagnostic Health Check
+──────────────────────────────────────────
+✓ ollama         reachable at http://localhost:11434 (3 models available)
+✗ omniroute      unreachable at http://localhost:20128/v1
+⚠ openai         no API key (set OPENAI_API_KEY env var or api_key in config)
+✓ gemini         reachable at https://generativelanguage.googleapis.com/v1beta/openai (default: gemini-2.5-flash, 12 models)
+✓ groq           reachable at https://api.groq.com/openai/v1 (default: llama-3.3-70b-versatile, 8 models)
+⚠ openrouter     no API key (set OPENROUTER_API_KEY env var or api_key in config)
+✓ anthropic      configured (default: claude-sonnet-4-20250514, 5 models known)
+⚠ qwen           no API key (set DASHSCOPE_API_KEY env var or api_key in config)
+⚠ kimi           no API key (set MOONSHOT_API_KEY env var or api_key in config)
+──────────────────────────────────────────
 ```
 
 ---
@@ -150,8 +207,8 @@ During an active session, use built-in slash commands:
 | `exit` / `quit` | Exit the GoCode agent session |
 | `/clear` | Reset conversation history while keeping system instructions intact |
 | `/providers` | List all registered providers, active provider, and available models |
-| `/provider <name>` | Switch active provider on the fly (`/provider ollama` or `/provider omniroute`) |
-| `/model <name>` | Switch active model on the fly (`/model llama3.1:8b` or `/model auto`) |
+| `/provider <name>` | Switch active provider (e.g. `/provider gemini`, `/provider anthropic`) |
+| `/model <name>` | Switch active model (e.g. `/model gpt-4o-mini`, `/model gemini-2.5-flash`) |
 
 ---
 
@@ -181,7 +238,7 @@ GoCode automatically loads its configuration from standard platform paths:
 
 ```toml
 [provider]
-default = "ollama"  # Set to "ollama" or "omniroute"
+default = "gemini"  # ollama | omniroute | openai | gemini | groq | openrouter | anthropic | qwen | kimi
 
 [provider.ollama]
 host = "http://localhost:11434"
@@ -189,8 +246,43 @@ default_model = ""  # Auto-detects any pulled local Ollama model
 
 [provider.omniroute]
 base_url = "http://localhost:20128/v1"
-api_key = ""
 default_model = "auto"
+
+[provider.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+# api_key = "sk-..."  # Or set the key directly (not recommended)
+default_model = "gpt-4o"
+
+[provider.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+default_model = "gemini-2.5-flash"
+
+[provider.groq]
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+default_model = "llama-3.3-70b-versatile"
+
+[provider.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+default_model = "anthropic/claude-sonnet-4.5"
+
+[provider.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-20250514"
+
+[provider.qwen]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+default_model = "qwen-max"
+
+[provider.kimi]
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "MOONSHOT_API_KEY"
+default_model = "moonshot-v1-8k"
 
 [approval]
 auto_approve_reads = true
@@ -211,7 +303,7 @@ gocode/
 ├── internal/
 │   ├── agent/            # Core agent loop, session memory & slash command router
 │   ├── config/           # XDG directory management & TOML configuration
-│   ├── provider/         # Provider registry, Ollama (default) & GatewayProxy (OmniRoute)
+│   ├── provider/         # Provider registry, Ollama, GatewayProxy (OpenAI-compatible), Anthropic (native)
 │   └── tools/            # Tool registry, execution safety & approval gates
 ├── go.mod                # Module dependencies
 └── README.md             # Documentation
