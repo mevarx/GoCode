@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// ShellExecTool executes shell commands and captures stdout and stderr.
 type ShellExecTool struct{}
 
 type shellExecArgs struct {
@@ -49,16 +48,15 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		return Result{Error: "command cannot be empty"}, nil
 	}
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", a.Command)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
-	}
-
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd = exec.CommandContext(timeoutCtx, cmd.Path, cmd.Args[1:]...)
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(timeoutCtx, "cmd", "/C", a.Command)
+	} else {
+		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", a.Command)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

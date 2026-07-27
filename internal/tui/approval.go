@@ -11,7 +11,6 @@ type ApprovalRequest struct {
 	ReplyCh  chan bool
 }
 
-// ApprovalBridge lets the agent goroutine block on user input without touching stdin.
 type ApprovalBridge struct {
 	RequestCh chan ApprovalRequest
 }

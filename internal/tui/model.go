@@ -29,7 +29,6 @@ type ChatMessage struct {
 	Content string
 }
 
-// internal tea messages
 type agentChunkMsg struct{ delta string }
 type agentDoneMsg struct{ err error }
 type agentToolMsg struct {
@@ -59,7 +58,7 @@ type Model struct {
 
 	approvalActive bool
 	approvalReq    ApprovalRequest
-	approvalFocus  int // 0 = Approve, 1 = Deny
+	approvalFocus  int
 
 	bridge   *ApprovalBridge
 	inputCh  chan string
@@ -371,23 +370,13 @@ func (m *Model) renderApprovalModal() string {
 }
 
 func placeModal(base, modal string, totalW, totalH int) string {
-	mW := lipgloss.Width(modal)
-	mH := lipgloss.Height(modal)
-	colOff := (totalW - mW) / 2
-	rowOff := (totalH - mH) / 2
-	if colOff < 0 {
-		colOff = 0
-	}
-	if rowOff < 0 {
-		rowOff = 0
-	}
-	return lipgloss.Place(totalW, totalH, lipgloss.Left, lipgloss.Top,
-		base,
+	return lipgloss.Place(totalW, totalH, lipgloss.Center, lipgloss.Center,
+		modal,
+		lipgloss.WithWhitespaceChars(" "),
 		lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Light: "#f5f5f5", Dark: "#0d1117"}),
-	) + "\033[" + fmt.Sprintf("%d;%dH", rowOff+1, colOff+1) + modal
+	)
 }
 
-// addMessage finalizes any in-progress stream before appending a new message.
 func (m *Model) addMessage(msg ChatMessage) {
 	if msg.Role != RoleAssistant {
 		m.finalizeStreamingMessage()
@@ -396,7 +385,6 @@ func (m *Model) addMessage(msg ChatMessage) {
 	m.viewport.SetContent(m.renderMessages())
 }
 
-// setStreamingMessage updates the last assistant bubble while a response is streaming in.
 func (m *Model) setStreamingMessage(content string) {
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == RoleAssistant {
 		m.messages[len(m.messages)-1].Content = content
@@ -424,21 +412,23 @@ func (m Model) textareaHeight() int {
 	return m.textarea.Height()
 }
 
-// listenOutput waits for the next message from the agent goroutine.
 func (m Model) listenOutput() tea.Cmd {
 	return func() tea.Msg {
 		return <-m.outputCh
 	}
 }
 
-// pollApproval checks for a pending tool-approval request without blocking forever.
 func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case req := <-bridge.RequestCh:
-			return approvalRequestMsg{req: req}
-		case <-time.After(100 * time.Millisecond):
-			return tickMsg(time.Now())
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case req := <-bridge.RequestCh:
+				return approvalRequestMsg{req: req}
+			case <-ticker.C:
+				return tickMsg(time.Now())
+			}
 		}
 	}
 }

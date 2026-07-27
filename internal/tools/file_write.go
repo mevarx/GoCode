@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// FileWriteTool writes or overwrites content to a file after approval.
 type FileWriteTool struct{}
 
 type fileWriteArgs struct {

@@ -8,7 +8,6 @@ import (
 
 const appName = "gocode"
 
-// ConfigDir returns the configuration directory for GoCode.
 func ConfigDir() string {
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("APPDATA")
@@ -26,7 +25,6 @@ func ConfigDir() string {
 	return filepath.Join(base, appName)
 }
 
-// DataDir returns the data storage directory for GoCode.
 func DataDir() string {
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("LOCALAPPDATA")
@@ -44,17 +42,14 @@ func DataDir() string {
 	return filepath.Join(base, appName)
 }
 
-// SessionDir returns the directory for session history files.
 func SessionDir() string {
 	return filepath.Join(DataDir(), "sessions")
 }
 
-// ConfigFilePath returns the path to config.toml.
 func ConfigFilePath() string {
 	return filepath.Join(ConfigDir(), "config.toml")
 }
 
-// EnsureDirs creates configuration and data directories if missing.
 func EnsureDirs() error {
 	for _, dir := range []string{ConfigDir(), DataDir(), SessionDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

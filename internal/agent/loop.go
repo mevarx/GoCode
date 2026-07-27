@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -12,21 +13,21 @@ import (
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
-// AgentLoop coordinates user prompts, model interactions, and tool executions.
 type AgentLoop struct {
-	Registry     *provider.Registry
-	Session      *Session
-	ToolRegistry *tools.Registry
-	Approval     *tools.ApprovalGate
+	Registry       *provider.Registry
+	Session        *Session
+	ToolRegistry   *tools.Registry
+	Approval       *tools.ApprovalGate
+	ContextManager *ContextManager
 }
 
-// NewAgentLoop creates a new AgentLoop instance.
 func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.Registry, approval *tools.ApprovalGate) *AgentLoop {
 	return &AgentLoop{
-		Registry:     registry,
-		Session:      session,
-		ToolRegistry: toolReg,
-		Approval:     approval,
+		Registry:       registry,
+		Session:        session,
+		ToolRegistry:   toolReg,
+		Approval:       approval,
+		ContextManager: NewContextManager(0),
 	}
 }
 
@@ -43,7 +44,6 @@ func (a *AgentLoop) toolSpecsAsProvider() []provider.ToolSpec {
 	return providerSpecs
 }
 
-// Run executes the interactive loop until exit command or context cancellation.
 func (a *AgentLoop) Run(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -97,7 +97,6 @@ Be concise and direct. When you need to perform actions, use the available tools
 				fmt.Printf("Error switching provider: %v\n", err)
 			} else {
 				fmt.Printf("[Provider switched to %s]\n", target)
-				// If provider has default model or models list, select first available if active model empty or incompatible
 				if models, err := a.Registry.Active().Models(ctx); err == nil && len(models) > 0 {
 					fmt.Printf("Available models for %s: %s\n", target, strings.Join(models, ", "))
 				}
@@ -116,6 +115,16 @@ Be concise and direct. When you need to perform actions, use the available tools
 			a.Session.SetModel(targetModel)
 			fmt.Printf("[Model set to %s]\n", targetModel)
 			continue
+		case lowerInput == "/help":
+			fmt.Println("Available commands:")
+			fmt.Println("  /providers  — list all providers and models")
+			fmt.Println("  /provider <name> — switch provider")
+			fmt.Println("  /model      — show current model")
+			fmt.Println("  /model <name> — switch model")
+			fmt.Println("  /clear      — clear conversation history")
+			fmt.Println("  /help       — show this help")
+			fmt.Println("  exit        — quit GoCode")
+			continue
 		}
 
 		a.Session.AddMessage(provider.Message{
@@ -124,6 +133,7 @@ Be concise and direct. When you need to perform actions, use the available tools
 		})
 
 		if err := a.streamResponse(ctx); err != nil {
+			slog.Error("stream failed", "error", err)
 			fmt.Printf("\nError: %v\n", err)
 			continue
 		}
@@ -141,7 +151,10 @@ func (a *AgentLoop) streamResponse(ctx context.Context) error {
 	model := a.Session.Model()
 	providerToolSpecs := a.toolSpecsAsProvider()
 
-	ch, err := p.Stream(ctx, model, a.Session.History(), providerToolSpecs)
+	history := a.ContextManager.Truncate(a.Session.History())
+	slog.Debug("streaming request", "provider", a.Registry.ActiveName(), "model", model, "history_len", len(history))
+
+	ch, err := p.Stream(ctx, model, history, providerToolSpecs)
 	if err != nil {
 		return fmt.Errorf("stream error: %w", err)
 	}

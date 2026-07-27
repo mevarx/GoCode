@@ -22,7 +22,6 @@ func TestFileReadTool_Spec(t *testing.T) {
 }
 
 func TestFileReadTool_Execute(t *testing.T) {
-	// Create a temp file
 	dir := t.TempDir()
 	testFile := filepath.Join(dir, "test.txt")
 	content := "hello world\nline two\n"
@@ -104,13 +103,11 @@ func TestFileWriteTool_NewFile(t *testing.T) {
 		t.Fatalf("unexpected result error: %s", result.Error)
 	}
 
-	// Verify file was written
 	data, _ := os.ReadFile(testFile)
 	if string(data) != content {
 		t.Errorf("expected %q, got %q", content, string(data))
 	}
 
-	// Should have a diff
 	if result.Diff == "" {
 		t.Error("expected a diff for new file")
 	}

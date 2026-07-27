@@ -169,7 +169,6 @@ func handleToolCalls(
 		outputCh <- agentToolMsg{name: tc.Name, result: display, isError: result.Error != ""}
 	}
 
-	// follow-up turn after tool results
 	return runTurn(ctx, registry, session, toolRegistry, approval, toolSpecs, outputCh)
 }
 

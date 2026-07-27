@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 )
 
-// FileReadTool reads the contents of a file or lists a directory.
 type FileReadTool struct{}
 
 type fileReadArgs struct {

@@ -1,0 +1,6 @@
+bin/
+gocode
+*.exe
+.env
+config.local.toml
+dist/

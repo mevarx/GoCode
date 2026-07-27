@@ -15,7 +15,6 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// GatewayProxyProvider implements Provider for OpenAI-compatible gateway proxies and APIs.
 type GatewayProxyProvider struct {
 	name   string
 	cfg    config.GatewayConfig

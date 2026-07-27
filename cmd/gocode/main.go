@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,6 +22,7 @@ var (
 	flagModel    string
 	flagConfig   string
 	flagTUI      bool
+	flagVerbose  bool
 )
 
 func main() {
@@ -31,10 +33,13 @@ func main() {
 		RunE:  runAgent,
 	}
 
+	rootCmd.Version = "0.1.0"
+
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider to use")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model to use")
 	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
 	rootCmd.Flags().BoolVar(&flagTUI, "tui", true, "Enable rich TUI (set --tui=false for plain mode)")
+	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable debug logging")
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
@@ -72,6 +77,10 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
+	if flagVerbose {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -151,7 +160,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return tui.Run(ctx, providerRegistry, session, toolRegistry, approval)
 	}
 
-	// plain mode: use --tui=false
 	loop := agent.NewAgentLoop(providerRegistry, session, toolRegistry, approval)
 	return loop.Run(ctx)
 }

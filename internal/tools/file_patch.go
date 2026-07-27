@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// FilePatchTool replaces text occurrences in a file after approval.
 type FilePatchTool struct{}
 
 type filePatchArgs struct {

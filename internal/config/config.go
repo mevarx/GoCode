@@ -7,14 +7,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config represents top-level configuration options.
 type Config struct {
 	Provider ProviderConfig `toml:"provider"`
 	Approval ApprovalConfig `toml:"approval"`
 	Session  SessionConfig  `toml:"session"`
 }
 
-// ProviderConfig specifies provider settings.
 type ProviderConfig struct {
 	Default    string        `toml:"default"`
 	Ollama     OllamaConfig  `toml:"ollama"`
@@ -28,7 +26,6 @@ type ProviderConfig struct {
 	Kimi       GatewayConfig `toml:"kimi"`
 }
 
-// GatewayConfig configures an OpenAI-compatible gateway or cloud provider endpoint.
 type GatewayConfig struct {
 	BaseURL      string `toml:"base_url"`
 	APIKey       string `toml:"api_key"`
@@ -36,26 +33,22 @@ type GatewayConfig struct {
 	DefaultModel string `toml:"default_model"`
 }
 
-// OllamaConfig configures local Ollama instance.
 type OllamaConfig struct {
 	Host         string `toml:"host"`
 	DefaultModel string `toml:"default_model"`
 }
 
-// ApprovalConfig specifies tool approval thresholds.
 type ApprovalConfig struct {
 	AutoApproveReads  bool `toml:"auto_approve_reads"`
 	AutoApproveWrites bool `toml:"auto_approve_writes"`
 	AutoApproveShell  bool `toml:"auto_approve_shell"`
 }
 
-// SessionConfig specifies session settings.
 type SessionConfig struct {
 	Persist    bool   `toml:"persist"`
 	HistoryDir string `toml:"history_dir"`
 }
 
-// DefaultConfig returns default configuration values.
 func DefaultConfig() Config {
 	return Config{
 		Provider: ProviderConfig{
@@ -117,7 +110,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// Load reads configuration from file or returns defaults if non-existent.
 func Load() (Config, error) {
 	cfg := DefaultConfig()
 

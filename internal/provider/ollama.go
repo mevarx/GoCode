@@ -8,13 +8,11 @@ import (
 	"github.com/ollama/ollama/api"
 )
 
-// OllamaProvider implements Provider for local Ollama instances.
 type OllamaProvider struct {
 	client *api.Client
 	host   string
 }
 
-// NewOllamaProvider initializes an OllamaProvider instance.
 func NewOllamaProvider(host string) (*OllamaProvider, error) {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -27,12 +25,10 @@ func NewOllamaProvider(host string) (*OllamaProvider, error) {
 	}, nil
 }
 
-// Name returns the provider identifier.
 func (o *OllamaProvider) Name() string {
 	return "ollama"
 }
 
-// Models lists available local Ollama models.
 func (o *OllamaProvider) Models(ctx context.Context) ([]string, error) {
 	resp, err := o.client.List(ctx)
 	if err != nil {
@@ -46,7 +42,6 @@ func (o *OllamaProvider) Models(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-// Stream sends a chat completion request to Ollama and streams response chunks.
 func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error) {
 	ollamaMessages := make([]api.Message, 0, len(history))
 	for _, msg := range history {

@@ -4,12 +4,10 @@ import (
 	"github.com/mevarx/GoCode/internal/provider"
 )
 
-// ContextManager handles context window management and message truncation.
 type ContextManager struct {
 	MaxTokens int
 }
 
-// NewContextManager creates a context manager with the specified token limit.
 func NewContextManager(maxTokens int) *ContextManager {
 	if maxTokens <= 0 {
 		maxTokens = 8192
@@ -19,7 +17,6 @@ func NewContextManager(maxTokens int) *ContextManager {
 	}
 }
 
-// EstimateTokens calculates an estimated token count for a message.
 func (cm *ContextManager) EstimateTokens(msg provider.Message) int {
 	tokens := len(msg.Content)/4 + 4
 
@@ -33,7 +30,6 @@ func (cm *ContextManager) EstimateTokens(msg provider.Message) int {
 	return tokens
 }
 
-// EstimateHistoryTokens returns the total estimated tokens for message history.
 func (cm *ContextManager) EstimateHistoryTokens(history []provider.Message) int {
 	total := 0
 	for _, msg := range history {
@@ -42,7 +38,6 @@ func (cm *ContextManager) EstimateHistoryTokens(history []provider.Message) int 
 	return total
 }
 
-// Truncate removes oldest non-system messages until token count is within MaxTokens.
 func (cm *ContextManager) Truncate(history []provider.Message) []provider.Message {
 	if cm.EstimateHistoryTokens(history) <= cm.MaxTokens {
 		return history

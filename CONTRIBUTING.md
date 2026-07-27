@@ -135,17 +135,15 @@ All tools must implement the `tools.Tool` interface defined in [`internal/tools/
 
 ```go
 type Tool interface {
-    Name() string
-    Description() string
-    Parameters() map[string]any
+    Spec() ToolSpec
+    Execute(ctx context.Context, args json.RawMessage) (Result, error)
     RequiresApproval() bool
-    Execute(ctx context.Context, args map[string]any) (string, error)
 }
 ```
 
 1. Create a new file in `internal/tools/your_tool.go`.
-2. Implement `Name`, `Description`, `Parameters`, `RequiresApproval`, and `Execute`.
-3. Register your tool in [`cmd/gocode/main.go`](file:///d:/CODING/GoCode/cmd/gocode/main.go):
+2. Implement `Spec()` (returns name, description, JSON schema parameters), `Execute()`, and `RequiresApproval()`.
+3. Register your tool in [`cmd/gocode/main.go`](cmd/gocode/main.go):
    ```go
    toolRegistry.Register(&tools.YourTool{})
    ```
@@ -153,18 +151,19 @@ type Tool interface {
 
 ### Adding a New Provider
 
-Providers must implement the `provider.Provider` interface in [`internal/provider/registry.go`](file:///d:/CODING/GoCode/internal/provider/registry.go):
+Providers must implement the `provider.Provider` interface in [`internal/provider/provider.go`](internal/provider/provider.go):
 
 ```go
 type Provider interface {
     Name() string
-    StreamResponse(ctx context.Context, req StreamRequest, callback func(chunk string) error) error
+    Models(ctx context.Context) ([]string, error)
+    Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error)
 }
 ```
 
 1. Create a new file in `internal/provider/your_provider.go`.
-2. Implement streaming communication with the backend API.
-3. Register the provider in [`cmd/gocode/main.go`](file:///d:/CODING/GoCode/cmd/gocode/main.go).
+2. Implement `Name()`, `Models()`, and `Stream()` with streaming communication to your backend API.
+3. Register the provider in [`cmd/gocode/main.go`](cmd/gocode/main.go).
 
 ---
 

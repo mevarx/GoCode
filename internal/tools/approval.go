@@ -9,13 +9,10 @@ import (
 	"strings"
 )
 
-// ApprovalGate intercepts tool executions requiring user confirmation.
 type ApprovalGate struct {
-	// override to skip stdin (e.g. in TUI mode)
 	OnPresent func(toolName string, args json.RawMessage, preview string) (bool, error)
 }
 
-// NewApprovalGate creates a new ApprovalGate.
 func NewApprovalGate() *ApprovalGate {
 	return &ApprovalGate{}
 }
