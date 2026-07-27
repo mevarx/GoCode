@@ -110,19 +110,24 @@ go run ./cmd/gocode/ --provider ollama --model codellama
 
 GoCode follows standard Go layout patterns:
 
-```
+```text
 gocode/
+├── .github/              # GitHub Actions workflows & PR/issue templates
 ├── cmd/
-│   └── gocode/           # Main entry point (Cobra CLI)
+│   └── gocode/           # Main entry point (Cobra CLI & doctor subcommand)
 ├── internal/
 │   ├── agent/            # Core agent loop, conversation history, context management
 │   ├── config/           # Configuration management (TOML, XDG paths)
 │   ├── provider/         # LLM Provider interfaces and implementations (Ollama, etc.)
-│   └── tools/            # Tool interfaces, approval gate, and tool implementations
-├── go.mod                # Module dependencies
-├── go.sum
+│   ├── tools/            # Tool interfaces, approval gate, and tool implementations
+│   └── tui/              # Interactive TUI (Bubble Tea model, styles & approval modal)
+├── .goreleaser.yaml      # GoReleaser release configuration
 ├── CONTRIBUTING.md       # Contribution guide
-└── README.md             # Project overview & quickstart
+├── LICENSE               # MIT License
+├── Makefile              # Build, test, and release targets
+├── README.md             # Project overview & quickstart
+├── go.mod                # Module dependencies
+└── go.sum                # Module checksums
 ```
 
 ---

@@ -271,15 +271,22 @@ Yes, GoCode is 100% free and open-source software licensed under the MIT License
 
 ```text
 gocode/
+├── .github/              # GitHub Actions workflows & PR/issue templates
 ├── cmd/
-│   └── gocode/           # CLI entry point, flag parsing, doctor subcommand
+│   └── gocode/           # CLI entry point, flag parsing & doctor subcommand
 ├── internal/
 │   ├── agent/            # Core agent loop, session memory & slash command router
 │   ├── config/           # Platform directory management & TOML configuration parser
 │   ├── provider/         # Unified provider registry (Ollama, OpenAI-compatible, Anthropic native)
-│   └── tools/            # Tool registry, shell execution, patch engine & approval gates
+│   ├── tools/            # Tool registry, shell execution, patch engine & approval gates
+│   └── tui/              # Interactive TUI (Bubble Tea model, styles & approval prompts)
+├── .goreleaser.yaml      # GoReleaser release configuration
+├── CONTRIBUTING.md       # Contribution guide
+├── LICENSE               # MIT License
+├── Makefile              # Build, test, and release targets
+├── README.md             # Documentation
 ├── go.mod                # Module definition
-└── README.md             # Documentation
+└── go.sum                # Module checksums
 ```
 
 ---
