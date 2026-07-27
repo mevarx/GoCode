@@ -13,12 +13,14 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/tools"
+	"github.com/mevarx/GoCode/internal/tui"
 )
 
 var (
 	flagProvider string
 	flagModel    string
 	flagConfig   string
+	flagTUI      bool
 )
 
 func main() {
@@ -32,6 +34,7 @@ func main() {
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider to use")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model to use")
 	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
+	rootCmd.Flags().BoolVar(&flagTUI, "tui", true, "Enable rich TUI (set --tui=false for plain mode)")
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
@@ -132,7 +135,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	approval := tools.NewApprovalGate()
 
 	session := agent.NewSession(model)
-	loop := agent.NewAgentLoop(providerRegistry, session, toolRegistry, approval)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -141,11 +143,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Println("\nInterrupted. Goodbye!")
 		cancel()
 		os.Exit(0)
 	}()
 
+	if flagTUI {
+		return tui.Run(ctx, providerRegistry, session, toolRegistry, approval)
+	}
+
+	// plain mode: use --tui=false
+	loop := agent.NewAgentLoop(providerRegistry, session, toolRegistry, approval)
 	return loop.Run(ctx)
 }
 

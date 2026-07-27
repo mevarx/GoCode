@@ -11,7 +11,8 @@ import (
 
 // ApprovalGate intercepts tool executions requiring user confirmation.
 type ApprovalGate struct {
-	OnPresent func(toolName string, args json.RawMessage, preview string) string
+	// override to skip stdin (e.g. in TUI mode)
+	OnPresent func(toolName string, args json.RawMessage, preview string) (bool, error)
 }
 
 // NewApprovalGate creates a new ApprovalGate.
@@ -19,8 +20,10 @@ func NewApprovalGate() *ApprovalGate {
 	return &ApprovalGate{}
 }
 
-// RequestApproval prompts the user via stdin for tool execution approval.
 func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, preview string) (bool, error) {
+	if g.OnPresent != nil {
+		return g.OnPresent(toolName, args, preview)
+	}
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Printf("🔧 Tool: %s\n", toolName)
@@ -53,7 +56,6 @@ func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, pr
 	return response == "y" || response == "yes", nil
 }
 
-// WrapExecution handles approval checking and execution for a tool.
 func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.RawMessage) (Result, error) {
 	if !tool.RequiresApproval() {
 		return tool.Execute(ctx, args)
