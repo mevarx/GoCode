@@ -66,6 +66,7 @@ func DefaultConfig() Config {
 			},
 			OmniRoute: GatewayConfig{
 				BaseURL:      "http://127.0.0.1:20128/v1",
+				APIKeyEnv:    "OMNIROUTE_API_KEY",
 				DefaultModel: "auto",
 			},
 			OpenAI: GatewayConfig{
