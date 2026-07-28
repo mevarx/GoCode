@@ -11,7 +11,9 @@ import (
 	"time"
 )
 
-type ShellExecTool struct{}
+type ShellExecTool struct {
+	Timeout time.Duration
+}
 
 type shellExecArgs struct {
 	Command string `json:"command"`
@@ -48,7 +50,12 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		return Result{Error: "command cannot be empty"}, nil
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	timeout := s.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var cmd *exec.Cmd

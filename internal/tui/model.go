@@ -426,6 +426,8 @@ func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 			select {
 			case req := <-bridge.RequestCh:
 				return approvalRequestMsg{req: req}
+			case <-bridge.Done():
+				return tickMsg(time.Now())
 			case <-ticker.C:
 				return tickMsg(time.Now())
 			}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -136,7 +137,15 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	toolRegistry := tools.NewRegistry()
-	toolRegistry.Register(&tools.ShellExecTool{})
+	var shellTimeout time.Duration
+	if cfg.Tools.ShellTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Tools.ShellTimeout); err == nil {
+			shellTimeout = d
+		} else {
+			slog.Warn("invalid tools.shell_timeout, using default 30s", "value", cfg.Tools.ShellTimeout, "error", err)
+		}
+	}
+	toolRegistry.Register(&tools.ShellExecTool{Timeout: shellTimeout})
 	toolRegistry.Register(&tools.FileReadTool{})
 	toolRegistry.Register(&tools.FileWriteTool{})
 	toolRegistry.Register(&tools.FilePatchTool{})

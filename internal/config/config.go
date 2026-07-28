@@ -7,12 +7,15 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// Config represents top-level configuration options.
 type Config struct {
 	Provider ProviderConfig `toml:"provider"`
 	Approval ApprovalConfig `toml:"approval"`
 	Session  SessionConfig  `toml:"session"`
+	Tools    ToolsConfig    `toml:"tools"`
 }
 
+// ProviderConfig specifies provider settings.
 type ProviderConfig struct {
 	Default    string        `toml:"default"`
 	Ollama     OllamaConfig  `toml:"ollama"`
@@ -26,6 +29,7 @@ type ProviderConfig struct {
 	Kimi       GatewayConfig `toml:"kimi"`
 }
 
+// GatewayConfig configures an OpenAI-compatible gateway or cloud provider endpoint.
 type GatewayConfig struct {
 	BaseURL      string `toml:"base_url"`
 	APIKey       string `toml:"api_key"`
@@ -33,22 +37,30 @@ type GatewayConfig struct {
 	DefaultModel string `toml:"default_model"`
 }
 
+// OllamaConfig configures local Ollama instance.
 type OllamaConfig struct {
 	Host         string `toml:"host"`
 	DefaultModel string `toml:"default_model"`
 }
 
+// ApprovalConfig specifies tool approval thresholds.
 type ApprovalConfig struct {
 	AutoApproveReads  bool `toml:"auto_approve_reads"`
 	AutoApproveWrites bool `toml:"auto_approve_writes"`
 	AutoApproveShell  bool `toml:"auto_approve_shell"`
 }
 
+// SessionConfig specifies session settings.
 type SessionConfig struct {
 	Persist    bool   `toml:"persist"`
 	HistoryDir string `toml:"history_dir"`
 }
 
+type ToolsConfig struct {
+	ShellTimeout string `toml:"shell_timeout"`
+}
+
+// DefaultConfig returns default configuration values.
 func DefaultConfig() Config {
 	return Config{
 		Provider: ProviderConfig{
@@ -59,7 +71,6 @@ func DefaultConfig() Config {
 			},
 			OmniRoute: GatewayConfig{
 				BaseURL:      "http://127.0.0.1:20128/v1",
-				APIKeyEnv:    "OMNIROUTE_API_KEY",
 				DefaultModel: "auto",
 			},
 			OpenAI: GatewayConfig{
@@ -107,9 +118,13 @@ func DefaultConfig() Config {
 			Persist:    true,
 			HistoryDir: SessionDir(),
 		},
+		Tools: ToolsConfig{
+			ShellTimeout: "30s",
+		},
 	}
 }
 
+// Load reads configuration from file or returns defaults if non-existent.
 func Load() (Config, error) {
 	cfg := DefaultConfig()
 

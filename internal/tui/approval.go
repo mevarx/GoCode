@@ -13,11 +13,26 @@ type ApprovalRequest struct {
 
 type ApprovalBridge struct {
 	RequestCh chan ApprovalRequest
+	done      chan struct{}
 }
 
 func NewApprovalBridge() *ApprovalBridge {
 	return &ApprovalBridge{
 		RequestCh: make(chan ApprovalRequest, 1),
+		done:      make(chan struct{}),
+	}
+}
+
+func (b *ApprovalBridge) Done() <-chan struct{} {
+	return b.done
+}
+
+func (b *ApprovalBridge) Respond() {
+	select {
+	case <-b.done:
+		// already closed
+	default:
+		close(b.done)
 	}
 }
 
