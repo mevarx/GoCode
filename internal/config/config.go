@@ -57,7 +57,11 @@ type SessionConfig struct {
 }
 
 type ToolsConfig struct {
-	ShellTimeout string `toml:"shell_timeout"`
+	Shell ShellConfig `toml:"shell"`
+}
+
+type ShellConfig struct {
+	TimeoutSeconds int `toml:"timeout_seconds"`
 }
 
 // DefaultConfig returns default configuration values.
@@ -119,7 +123,9 @@ func DefaultConfig() Config {
 			HistoryDir: SessionDir(),
 		},
 		Tools: ToolsConfig{
-			ShellTimeout: "30s",
+			Shell: ShellConfig{
+				TimeoutSeconds: 30,
+			},
 		},
 	}
 }

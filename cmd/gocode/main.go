@@ -137,14 +137,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	toolRegistry := tools.NewRegistry()
-	var shellTimeout time.Duration
-	if cfg.Tools.ShellTimeout != "" {
-		if d, err := time.ParseDuration(cfg.Tools.ShellTimeout); err == nil {
-			shellTimeout = d
-		} else {
-			slog.Warn("invalid tools.shell_timeout, using default 30s", "value", cfg.Tools.ShellTimeout, "error", err)
-		}
-	}
+	shellTimeout := time.Duration(cfg.Tools.Shell.TimeoutSeconds) * time.Second
 	toolRegistry.Register(&tools.ShellExecTool{Timeout: shellTimeout})
 	toolRegistry.Register(&tools.FileReadTool{})
 	toolRegistry.Register(&tools.FileWriteTool{})
