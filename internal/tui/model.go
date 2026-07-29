@@ -412,9 +412,7 @@ func (m Model) listenOutput() tea.Cmd {
 
 func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case req := <-bridge.RequestCh:
-			return approvalRequestMsg{req: req}
-		}
+		req := <-bridge.RequestCh
+		return approvalRequestMsg{req: req}
 	}
 }
