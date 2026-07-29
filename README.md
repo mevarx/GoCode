@@ -244,6 +244,9 @@ default_model = "auto"
 auto_approve_reads = true
 auto_approve_writes = false
 auto_approve_shell = false
+
+[tools.shell]
+timeout_seconds = 30  # Maximum seconds a shell command may run before being killed
 ```
 
 ---

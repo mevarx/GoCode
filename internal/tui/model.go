@@ -194,10 +194,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenOutput())
 
 	case approvalRequestMsg:
+		if m.approvalActive {
+			return m, pollApproval(m.bridge)
+		}
 		m.approvalActive = true
 		m.approvalReq = msg.req
 		m.approvalFocus = 0
-		cmds = append(cmds, pollApproval(m.bridge))
+		return m, pollApproval(m.bridge)
 
 	case spinner.TickMsg:
 		var spinCmd tea.Cmd
@@ -412,7 +415,6 @@ func (m Model) listenOutput() tea.Cmd {
 
 func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 	return func() tea.Msg {
-		req := <-bridge.RequestCh
-		return approvalRequestMsg{req: req}
+		return approvalRequestMsg{req: <-bridge.RequestCh}
 	}
 }
