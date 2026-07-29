@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -37,7 +36,6 @@ type agentToolMsg struct {
 	isError bool
 }
 type approvalRequestMsg struct{ req ApprovalRequest }
-type tickMsg time.Time
 
 type Model struct {
 	width  int
@@ -201,14 +199,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalFocus = 0
 
 	case spinner.TickMsg:
-		if m.streaming {
-			var spinCmd tea.Cmd
-			m.spinner, spinCmd = m.spinner.Update(msg)
-			cmds = append(cmds, spinCmd)
-		}
-
-	case tickMsg:
-		cmds = append(cmds, pollApproval(m.bridge))
+		var spinCmd tea.Cmd
+		m.spinner, spinCmd = m.spinner.Update(msg)
+		cmds = append(cmds, spinCmd)
 	}
 
 	if !m.approvalActive {
@@ -220,10 +213,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	cmds = append(cmds, vpCmd)
-
-	if m.streaming {
-		cmds = append(cmds, m.spinner.Tick)
-	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -422,17 +411,11 @@ func (m Model) listenOutput() tea.Cmd {
 
 func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 	return func() tea.Msg {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case req := <-bridge.RequestCh:
-				return approvalRequestMsg{req: req}
-			case <-bridge.Done():
-				return tickMsg(time.Now())
-			case <-ticker.C:
-				return tickMsg(time.Now())
-			}
+		select {
+		case req := <-bridge.RequestCh:
+			return approvalRequestMsg{req: req}
+		case <-bridge.Done():
+			return nil
 		}
 	}
 }

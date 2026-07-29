@@ -24,11 +24,14 @@ func Run(
 	approval.OnPresent = bridge.RequestApproval
 
 	inputCh := make(chan string, 1)
-	outputCh := make(chan tea.Msg, 32)
+	outputCh := make(chan tea.Msg, 256)
+
+	tuiCtx, tuiCancel := context.WithCancel(ctx)
+	defer tuiCancel()
 
 	m := NewModel(registry.ActiveName(), session.Model(), "0.1.0", bridge, inputCh, outputCh)
 
-	go runAgentGoroutine(ctx, registry, session, toolRegistry, approval, inputCh, outputCh)
+	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
@@ -36,7 +39,15 @@ func Run(
 	)
 
 	_, err := p.Run()
+	tuiCancel()
 	return err
+}
+
+func sendMsg(ctx context.Context, outputCh chan<- tea.Msg, msg tea.Msg) {
+	select {
+	case outputCh <- msg:
+	case <-ctx.Done():
+	}
 }
 
 func runAgentGoroutine(
@@ -56,16 +67,16 @@ func runAgentGoroutine(
 			return
 		case input := <-inputCh:
 			if handled := handleSlashCommand(ctx, input, registry, session, outputCh); handled {
-				outputCh <- agentDoneMsg{}
+				sendMsg(ctx, outputCh, agentDoneMsg{})
 				continue
 			}
 
 			session.AddMessage(provider.Message{Role: "user", Content: input})
 
 			if err := runTurn(ctx, registry, session, toolRegistry, approval, toolSpecs, outputCh); err != nil {
-				outputCh <- agentDoneMsg{err: err}
+				sendMsg(ctx, outputCh, agentDoneMsg{err: err})
 			} else {
-				outputCh <- agentDoneMsg{}
+				sendMsg(ctx, outputCh, agentDoneMsg{})
 			}
 		}
 	}
@@ -94,10 +105,13 @@ func runTurn(
 		}
 		if chunk.Delta != "" {
 			fullResponse.WriteString(chunk.Delta)
-			outputCh <- agentChunkMsg{delta: chunk.Delta}
+			sendMsg(ctx, outputCh, agentChunkMsg{delta: chunk.Delta})
 		}
 		if len(chunk.ToolCalls) > 0 {
 			toolCalls = append(toolCalls, chunk.ToolCalls...)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 	}
 
@@ -125,6 +139,10 @@ func handleToolCalls(
 	outputCh chan<- tea.Msg,
 ) error {
 	for _, tc := range toolCalls {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		tool := toolRegistry.Get(tc.Name)
 		if tool == nil {
 			errMsg := fmt.Sprintf("unknown tool %q", tc.Name)
@@ -133,7 +151,7 @@ func handleToolCalls(
 				Content:    "Error: " + errMsg,
 				ToolCallID: tc.ID,
 			})
-			outputCh <- agentToolMsg{name: tc.Name, result: errMsg, isError: true}
+			sendMsg(ctx, outputCh, agentToolMsg{name: tc.Name, result: errMsg, isError: true})
 			continue
 		}
 
@@ -145,7 +163,7 @@ func handleToolCalls(
 				Content:    errContent,
 				ToolCallID: tc.ID,
 			})
-			outputCh <- agentToolMsg{name: tc.Name, result: errContent, isError: true}
+			sendMsg(ctx, outputCh, agentToolMsg{name: tc.Name, result: errContent, isError: true})
 			continue
 		}
 
@@ -166,7 +184,7 @@ func handleToolCalls(
 		if len(display) > 2000 {
 			display = display[:2000] + "\n… (truncated)"
 		}
-		outputCh <- agentToolMsg{name: tc.Name, result: display, isError: result.Error != ""}
+		sendMsg(ctx, outputCh, agentToolMsg{name: tc.Name, result: display, isError: result.Error != ""})
 	}
 
 	return runTurn(ctx, registry, session, toolRegistry, approval, toolSpecs, outputCh)
@@ -184,7 +202,7 @@ func handleSlashCommand(
 	switch {
 	case lower == "/clear":
 		session.Clear()
-		outputCh <- agentToolMsg{name: "Session", result: "cleared"}
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Session", result: "cleared"})
 		return true
 
 	case lower == "/providers" || lower == "/provider":
@@ -192,15 +210,15 @@ func handleSlashCommand(
 		if models, err := registry.Active().Models(ctx); err == nil && len(models) > 0 {
 			info += "\nModels: " + strings.Join(models, ", ")
 		}
-		outputCh <- agentToolMsg{name: "Providers", result: info}
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Providers", result: info})
 		return true
 
 	case strings.HasPrefix(lower, "/provider "):
 		target := strings.TrimSpace(input[10:])
 		if err := registry.Switch(target); err != nil {
-			outputCh <- agentToolMsg{name: "Provider", result: fmt.Sprintf("error: %v", err), isError: true}
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Provider", result: fmt.Sprintf("error: %v", err), isError: true})
 		} else {
-			outputCh <- agentToolMsg{name: "Provider", result: fmt.Sprintf("switched to %s", target)}
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Provider", result: fmt.Sprintf("switched to %s", target)})
 		}
 		return true
 
@@ -209,13 +227,13 @@ func handleSlashCommand(
 		if models, err := registry.Active().Models(ctx); err == nil && len(models) > 0 {
 			info += "\nAvailable: " + strings.Join(models, ", ")
 		}
-		outputCh <- agentToolMsg{name: "Model", result: info}
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: info})
 		return true
 
 	case strings.HasPrefix(lower, "/model "):
 		target := strings.TrimSpace(input[7:])
 		session.SetModel(target)
-		outputCh <- agentToolMsg{name: "Model", result: fmt.Sprintf("set to %s", target)}
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: fmt.Sprintf("set to %s", target)})
 		return true
 	}
 
