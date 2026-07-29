@@ -26,7 +26,7 @@ func Run(
 	inputCh := make(chan string, 1)
 	outputCh := make(chan tea.Msg, 32)
 
-	m := NewModel(registry.ActiveName(), session.Model(), bridge, inputCh, outputCh)
+	m := NewModel(registry.ActiveName(), session.Model(), "0.1.0", bridge, inputCh, outputCh)
 
 	go runAgentGoroutine(ctx, registry, session, toolRegistry, approval, inputCh, outputCh)
 

@@ -53,6 +53,7 @@ type Model struct {
 
 	providerName string
 	modelName    string
+	version      string
 	streaming    bool
 	spinner      spinner.Model
 
@@ -65,7 +66,7 @@ type Model struct {
 	outputCh chan tea.Msg
 }
 
-func NewModel(providerName, modelName string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg) Model {
+func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -84,6 +85,7 @@ func NewModel(providerName, modelName string, bridge *ApprovalBridge, inputCh ch
 		spinner:      sp,
 		providerName: providerName,
 		modelName:    modelName,
+		version:      version,
 		bridge:       bridge,
 		inputCh:      inputCh,
 		outputCh:     outputCh,
@@ -297,7 +299,7 @@ func (m *Model) renderInputArea() string {
 
 func (m *Model) renderMessages() string {
 	if len(m.messages) == 0 {
-		return systemStyle.Render("  Welcome to GoCode! Type a message to begin.\n")
+		return renderBanner(m.providerName, m.modelName, m.version, m.width)
 	}
 	parts := make([]string, 0, len(m.messages)*3)
 	for _, msg := range m.messages {
