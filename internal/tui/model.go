@@ -197,6 +197,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalActive = true
 		m.approvalReq = msg.req
 		m.approvalFocus = 0
+		cmds = append(cmds, pollApproval(m.bridge))
 
 	case spinner.TickMsg:
 		var spinCmd tea.Cmd
@@ -414,8 +415,6 @@ func pollApproval(bridge *ApprovalBridge) tea.Cmd {
 		select {
 		case req := <-bridge.RequestCh:
 			return approvalRequestMsg{req: req}
-		case <-bridge.Done():
-			return nil
 		}
 	}
 }
