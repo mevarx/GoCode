@@ -44,7 +44,7 @@ type Model struct {
 
 	viewport  viewport.Model
 	messages  []ChatMessage
-	streamBuf strings.Builder
+	streamBuf *strings.Builder
 
 	textarea textarea.Model
 	focused  bool
@@ -79,6 +79,7 @@ func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, i
 	sp.Style = lipgloss.NewStyle().Foreground(colorWarning)
 
 	return Model{
+		streamBuf:    &strings.Builder{},
 		textarea:     ta,
 		spinner:      sp,
 		providerName: providerName,
