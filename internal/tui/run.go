@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mevarx/GoCode/internal/agent"
@@ -29,7 +30,28 @@ func Run(
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
 
-	m := NewModel(registry.ActiveName(), session.Model(), "0.1.0", bridge, inputCh, outputCh)
+	var pickerItems []list.Item
+	for _, pName := range registry.List() {
+		p := registry.Get(pName)
+		if p != nil {
+			if models, err := p.Models(ctx); err == nil && len(models) > 0 {
+				for _, m := range models {
+					pickerItems = append(pickerItems, ModelItem{
+						Provider: pName,
+						Model:    m,
+					})
+				}
+			}
+		}
+	}
+	if len(pickerItems) == 0 {
+		pickerItems = append(pickerItems, ModelItem{
+			Provider: registry.ActiveName(),
+			Model:    session.Model(),
+		})
+	}
+
+	m := NewModel(registry.ActiveName(), session.Model(), "0.2.0", bridge, inputCh, outputCh, pickerItems)
 
 	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh)
 
@@ -91,41 +113,45 @@ func runTurn(
 	toolSpecs []provider.ToolSpec,
 	outputCh chan<- tea.Msg,
 ) error {
-	ch, err := registry.Active().Stream(ctx, session.Model(), session.History(), toolSpecs)
-	if err != nil {
-		return fmt.Errorf("stream error: %w", err)
+	for {
+		ch, err := registry.Active().Stream(ctx, session.Model(), session.History(), toolSpecs)
+		if err != nil {
+			return fmt.Errorf("stream error: %w", err)
+		}
+
+		var fullResponse strings.Builder
+		var toolCalls []provider.ToolCall
+
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return fmt.Errorf("stream chunk error: %w", chunk.Err)
+			}
+			if chunk.Delta != "" {
+				fullResponse.WriteString(chunk.Delta)
+				sendMsg(ctx, outputCh, agentChunkMsg{delta: chunk.Delta})
+			}
+			if len(chunk.ToolCalls) > 0 {
+				toolCalls = append(toolCalls, chunk.ToolCalls...)
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+
+		session.AddMessage(provider.Message{
+			Role:      "assistant",
+			Content:   fullResponse.String(),
+			ToolCalls: toolCalls,
+		})
+
+		if len(toolCalls) == 0 {
+			return nil
+		}
+
+		if err := handleToolCalls(ctx, toolCalls, toolRegistry, approval, session, outputCh); err != nil {
+			return err
+		}
 	}
-
-	var fullResponse strings.Builder
-	var toolCalls []provider.ToolCall
-
-	for chunk := range ch {
-		if chunk.Err != nil {
-			return fmt.Errorf("stream chunk error: %w", chunk.Err)
-		}
-		if chunk.Delta != "" {
-			fullResponse.WriteString(chunk.Delta)
-			sendMsg(ctx, outputCh, agentChunkMsg{delta: chunk.Delta})
-		}
-		if len(chunk.ToolCalls) > 0 {
-			toolCalls = append(toolCalls, chunk.ToolCalls...)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-	}
-
-	session.AddMessage(provider.Message{
-		Role:      "assistant",
-		Content:   fullResponse.String(),
-		ToolCalls: toolCalls,
-	})
-
-	if len(toolCalls) > 0 {
-		return handleToolCalls(ctx, toolCalls, toolRegistry, approval, session, registry, toolSpecs, outputCh)
-	}
-
-	return nil
 }
 
 func handleToolCalls(
@@ -134,8 +160,6 @@ func handleToolCalls(
 	toolRegistry *tools.Registry,
 	approval *tools.ApprovalGate,
 	session *agent.Session,
-	registry *provider.Registry,
-	toolSpecs []provider.ToolSpec,
 	outputCh chan<- tea.Msg,
 ) error {
 	for _, tc := range toolCalls {
@@ -187,7 +211,7 @@ func handleToolCalls(
 		sendMsg(ctx, outputCh, agentToolMsg{name: tc.Name, result: display, isError: result.Error != ""})
 	}
 
-	return runTurn(ctx, registry, session, toolRegistry, approval, toolSpecs, outputCh)
+	return nil
 }
 
 func handleSlashCommand(
@@ -202,7 +226,101 @@ func handleSlashCommand(
 	switch {
 	case lower == "/clear":
 		session.Clear()
+		projCtx, _, _ := agent.FindProjectContext("")
+		globCtx, _, _ := agent.LoadGlobalContext()
+		session.AddMessage(provider.Message{
+			Role:    "system",
+			Content: agent.BuildSystemPrompt(projCtx, globCtx),
+		})
 		sendMsg(ctx, outputCh, agentToolMsg{name: "Session", result: "cleared"})
+		return true
+
+	case lower == "/new":
+		st := session.Store()
+		if st != nil {
+			rec, err := st.CreateSession("", "", registry.ActiveName(), session.Model())
+			if err == nil {
+				session.SetID(rec.ID)
+				session.Clear()
+				projCtx, _, _ := agent.FindProjectContext("")
+				globCtx, _, _ := agent.LoadGlobalContext()
+				session.AddMessage(provider.Message{
+					Role:    "system",
+					Content: agent.BuildSystemPrompt(projCtx, globCtx),
+				})
+				sendMsg(ctx, outputCh, agentToolMsg{name: "Session", result: fmt.Sprintf("Started new session: %s", rec.ID)})
+				return true
+			}
+		}
+		session.Clear()
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Session", result: "Started new session"})
+		return true
+
+	case lower == "/sessions":
+		st := session.Store()
+		if st == nil {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: "Session store is not enabled.", isError: true})
+			return true
+		}
+		summaries, err := st.ListSessions(20)
+		if err != nil {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: fmt.Sprintf("Error: %v", err), isError: true})
+			return true
+		}
+		if len(summaries) == 0 {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: "No saved sessions found."})
+			return true
+		}
+		var sb strings.Builder
+		sb.WriteString("Saved Sessions:\n")
+		for _, sum := range summaries {
+			activeMarker := "  "
+			if sum.ID == session.ID() {
+				activeMarker = "* "
+			}
+			sb.WriteString(fmt.Sprintf("%s%-22s | %-9s | %-12s | %2d msgs | %s\n",
+				activeMarker, sum.ID, sum.Provider, sum.Model, sum.MessageCount, sum.UpdatedAt.Local().Format("Jan 02 15:04")))
+		}
+		sb.WriteString("\nResume with: /sessions <id> or /resume <id>")
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: sb.String()})
+		return true
+
+	case strings.HasPrefix(lower, "/sessions ") || strings.HasPrefix(lower, "/resume "):
+		targetID := strings.TrimSpace(input[strings.Index(input, " "):])
+		st := session.Store()
+		if st == nil {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: "Session store is not enabled.", isError: true})
+			return true
+		}
+		rec, err := st.GetSession(targetID)
+		if err != nil || rec == nil {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Sessions", result: fmt.Sprintf("Session %q not found.", targetID), isError: true})
+			return true
+		}
+		session.SetID(rec.ID)
+		session.SetProvider(rec.Provider)
+		session.SetModel(rec.Model)
+		session.LoadMessages(rec.Messages)
+		if rec.Provider != "" {
+			_ = registry.Switch(rec.Provider)
+		}
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Session", result: fmt.Sprintf("Resumed session %s (%d messages, model: %s/%s)", rec.ID, len(rec.Messages), rec.Provider, rec.Model)})
+		return true
+
+	case strings.HasPrefix(lower, "/commit"):
+		msg := strings.TrimSpace(strings.TrimPrefix(input, "/commit"))
+		if msg == "" {
+			msg = "Changes assisted by GoCode"
+		}
+		files := session.ModifiedFiles()
+		if len(files) == 0 {
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Git Attribution", result: "No modified files tracked in this session."})
+			return true
+		}
+		trailer := fmt.Sprintf("Assisted-by: GoCode:%s", session.Model())
+		fullCommitMsg := fmt.Sprintf("%s\n\n%s", msg, trailer)
+		info := fmt.Sprintf("Modified files (%d):\n%s\n\nCommit trailer:\n%s", len(files), strings.Join(files, "\n"), fullCommitMsg)
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Git Attribution", result: info})
 		return true
 
 	case lower == "/providers" || lower == "/provider":
@@ -218,6 +336,7 @@ func handleSlashCommand(
 		if err := registry.Switch(target); err != nil {
 			sendMsg(ctx, outputCh, agentToolMsg{name: "Provider", result: fmt.Sprintf("error: %v", err), isError: true})
 		} else {
+			session.SetProvider(target)
 			sendMsg(ctx, outputCh, agentToolMsg{name: "Provider", result: fmt.Sprintf("switched to %s", target)})
 		}
 		return true
@@ -234,6 +353,23 @@ func handleSlashCommand(
 		target := strings.TrimSpace(input[7:])
 		session.SetModel(target)
 		sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: fmt.Sprintf("set to %s", target)})
+		return true
+
+	case lower == "/help":
+		help := "Available commands:\n" +
+			"  /sessions        — list saved sessions\n" +
+			"  /sessions <id>   — resume session by ID\n" +
+			"  /new             — start a new session\n" +
+			"  /commit [msg]    — commit modified files with attribution trailer\n" +
+			"  /providers       — list all providers and models\n" +
+			"  /provider <name> — switch provider\n" +
+			"  /model           — show current model\n" +
+			"  /model <name>    — switch model\n" +
+			"  /clear           — clear conversation history\n" +
+			"  /help            — show this help\n" +
+			"  Ctrl+L           — open interactive model picker\n" +
+			"  exit             — quit GoCode"
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Help", result: help})
 		return true
 	}
 

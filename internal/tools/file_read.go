@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-type FileReadTool struct{}
+type FileReadTool struct {
+	IgnoreMatcher ignore.Matcher
+}
 
 type fileReadArgs struct {
 	Path string `json:"path"`
@@ -55,6 +60,10 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 		return Result{Error: fmt.Sprintf("cannot access file: %v", err)}, nil
 	}
 
+	if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, info.IsDir()) {
+		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
+	}
+
 	if info.IsDir() {
 		entries, err := os.ReadDir(path)
 		if err != nil {
@@ -63,6 +72,10 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 
 		var listing []string
 		for _, entry := range entries {
+			entryPath := filepath.Join(path, entry.Name())
+			if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(entryPath, entry.IsDir()) {
+				continue
+			}
 			prefix := "  "
 			if entry.IsDir() {
 				prefix = "📁"
@@ -89,12 +102,5 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 }
 
 func joinLines(lines []string) string {
-	result := ""
-	for i, line := range lines {
-		if i > 0 {
-			result += "\n"
-		}
-		result += line
-	}
-	return result
+	return strings.Join(lines, "\n")
 }

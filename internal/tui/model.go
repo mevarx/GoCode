@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -55,6 +56,9 @@ type Model struct {
 	streaming    bool
 	spinner      spinner.Model
 
+	modelPickerActive bool
+	modelPicker       list.Model
+
 	approvalActive bool
 	approvalReq    ApprovalRequest
 	approvalFocus  int
@@ -64,7 +68,7 @@ type Model struct {
 	outputCh chan tea.Msg
 }
 
-func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg) Model {
+func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, pickerItems []list.Item) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -78,6 +82,8 @@ func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, i
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colorWarning)
 
+	picker := NewModelPicker(pickerItems, 80, 24)
+
 	return Model{
 		streamBuf:    &strings.Builder{},
 		textarea:     ta,
@@ -85,6 +91,7 @@ func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, i
 		providerName: providerName,
 		modelName:    modelName,
 		version:      version,
+		modelPicker:  picker,
 		bridge:       bridge,
 		inputCh:      inputCh,
 		outputCh:     outputCh,
@@ -124,13 +131,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = vpH
 		}
 		m.textarea.SetWidth(msg.Width - 4)
+		m.modelPicker.SetWidth(msg.Width - 10)
+		m.modelPicker.SetHeight(msg.Height - 6)
 
 	case tea.KeyMsg:
+		if m.modelPickerActive {
+			switch msg.Type {
+			case tea.KeyCtrlL, tea.KeyEsc:
+				m.modelPickerActive = false
+				return m, nil
+			case tea.KeyEnter:
+				if !m.modelPicker.SettingFilter() {
+					if sel := m.modelPicker.SelectedItem(); sel != nil {
+						if item, ok := sel.(ModelItem); ok {
+							m.providerName = item.Provider
+							m.modelName = item.Model
+							m.modelPickerActive = false
+							inputCh := m.inputCh
+							go func() {
+								inputCh <- "/provider " + item.Provider
+								inputCh <- "/model " + item.Model
+							}()
+							return m, m.listenOutput()
+						}
+					}
+				}
+			}
+			var pCmd tea.Cmd
+			m.modelPicker, pCmd = m.modelPicker.Update(msg)
+			return m, pCmd
+		}
+
 		if m.approvalActive {
 			return m.updateApproval(msg), nil
 		}
 
 		switch msg.Type {
+		case tea.KeyCtrlL:
+			m.modelPickerActive = true
+			m.modelPicker.SetWidth(m.width - 10)
+			m.modelPicker.SetHeight(m.height - 6)
+			return m, nil
+
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 
@@ -262,11 +304,15 @@ func (m Model) View() string {
 		m.renderStatusBar(),
 		m.viewport.View(),
 		m.renderInputArea(),
-		inputHintStyle.Render(" Enter: send  Shift+Enter: newline  Ctrl+C: quit  PgUp/PgDn: scroll"),
+		inputHintStyle.Render(" Enter: send  Shift+Enter: newline  Ctrl+L: models  Ctrl+C: quit  PgUp/PgDn: scroll"),
 	)
 
 	if m.approvalActive {
 		return placeModal(base, m.renderApprovalModal(), m.width, m.height)
+	}
+
+	if m.modelPickerActive {
+		return placeModal(base, modalOverlayStyle.Render(m.modelPicker.View()), m.width, m.height)
 	}
 
 	return base

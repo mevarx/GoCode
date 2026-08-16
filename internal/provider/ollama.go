@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/ollama/ollama/api"
 )
@@ -14,6 +15,10 @@ type OllamaProvider struct {
 }
 
 func NewOllamaProvider(host string) (*OllamaProvider, error) {
+	if host != "" {
+		os.Setenv("OLLAMA_HOST", host)
+	}
+
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ollama client: %w", err)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -25,7 +26,12 @@ func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProx
 	return &GatewayProxyProvider{
 		name:   name,
 		cfg:    cfg,
-		client: &http.Client{Timeout: 120 * time.Second},
+		client: &http.Client{
+			Transport: &http.Transport{
+				DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout: 15 * time.Second,
+			},
+		},
 	}
 }
 
@@ -246,17 +252,18 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				var finalToolCalls []ToolCall
-				for _, pt := range pendingTools {
-					finalToolCalls = append(finalToolCalls, ToolCall{
-						ID:   pt.id,
-						Name: pt.name,
-						Args: json.RawMessage(pt.args.String()),
-					})
-				}
-				ch <- StreamChunk{
-					ToolCalls: finalToolCalls,
-					Done:      true,
+				if len(pendingTools) > 0 {
+					var finalToolCalls []ToolCall
+					for _, pt := range pendingTools {
+						finalToolCalls = append(finalToolCalls, ToolCall{
+							ID:   pt.id,
+							Name: pt.name,
+							Args: json.RawMessage(pt.args.String()),
+						})
+					}
+					ch <- StreamChunk{ToolCalls: finalToolCalls, Done: true}
+				} else {
+					ch <- StreamChunk{Done: true}
 				}
 				return
 			}

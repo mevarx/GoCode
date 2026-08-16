@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	colorBg        = lipgloss.AdaptiveColor{Light: "#f5f5f5", Dark: "#0d1117"}
@@ -146,9 +150,5 @@ func separator(width int) string {
 	if width < 1 {
 		width = 1
 	}
-	line := ""
-	for i := 0; i < width; i++ {
-		line += "─"
-	}
-	return separatorStyle.Render(line)
+	return separatorStyle.Render(strings.Repeat("─", width))
 }

@@ -242,3 +242,102 @@ func TestToolRegistry(t *testing.T) {
 		t.Errorf("expected 2 specs, got %d", len(specs))
 	}
 }
+
+func TestApprovalGate_Permissions(t *testing.T) {
+	gate := NewApprovalGateWithPermissions([]string{"file_write"}, []string{"shell_exec"})
+
+	if !gate.IsAutoApproved("file_write") {
+		t.Error("expected file_write to be auto-approved")
+	}
+	if !gate.IsDenied("shell_exec") {
+		t.Error("expected shell_exec to be denied")
+	}
+
+	writeTool := &FileWriteTool{}
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "auto.txt")
+	args, _ := json.Marshal(fileWriteArgs{Path: path, Content: "auto content"})
+
+	res, err := gate.WrapExecution(context.Background(), writeTool, args)
+	if err != nil || res.Error != "" {
+		t.Fatalf("unexpected error on auto-approved tool: %v, res: %+v", err, res)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "auto content" {
+		t.Errorf("expected file to be written")
+	}
+
+	shellTool := &ShellExecTool{}
+	shellArgs, _ := json.Marshal(shellExecArgs{Command: "echo denied"})
+	resDenied, err := gate.WrapExecution(context.Background(), shellTool, shellArgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(resDenied.Error, "denied by permissions") {
+		t.Errorf("expected denied error message, got %q", resDenied.Error)
+	}
+}
+
+type dummyIgnoreMatcher struct {
+	ignoredPaths map[string]bool
+}
+
+func (d *dummyIgnoreMatcher) IsIgnored(path string, isDir bool) bool {
+	return d.ignoredPaths[path]
+}
+
+func TestTools_IgnoreRules(t *testing.T) {
+	tmpDir := t.TempDir()
+	secretFile := filepath.Join(tmpDir, "secret.key")
+	_ = os.WriteFile(secretFile, []byte("supersecret"), 0o644)
+
+	matcher := &dummyIgnoreMatcher{ignoredPaths: map[string]bool{secretFile: true}}
+
+	readTool := &FileReadTool{IgnoreMatcher: matcher}
+	args, _ := json.Marshal(fileReadArgs{Path: secretFile})
+	res, _ := readTool.Execute(context.Background(), args)
+	if !strings.Contains(res.Error, "ignored by ignore rules") {
+		t.Errorf("expected file_read to block ignored file, got: %s", res.Error)
+	}
+
+	writeTool := &FileWriteTool{IgnoreMatcher: matcher}
+	writeArgs, _ := json.Marshal(fileWriteArgs{Path: secretFile, Content: "new"})
+	resW, _ := writeTool.Execute(context.Background(), writeArgs)
+	if !strings.Contains(resW.Error, "ignored by ignore rules") {
+		t.Errorf("expected file_write to block ignored file, got: %s", resW.Error)
+	}
+
+	patchTool := &FilePatchTool{IgnoreMatcher: matcher}
+	patchArgs, _ := json.Marshal(filePatchArgs{Path: secretFile, Find: "secret", Replace: "pub"})
+	resP, _ := patchTool.Execute(context.Background(), patchArgs)
+	if !strings.Contains(resP.Error, "ignored by ignore rules") {
+		t.Errorf("expected file_patch to block ignored file, got: %s", resP.Error)
+	}
+}
+
+func TestTools_OnModified(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "tracked.txt")
+
+	var modified []string
+	onMod := func(p string) {
+		modified = append(modified, p)
+	}
+
+	writeTool := &FileWriteTool{OnModified: onMod}
+	wArgs, _ := json.Marshal(fileWriteArgs{Path: filePath, Content: "initial"})
+	_, _ = writeTool.Execute(context.Background(), wArgs)
+
+	if len(modified) != 1 || modified[0] != filePath {
+		t.Errorf("expected onModified to be called for write, got %+v", modified)
+	}
+
+	patchTool := &FilePatchTool{OnModified: onMod}
+	pArgs, _ := json.Marshal(filePatchArgs{Path: filePath, Find: "initial", Replace: "updated"})
+	_, _ = patchTool.Execute(context.Background(), pArgs)
+
+	if len(modified) != 2 {
+		t.Errorf("expected onModified to be called for patch, got %+v", modified)
+	}
+}
+

@@ -35,22 +35,20 @@ GoCode — Terminal Coding Agent
 Provider: gemini | Model: gemini-2.5-flash
 Tools: shell_exec, file_read, file_write, file_patch
 Type your message (or 'exit' to quit)
-──────────────────────────────────────────────────
-
-> Refactor main.go to use context timeouts and add unit tests
-```
-
----
-
-## Features
+───────────────────────────────────�## Features
 
 - **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies.
 - **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama (`codellama`, `llama3.3`, `deepseek-coder`, `qwen2.5-coder`, etc.).
+- **SQLite Session Persistence** — Automatically saves and resumes sessions across terminal restarts with zero configuration via pure Go SQLite (`modernc.org/sqlite`).
+- **Project Context Auto-Loading (`AGENTS.md`)** — Scans CWD and parent hierarchies for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md` and prepends context to the agent prompt.
+- **Global Context Support (`CONTEXT.md`)** — Reads user-wide conventions from `~/.config/gocode/CONTEXT.md` (or `%APPDATA%\gocode\CONTEXT.md`).
+- **`.gocodeignore` Security Filtering** — Uses `go-git` ignore engine to protect sensitive files and directories before any tool can read, write, or patch them.
+- **Granular Tool Permissions** — Configure `auto_approve` and `deny` lists in `config.toml` for hands-free automation or locked-down security.
+- **Model Context Protocol (MCP) Stdio Client** — Seamlessly connect standard MCP servers (`gocode mcp add/list/remove`) and merge their tools into the agent.
+- **Interactive TUI Model Picker (`Ctrl+L`)** — Fuzzy-search and switch across all available models from all registered providers instantly.
+- **Git Attribution & Session Tracking** — Tracks modified files during coding sessions and formats commit trailers (`Assisted-by: GoCode:<model>`).
+- **Diagnostics & Streaming Logs** — Built-in `gocode doctor` health checks and `gocode logs --tail N --follow` file log streaming.
 - **9 Multi-Provider Gateways** — Connect to **Ollama**, **OpenAI**, **Google Gemini**, **Anthropic Claude**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, and **OmniRoute**.
-- **Human-in-the-Loop Approval Gate** — Safety-first architecture requiring explicit confirmation before executing terminal commands or modifying files.
-- **On-the-Fly Switching** — Switch providers or models dynamically inside an active terminal session using `/provider` and `/model` commands.
-- **Built-in Diagnostic Doctor** — Instantly check API key configurations, network reachability, and model availability with `gocode doctor`.
-- **Autonomous Tool Execution** — Equipped with `file_read`, `file_write`, `file_patch`, and `shell_exec` tools for full-lifecycle coding assistance.
 
 ---
 
@@ -79,7 +77,7 @@ cd gocode
 # Build executable
 go build -o gocode ./cmd/gocode/
 
-# Run GoCode
+# Run GoCode (auto-resumes last session by default)
 ./gocode
 ```
 
@@ -103,91 +101,104 @@ GoCode supports **9 AI model providers and gateway proxies** out of the box. Sel
 | **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
 | **Ollama (Local)** | `ollama` | *None (Local Server)* | *Auto-detected* | `http://localhost:11434` |
 
-### Usage Examples
+### CLI Flags & Session Management
 
 ```bash
-# 1. Run local LLM with Ollama (Default)
-gocode --provider ollama --model deepseek-coder
+# 1. Start a fresh session (ignoring previous session)
+gocode --new
 
-# 2. Run with Google Gemini API
-export GEMINI_API_KEY="your-gemini-api-key"
-gocode --provider gemini --model gemini-2.5-flash
+# 2. Resume a specific session by ID
+gocode --session sess_20260815190405_a1b2c3d4
 
-# 3. Run with Anthropic Claude API
-export ANTHROPIC_API_KEY="sk-ant-api..."
-gocode --provider anthropic --model claude-3-5-sonnet-20241022
+# 3. Launch plain non-TUI terminal mode
+gocode --tui=false
 
-# 4. Run with OpenAI API
-export OPENAI_API_KEY="sk-..."
-gocode --provider openai --model gpt-4o
-
-# 5. Run with Groq ultra-fast inference
-export GROQ_API_KEY="gsk_..."
-gocode --provider groq --model llama-3.3-70b-versatile
-
-# 6. Run with OpenRouter gateway
-export OPENROUTER_API_KEY="sk-or-..."
-gocode --provider openrouter
-
-# 7. Run with Qwen (Aliyun DashScope)
-export DASHSCOPE_API_KEY="sk-..."
-gocode --provider qwen
-
-# 8. Run with Kimi (Moonshot AI)
-export MOONSHOT_API_KEY="sk-..."
-gocode --provider kimi
+# 4. Enable verbose debug logging
+gocode -v
 ```
 
 ### In-Session Terminal Slash Commands
 
 Control GoCode dynamically without restarting your session:
 
-- `/providers` — View active provider and list all available model endpoints.
-- `/provider <name>` — Switch active provider (e.g. `/provider gemini` or `/provider ollama`).
-- `/model <name>` — Change model on the fly (e.g. `/model gpt-4o-mini`).
-- `/clear` — Clear conversation history while retaining system instructions.
-- `exit` or `quit` — Exit the agent session.
+| Slash Command | Description |
+| :--- | :--- |
+| `/sessions` | List saved sessions with timestamps, message counts, and active markers |
+| `/sessions <id>` or `/resume <id>` | Switch to and resume an existing session history |
+| `/new` | Start a fresh session and clear current context |
+| `/commit [message]` | Stage and commit session modified files with `Assisted-by: GoCode:<model>` trailer |
+| `/providers` | View active provider and list all available model endpoints |
+| `/provider <name>` | Switch active provider (e.g. `/provider gemini` or `/provider ollama`) |
+| `/model` | Show current active model |
+| `/model <name>` | Change model on the fly (e.g. `/model gpt-4o-mini`) |
+| `Ctrl+L` *(TUI)* | Open interactive fuzzy model search picker |
+| `/clear` | Clear conversation history while retaining system instructions |
+| `/help` | Display help and available commands |
+| `exit` or `quit` | Exit the agent session |
 
-### Provider Diagnostic Check (`gocode doctor`)
+---
 
-Run `gocode doctor` to inspect network reachability, API key validation, and model discovery for all 9 providers:
+## Model Context Protocol (MCP) Support
+
+Extend GoCode with any external MCP server over `stdio` JSON-RPC 2.0:
 
 ```bash
-gocode doctor
+# Add an MCP server
+gocode mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /path/to/repo
+
+# List configured MCP servers
+gocode mcp list
+
+# Remove an MCP server
+gocode mcp remove filesystem
 ```
 
----
-
-## GoCode vs. Other AI Coding Agents
-
-| Feature | GoCode | Cursor | Aider | GitHub Copilot CLI |
-| :--- | :---: | :---: | :---: | :---: |
-| **Open Source** | MIT (Open Source) | Proprietary | Apache-2.0 | Proprietary |
-| **Language & Runtime** | Native Go Binary | Electron / TS | Python Runtime | Node.js / CLI |
-| **Local LLM Support (Ollama)** | Built-in | Limited | Yes | Cloud-only |
-| **Cloud Providers Supported** | 9 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
-| **Human Approval Control** | Explicit Gate | Semi-auto | Auto/Prompt | Auto |
-| **Memory Footprint** | Extremely Low (<20MB) | High (Electron) | Moderate (Python) | Moderate (Node) |
+MCP tools are automatically registered into the agent's tool catalog upon startup.
 
 ---
 
-## Tools & Security Architecture
+## Project Context (`AGENTS.md`) & Global Context (`CONTEXT.md`)
 
-GoCode operates under a strict **Human-in-the-Loop Security Architecture**. The agent cannot mutate your workspace or run commands without explicit terminal authorization.
+- **Project Context**: When launching in any workspace, GoCode automatically traverses the current directory and all parent folders searching for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md`. If found, its instructions are injected under `## Project Context`.
+- **Global Context**: Create `~/.config/gocode/CONTEXT.md` (or `%APPDATA%\gocode\CONTEXT.md` on Windows) for global rules across all repositories (e.g., coding preferences, language versions).
 
-| Tool Name | Purpose & Function | Approval Gate |
-| :--- | :--- | :---: |
-| `file_read` | Inspect file contents and workspace context | Automatic |
-| `file_write` | Create new files or overwrite existing files | **Requires Confirmation (y/n)** |
-| `file_patch` | Perform target string replacements & targeted code edits | **Requires Confirmation (y/n)** |
-| `shell_exec` | Run terminal commands (builds, tests, git operations) | **Requires Confirmation (y/n)** |
+---
+
+## `.gocodeignore` File Filtering
+
+Create a `.gocodeignore` file in your repository root to prevent GoCode tools from reading, writing, or listing sensitive files:
+
+```gitignore
+# .gocodeignore
+.env*
+secrets/
+*.pem
+*.key
+credentials.json
+```
+
+If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
+
+---
+
+## Logs & Diagnostics
+
+```bash
+# Diagnostic health check of all configured providers
+gocode doctor
+
+# View the last 50 log lines
+gocode logs --tail 50
+
+# Continuously follow live log output
+gocode logs --follow
+```
 
 ---
 
 ## Configuration Guide
 
-GoCode reads configuration options from standard platform paths:
-
+Configuration is stored at:
 - **Linux / macOS**: `~/.config/gocode/config.toml`
 - **Windows**: `%APPDATA%\gocode\config.toml`
 
@@ -195,7 +206,7 @@ GoCode reads configuration options from standard platform paths:
 
 ```toml
 [provider]
-default = "gemini"  # Default provider: ollama | omniroute | openai | gemini | groq | openrouter | anthropic | qwen | kimi
+default = "gemini"  # ollama | omniroute | openai | gemini | groq | openrouter | anthropic | qwen | kimi
 
 [provider.ollama]
 host = "http://localhost:11434"
@@ -240,9 +251,17 @@ default_model = "moonshot-v1-8k"
 base_url = "http://localhost:20128/v1"
 default_model = "auto"
 
-[approval]
-auto_approve_reads = true
-auto_approve_writes = false
+[permissions]
+auto_approve = ["file_read"]  # Tools that execute without interactive confirmation
+deny = []                     # Tools that are permanently blocked
+
+[tools.shell]
+timeout_seconds = 30          # Shell execution timeout in seconds
+
+[mcp.servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```ites = false
 auto_approve_shell = false
 
 [tools.shell]

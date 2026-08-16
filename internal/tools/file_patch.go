@@ -7,9 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-type FilePatchTool struct{}
+type FilePatchTool struct {
+	IgnoreMatcher ignore.Matcher
+	OnModified    func(path string)
+}
 
 type filePatchArgs struct {
 	Path    string `json:"path"`
@@ -61,6 +66,10 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	path := filepath.Clean(a.Path)
 
+	if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
+		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -81,6 +90,10 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
+	}
+
+	if f.OnModified != nil {
+		f.OnModified(path)
 	}
 
 	result := Result{

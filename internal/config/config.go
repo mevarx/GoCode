@@ -3,16 +3,19 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
 
 // Config represents top-level configuration options.
 type Config struct {
-	Provider ProviderConfig `toml:"provider"`
-	Approval ApprovalConfig `toml:"approval"`
-	Session  SessionConfig  `toml:"session"`
-	Tools    ToolsConfig    `toml:"tools"`
+	Provider    ProviderConfig    `toml:"provider"`
+	Approval    ApprovalConfig    `toml:"approval"`
+	Permissions PermissionsConfig `toml:"permissions"`
+	Session     SessionConfig     `toml:"session"`
+	Tools       ToolsConfig       `toml:"tools"`
+	MCP         MCPConfig         `toml:"mcp"`
 }
 
 // ProviderConfig specifies provider settings.
@@ -43,11 +46,29 @@ type OllamaConfig struct {
 	DefaultModel string `toml:"default_model"`
 }
 
-// ApprovalConfig specifies tool approval thresholds.
+// ApprovalConfig specifies tool approval thresholds (deprecated in favor of Permissions).
 type ApprovalConfig struct {
 	AutoApproveReads  bool `toml:"auto_approve_reads"`
 	AutoApproveWrites bool `toml:"auto_approve_writes"`
 	AutoApproveShell  bool `toml:"auto_approve_shell"`
+}
+
+// PermissionsConfig specifies granular tool permissions.
+type PermissionsConfig struct {
+	AutoApprove []string `toml:"auto_approve"`
+	Deny        []string `toml:"deny"`
+}
+
+// MCPConfig specifies Model Context Protocol server configurations.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `toml:"servers"`
+}
+
+// MCPServerConfig defines an individual MCP server command and arguments.
+type MCPServerConfig struct {
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env,omitempty"`
 }
 
 // SessionConfig specifies session settings.
@@ -118,6 +139,10 @@ func DefaultConfig() Config {
 			AutoApproveWrites: false,
 			AutoApproveShell:  false,
 		},
+		Permissions: PermissionsConfig{
+			AutoApprove: []string{"file_read"},
+			Deny:        []string{},
+		},
 		Session: SessionConfig{
 			Persist:    true,
 			HistoryDir: SessionDir(),
@@ -126,6 +151,9 @@ func DefaultConfig() Config {
 			Shell: ShellConfig{
 				TimeoutSeconds: 30,
 			},
+		},
+		MCP: MCPConfig{
+			Servers: make(map[string]MCPServerConfig),
 		},
 	}
 }
@@ -151,5 +179,72 @@ func Load() (Config, error) {
 		cfg.Session.HistoryDir = SessionDir()
 	}
 
+	if cfg.MCP.Servers == nil {
+		cfg.MCP.Servers = make(map[string]MCPServerConfig)
+	}
+
 	return cfg, nil
+}
+
+// LoadFromPath reads configuration from a specific file path.
+func LoadFromPath(path string) (Config, error) {
+	cfg := DefaultConfig()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, fmt.Errorf("failed to read config file %s: %w", path, err)
+	}
+
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	}
+
+	if cfg.Session.HistoryDir == "" {
+		cfg.Session.HistoryDir = SessionDir()
+	}
+
+	if cfg.MCP.Servers == nil {
+		cfg.MCP.Servers = make(map[string]MCPServerConfig)
+	}
+
+	return cfg, nil
+}
+
+// Save writes the configuration to the config.toml file.
+func Save(cfg Config) error {
+	path := ConfigFilePath()
+	if err := os.MkdirAll(ConfigDir(), 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+	defer f.Close()
+
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("failed to encode config to TOML: %w", err)
+	}
+
+	return nil
+}
+
+// SaveToPath writes the configuration to a specific file path.
+func SaveToPath(cfg Config, path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+	defer f.Close()
+
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("failed to encode config to TOML: %w", err)
+	}
+
+	return nil
 }

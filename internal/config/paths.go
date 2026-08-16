@@ -46,15 +46,24 @@ func SessionDir() string {
 	return filepath.Join(DataDir(), "sessions")
 }
 
+func LogDir() string {
+	return filepath.Join(DataDir(), "logs")
+}
+
+func LogFilePath() string {
+	return filepath.Join(LogDir(), "gocode.log")
+}
+
 func ConfigFilePath() string {
 	return filepath.Join(ConfigDir(), "config.toml")
 }
 
 func EnsureDirs() error {
-	for _, dir := range []string{ConfigDir(), DataDir(), SessionDir()} {
+	for _, dir := range []string{ConfigDir(), DataDir(), SessionDir(), LogDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+

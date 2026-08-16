@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -25,7 +26,12 @@ func NewAnthropicProvider(cfg config.GatewayConfig) *AnthropicProvider {
 	return &AnthropicProvider{
 		name:   "anthropic",
 		cfg:    cfg,
-		client: &http.Client{Timeout: 120 * time.Second},
+		client: &http.Client{
+			Transport: &http.Transport{
+				DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+				TLSHandshakeTimeout: 15 * time.Second,
+			},
+		},
 	}
 }
 

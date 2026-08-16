@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mevarx/GoCode/internal/config"
@@ -60,9 +61,9 @@ func TestGatewayProxyProvider_UnreachableError(t *testing.T) {
 		t.Fatal("expected error for unreachable gateway, got nil")
 	}
 
-	expectedSubstring := "gateway \"omniroute\" unreachable at http://localhost:59999/v1"
-	if !testing.Verbose() && len(err.Error()) == 0 {
-		t.Fatalf("expected error message containing %q", expectedSubstring)
+	expectedSubstring := `provider "omniroute" unreachable at http://localhost:59999/v1`
+	if !strings.Contains(err.Error(), expectedSubstring) {
+		t.Fatalf("expected error containing %q, got %q", expectedSubstring, err.Error())
 	}
 }
 

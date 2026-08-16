@@ -7,9 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-type FileWriteTool struct{}
+type FileWriteTool struct {
+	IgnoreMatcher ignore.Matcher
+	OnModified    func(path string)
+}
 
 type fileWriteArgs struct {
 	Path    string `json:"path"`
@@ -53,6 +58,10 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	path := filepath.Clean(a.Path)
 
+	if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
+		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
+	}
+
 	var oldContent string
 	existingData, err := os.ReadFile(path)
 	if err == nil {
@@ -68,6 +77,10 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
+	}
+
+	if f.OnModified != nil {
+		f.OnModified(path)
 	}
 
 	return Result{
@@ -94,7 +107,8 @@ func generateUnifiedDiff(filename, oldContent, newContent string) string {
 		diff.WriteString(fmt.Sprintf("+++ %s\n", filename))
 
 		inHunk := false
-		hunkStart := 0
+		oldHunkStart := 0
+		newHunkStart := 0
 		var hunkLines []string
 
 		flushHunk := func() {
@@ -110,7 +124,7 @@ func generateUnifiedDiff(filename, oldContent, newContent string) string {
 						newCount++
 					}
 				}
-				diff.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", hunkStart+1, oldCount, hunkStart+1, newCount))
+				diff.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldHunkStart+1, oldCount, newHunkStart+1, newCount))
 				for _, l := range hunkLines {
 					diff.WriteString(l)
 					diff.WriteString("\n")
@@ -132,10 +146,15 @@ func generateUnifiedDiff(filename, oldContent, newContent string) string {
 					if !inHunk {
 						inHunk = true
 						contextStart := oldIdx - 3
+						newContextStart := newIdx - 3
 						if contextStart < 0 {
 							contextStart = 0
 						}
-						hunkStart = contextStart
+						if newContextStart < 0 {
+							newContextStart = 0
+						}
+						oldHunkStart = contextStart
+						newHunkStart = newContextStart
 						for i := contextStart; i < oldIdx; i++ {
 							hunkLines = append(hunkLines, " "+oldLines[i])
 						}
@@ -148,14 +167,16 @@ func generateUnifiedDiff(filename, oldContent, newContent string) string {
 			} else if oldIdx < len(oldLines) {
 				if !inHunk {
 					inHunk = true
-					hunkStart = oldIdx
+					oldHunkStart = oldIdx
+					newHunkStart = newIdx
 				}
 				hunkLines = append(hunkLines, "-"+oldLines[oldIdx])
 				oldIdx++
 			} else {
 				if !inHunk {
 					inHunk = true
-					hunkStart = newIdx
+					oldHunkStart = oldIdx
+					newHunkStart = newIdx
 				}
 				hunkLines = append(hunkLines, "+"+newLines[newIdx])
 				newIdx++

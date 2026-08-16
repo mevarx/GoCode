@@ -1,6 +1,9 @@
 package provider
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 type Registry struct {
 	providers map[string]Provider
@@ -45,10 +48,24 @@ func (r *Registry) ActiveName() string {
 	return r.active
 }
 
+func (r *Registry) Get(name string) Provider {
+	return r.providers[name]
+}
+
 func (r *Registry) List() []string {
 	names := make([]string, 0, len(r.providers))
 	for k := range r.providers {
 		names = append(names, k)
 	}
 	return names
+}
+
+func (r *Registry) AllModels(ctx context.Context) map[string][]string {
+	result := make(map[string][]string)
+	for name, p := range r.providers {
+		if models, err := p.Models(ctx); err == nil && len(models) > 0 {
+			result[name] = models
+		}
+	}
+	return result
 }
