@@ -195,6 +195,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		slog.Warn("failed to open session store", "path", storePath, "error", err)
 	}
+	if sessionStore != nil {
+		defer sessionStore.Close()
+	}
 
 	var activeSessionRec *session.SessionRecord
 	if sessionStore != nil && !flagNew {
@@ -394,6 +397,9 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read log file %s: %w", logPath, err)
 	}
 
 	start := 0

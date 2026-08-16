@@ -30,7 +30,7 @@ func (cm *ContextManager) EstimateTokens(msg provider.Message) int {
 	return tokens
 }
 
-func (cm *ContextManager) EstimateHistoryTokens(history []provider.Message) int {
+func (cm *ContextManager) estimateHistoryTokens(history []provider.Message) int {
 	total := 0
 	for _, msg := range history {
 		total += cm.EstimateTokens(msg)
@@ -39,7 +39,7 @@ func (cm *ContextManager) EstimateHistoryTokens(history []provider.Message) int 
 }
 
 func (cm *ContextManager) Truncate(history []provider.Message) []provider.Message {
-	if cm.EstimateHistoryTokens(history) <= cm.MaxTokens {
+	if cm.estimateHistoryTokens(history) <= cm.MaxTokens {
 		return history
 	}
 

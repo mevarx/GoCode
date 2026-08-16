@@ -153,6 +153,10 @@ func (c *Client) readLoop() {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		slog.Error("mcp client read loop error", "server", c.command, "error", err)
+	}
+
 	c.mu.Lock()
 	if !c.closed {
 		c.closed = true
@@ -334,6 +338,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	close(c.doneCh)
 
 	if c.stdin != nil {
 		_ = c.stdin.Close()

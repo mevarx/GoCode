@@ -70,11 +70,6 @@ func (s *Session) Store() *session.SessionStore {
 	return s.store
 }
 
-func (s *Session) SetStore(st *session.SessionStore) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.store = st
-}
 
 func (s *Session) AddMessage(msg provider.Message) {
 	s.mu.Lock()
