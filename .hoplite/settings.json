@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "ports": {"preview": 3000, "additional": {}},
+  "scripts": {
+    "setup": {
+      "enabled": true,
+      "command": "export PATH=\"$HOME/.local/share/mise/shims:$PATH\"; command -v go >/dev/null 2>&1 || mise use -g go@1.26.7; command -v git-lfs >/dev/null 2>&1 || (apt-get install -y git-lfs >/dev/null 2>&1 || true); go version"
+    },
+    "run": {"enabled": true, "command": null},
+    "archive": {"enabled": true, "command": null},
+    "check": {"enabled": true, "command": null}
+  },
+  "mcpServers": []
+}

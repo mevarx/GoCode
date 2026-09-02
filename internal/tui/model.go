@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,9 +68,12 @@ type Model struct {
 	bridge   *ApprovalBridge
 	inputCh  chan string
 	outputCh chan tea.Msg
+	cancelCh chan struct{}
+
+	cancelRequested bool
 }
 
-func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, pickerItems []list.Item) Model {
+func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -95,6 +100,7 @@ func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, i
 		bridge:       bridge,
 		inputCh:      inputCh,
 		outputCh:     outputCh,
+		cancelCh:     cancelCh,
 		focused:      true,
 	}
 }
@@ -163,7 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.approvalActive {
-			return m.updateApproval(msg), nil
+			return m.updateApproval(msg)
 		}
 
 		switch msg.Type {
@@ -173,8 +179,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.modelPicker.SetHeight(m.height - 6)
 			return m, nil
 
-		case tea.KeyCtrlC, tea.KeyEsc:
+		case tea.KeyCtrlC:
+			if m.streaming {
+				if m.cancelRequested {
+					return m, tea.Quit
+				}
+				m.cancelRequested = true
+				m.interruptTurn()
+				return m, nil
+			}
 			return m, tea.Quit
+
+		case tea.KeyEsc:
+			if m.streaming {
+				if m.cancelRequested {
+					return m, tea.Quit
+				}
+				m.cancelRequested = true
+				m.interruptTurn()
+				return m, nil
+			}
+			if m.textarea.Value() != "" {
+				m.textarea.Reset()
+			}
+			return m, nil
 
 		case tea.KeyEnter:
 			if m.streaming {
@@ -184,8 +212,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
-			lower := strings.ToLower(input)
-			if lower == "exit" || lower == "quit" {
+			switch strings.ToLower(input) {
+			case "exit", "quit", "/exit", "/quit":
 				return m, tea.Quit
 			}
 			m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: input})
@@ -213,14 +241,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentChunkMsg:
 		m.streamBuf.WriteString(msg.delta)
 		m.setStreamingMessage(m.streamBuf.String())
-		m.viewport.GotoBottom()
+		if m.viewport.AtBottom() {
+			m.viewport.GotoBottom()
+		}
 		cmds = append(cmds, m.listenOutput())
 
 	case agentDoneMsg:
 		m.streaming = false
+		m.cancelRequested = false
 		m.streamBuf.Reset()
 		if msg.err != nil {
-			m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: msg.err.Error()})
+			if errors.Is(msg.err, context.Canceled) {
+				m.addMessage(ChatMessage{Role: RoleSystem, Label: "⏹ Stopped", Content: "generation canceled — enter a new message to continue"})
+			} else {
+				m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: msg.err.Error()})
+			}
 		}
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
@@ -230,7 +265,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		role := RoleTool
 		if msg.isError {
 			role = RoleError
-			label = "✗ " + msg.name
+			label = msg.name
 		}
 		m.addMessage(ChatMessage{Role: role, Label: label, Content: msg.result})
 		m.viewport.GotoBottom()
@@ -264,7 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) updateApproval(msg tea.KeyMsg) tea.Model {
+func (m Model) updateApproval(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyLeft, tea.KeyRight, tea.KeyTab:
 		if m.approvalFocus == 0 {
@@ -291,8 +326,20 @@ func (m Model) updateApproval(msg tea.KeyMsg) tea.Model {
 		m.addMessage(ChatMessage{Role: RoleSystem, Label: "✗ Denied", Content: req.ToolName})
 		m.viewport.GotoBottom()
 		go func() { req.ReplyCh <- false }()
+	case tea.KeyCtrlC:
+		req := m.approvalReq
+		m.approvalActive = false
+		go func() { req.ReplyCh <- false }()
+		return m, tea.Quit
 	}
-	return m
+	return m, nil
+}
+
+func (m *Model) interruptTurn() {
+	select {
+	case m.cancelCh <- struct{}{}:
+	default:
+	}
 }
 
 func (m Model) View() string {
@@ -304,8 +351,13 @@ func (m Model) View() string {
 		m.renderStatusBar(),
 		m.viewport.View(),
 		m.renderInputArea(),
-		inputHintStyle.Render(" Enter: send  Shift+Enter: newline  Ctrl+L: models  Ctrl+C: quit  PgUp/PgDn: scroll"),
 	)
+
+	hint := inputHintStyle.Render(" Enter: send  Shift+Enter: newline  Ctrl+L: models  Ctrl+C: quit  PgUp/PgDn: scroll")
+	if m.streaming {
+		hint = inputHintStyle.Render(" Generating…  Ctrl+C: stop generation (press twice to quit)")
+	}
+	base = lipgloss.JoinVertical(lipgloss.Left, base, hint)
 
 	if m.approvalActive {
 		return placeModal(base, m.renderApprovalModal(), m.width, m.height)
