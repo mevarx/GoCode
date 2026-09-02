@@ -209,11 +209,13 @@ If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
 | `/providers` | View active provider and list all available models |
 | `/provider <name>` | Switch active provider |
 | `/model` | Show current active model |
-| `/model <name>` | Change model on the fly |
+| `/model <name>` | Change model on the fly (validated against the active provider's model list) |
 | `/clear` | Clear conversation history while retaining system instructions |
 | `/help` | Display help and available commands |
 | `Ctrl+L` _(TUI)_ | Open interactive fuzzy model search picker |
-| `exit` or `quit` | Exit the agent session |
+| `Ctrl+C` _(TUI)_ | Stop a running turn; press again (or when idle) to quit |
+| `Esc` _(TUI)_ | Stop a running turn, or clear the current input |
+| `exit`, `quit`, `/exit`, `/quit` | Exit the agent session |
 
 ---
 

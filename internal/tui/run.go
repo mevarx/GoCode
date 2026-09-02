@@ -26,6 +26,7 @@ func Run(
 
 	inputCh := make(chan string, 1)
 	outputCh := make(chan tea.Msg, 256)
+	cancelCh := make(chan struct{}, 1)
 
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
@@ -51,9 +52,9 @@ func Run(
 		})
 	}
 
-	m := NewModel(registry.ActiveName(), session.Model(), "0.2.0", bridge, inputCh, outputCh, pickerItems)
+	m := NewModel(registry.ActiveName(), session.Model(), "0.2.0", bridge, inputCh, outputCh, cancelCh, pickerItems)
 
-	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh)
+	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh, cancelCh)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
@@ -80,6 +81,7 @@ func runAgentGoroutine(
 	approval *tools.ApprovalGate,
 	inputCh <-chan string,
 	outputCh chan<- tea.Msg,
+	cancelCh <-chan struct{},
 ) {
 	toolSpecs := toolSpecsAsProvider(toolRegistry)
 
@@ -88,19 +90,36 @@ func runAgentGoroutine(
 		case <-ctx.Done():
 			return
 		case input := <-inputCh:
-			if handled := handleSlashCommand(ctx, input, registry, session, outputCh); handled {
+			turnCtx, turnCancel := context.WithCancel(ctx)
+			cancelWatcherDone := make(chan struct{})
+			go watchCancelSignal(cancelCh, turnCtx, turnCancel, cancelWatcherDone)
+
+			if handled := handleSlashCommand(turnCtx, input, registry, session, outputCh); handled {
 				sendMsg(ctx, outputCh, agentDoneMsg{})
+				turnCancel()
+				<-cancelWatcherDone
 				continue
 			}
 
 			session.AddMessage(provider.Message{Role: "user", Content: input})
 
-			if err := runTurn(ctx, registry, session, toolRegistry, approval, toolSpecs, outputCh); err != nil {
-				sendMsg(ctx, outputCh, agentDoneMsg{err: err})
-			} else {
-				sendMsg(ctx, outputCh, agentDoneMsg{})
-			}
+			err := runTurn(turnCtx, registry, session, toolRegistry, approval, toolSpecs, outputCh)
+			sendMsg(ctx, outputCh, agentDoneMsg{err: err})
+			turnCancel()
+			<-cancelWatcherDone
 		}
+	}
+}
+
+// watchCancelSignal cancels the active turn when the user interrupts, until
+// the turn itself ends. It must exit before the next turn consumes the next
+// interrupt signal, hence the done channel join.
+func watchCancelSignal(cancelCh <-chan struct{}, turnCtx context.Context, turnCancel context.CancelFunc, done chan<- struct{}) {
+	defer close(done)
+	select {
+	case <-cancelCh:
+		turnCancel()
+	case <-turnCtx.Done():
 	}
 }
 
@@ -136,6 +155,10 @@ func runTurn(
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		session.AddMessage(provider.Message{
@@ -341,16 +364,29 @@ func handleSlashCommand(
 		}
 		return true
 
-	case lower == "/model":
-		info := "Active model: " + session.Model()
-		if models, err := registry.Active().Models(ctx); err == nil && len(models) > 0 {
-			info += "\nAvailable: " + strings.Join(models, ", ")
+	case lower == "/model" || strings.HasPrefix(lower, "/model "):
+		target := strings.TrimSpace(strings.TrimPrefix(lower, "/model"))
+		if target == "" {
+			info := "Active model: " + session.Model()
+			if models, err := registry.Active().Models(ctx); err == nil && len(models) > 0 {
+				info += "\nAvailable: " + strings.Join(models, ", ")
+			}
+			sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: info})
+			return true
 		}
-		sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: info})
-		return true
-
-	case strings.HasPrefix(lower, "/model "):
-		target := strings.TrimSpace(input[7:])
+		if models, err := registry.Active().Models(ctx); err == nil && len(models) > 0 {
+			found := false
+			for _, m := range models {
+				if m == target {
+					found = true
+					break
+				}
+			}
+			if !found {
+				sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: fmt.Sprintf("model %q is not available on %s — available: %s", target, registry.ActiveName(), strings.Join(models, ", ")), isError: true})
+				return true
+			}
+		}
 		session.SetModel(target)
 		sendMsg(ctx, outputCh, agentToolMsg{name: "Model", result: fmt.Sprintf("set to %s", target)})
 		return true
@@ -367,9 +403,17 @@ func handleSlashCommand(
 			"  /model <name>    — switch model\n" +
 			"  /clear           — clear conversation history\n" +
 			"  /help            — show this help\n" +
+			"  /exit            — quit GoCode\n" +
 			"  Ctrl+L           — open interactive model picker\n" +
+			"  Ctrl+C           — stop a running turn, or quit when idle\n" +
+			"  Esc              — stop a running turn, or clear current input\n" +
 			"  exit             — quit GoCode"
 		sendMsg(ctx, outputCh, agentToolMsg{name: "Help", result: help})
+		return true
+	}
+
+	if strings.HasPrefix(lower, "/") {
+		sendMsg(ctx, outputCh, agentToolMsg{name: "Command", result: fmt.Sprintf("Unknown command %q — type /help to see available commands", input), isError: true})
 		return true
 	}
 
