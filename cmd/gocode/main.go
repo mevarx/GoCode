@@ -45,7 +45,7 @@ func main() {
 		RunE:  runAgent,
 	}
 
-	rootCmd.Version = "0.2.0"
+	rootCmd.Version = "0.3.0"
 
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider to use")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model to use")

@@ -52,7 +52,7 @@ func Run(
 		})
 	}
 
-	m := NewModel(registry.ActiveName(), session.Model(), "0.2.0", bridge, inputCh, outputCh, cancelCh, pickerItems)
+	m := NewModel(registry.ActiveName(), session.Model(), "0.3.0", bridge, inputCh, outputCh, cancelCh, pickerItems)
 
 	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh, cancelCh)
 

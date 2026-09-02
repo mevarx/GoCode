@@ -11,7 +11,7 @@ func newTestModel(cancelCh chan struct{}) Model {
 	if cancelCh == nil {
 		cancelCh = make(chan struct{}, 1)
 	}
-	return NewModel("ollama", "llama3", "0.2.0", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
+	return NewModel("ollama", "llama3", "0.3.0", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
 }
 
 func cmdQuits(t *testing.T, cmd tea.Cmd) bool {

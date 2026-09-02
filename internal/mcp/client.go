@@ -272,7 +272,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]string{
 			"name":    "gocode",
-			"version": "0.2.0",
+			"version": "0.3.0",
 		},
 	}
 

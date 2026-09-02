@@ -40,6 +40,13 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **9 Multi-Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, OmniRoute
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
+### v0.3.0 Additions
+
+- **Interruptible Generation** — Cancel turns in progress with `Ctrl+C` or `Esc` without terminating the session
+- **Safer Key Handling** — `Esc` clears textarea when idle; double `Ctrl+C` cleanly exits; `/exit` and `/quit` aliases
+- **Model Validation** — `/model <name>` validates model availability against the active provider before switching
+- **Command Guardrails** — Unrecognized slash commands provide helpful `/help` suggestions instead of querying the model
+- **Smart Viewport Scrolling** — Avoids auto-scroll jumping when reading previous conversation history during streaming
 
 ### v0.2.0 Additions
 
