@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,14 +24,15 @@ type GatewayProxyProvider struct {
 }
 
 func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProxyProvider {
+	baseTransport := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 15 * time.Second,
+	}
 	return &GatewayProxyProvider{
-		name:   name,
-		cfg:    cfg,
+		name: name,
+		cfg:  cfg,
 		client: &http.Client{
-			Transport: &http.Transport{
-				DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
-				TLSHandshakeTimeout: 15 * time.Second,
-			},
+			Transport: NewRetryTransport(baseTransport),
 		},
 	}
 }
@@ -253,12 +255,23 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
 				if len(pendingTools) > 0 {
+					var indices []int
+					for idx := range pendingTools {
+						indices = append(indices, idx)
+					}
+					sort.Ints(indices)
+
 					var finalToolCalls []ToolCall
-					for _, pt := range pendingTools {
+					for _, idx := range indices {
+						pt := pendingTools[idx]
+						argsStr := pt.args.String()
+						if strings.TrimSpace(argsStr) == "" {
+							argsStr = "{}"
+						}
 						finalToolCalls = append(finalToolCalls, ToolCall{
 							ID:   pt.id,
 							Name: pt.name,
-							Args: json.RawMessage(pt.args.String()),
+							Args: json.RawMessage(argsStr),
 						})
 					}
 					ch <- StreamChunk{ToolCalls: finalToolCalls, Done: true}
@@ -305,12 +318,23 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 
 				if choice.FinishReason == "tool_calls" || choice.FinishReason == "stop" {
 					if len(pendingTools) > 0 {
+						var indices []int
+						for idx := range pendingTools {
+							indices = append(indices, idx)
+						}
+						sort.Ints(indices)
+
 						var toolCalls []ToolCall
-						for _, pt := range pendingTools {
+						for _, idx := range indices {
+							pt := pendingTools[idx]
+							argsStr := pt.args.String()
+							if strings.TrimSpace(argsStr) == "" {
+								argsStr = "{}"
+							}
 							toolCalls = append(toolCalls, ToolCall{
 								ID:   pt.id,
 								Name: pt.name,
-								Args: json.RawMessage(pt.args.String()),
+								Args: json.RawMessage(argsStr),
 							})
 						}
 						pendingTools = make(map[int]*pendingToolCall)

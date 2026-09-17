@@ -28,6 +28,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	cfg.Provider.Default = "openai"
 	cfg.Permissions.AutoApprove = []string{"file_read", "file_write"}
 	cfg.Permissions.Deny = []string{"shell_exec"}
+	cfg.Permissions.SensitivePatterns = []string{"*.vault", "custom.env"}
 	cfg.MCP.Servers["test-mcp"] = MCPServerConfig{
 		Command: "node",
 		Args:    []string{"server.js"},
@@ -50,6 +51,9 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if len(loaded.Permissions.Deny) != 1 || loaded.Permissions.Deny[0] != "shell_exec" {
 		t.Errorf("unexpected deny: %+v", loaded.Permissions.Deny)
+	}
+	if len(loaded.Permissions.SensitivePatterns) != 2 || loaded.Permissions.SensitivePatterns[0] != "*.vault" {
+		t.Errorf("unexpected sensitive_patterns: %+v", loaded.Permissions.SensitivePatterns)
 	}
 	if srv, ok := loaded.MCP.Servers["test-mcp"]; !ok || srv.Command != "node" {
 		t.Errorf("expected test-mcp server, got %+v", loaded.MCP.Servers)

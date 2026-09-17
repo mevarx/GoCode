@@ -12,8 +12,10 @@ import (
 )
 
 type FileWriteTool struct {
-	IgnoreMatcher ignore.Matcher
-	OnModified    func(path string)
+	IgnoreMatcher    ignore.Matcher
+	SensitiveMatcher *ignore.SensitiveMatcher
+	WorkspaceRoot    string
+	OnModified       func(path string)
 }
 
 type fileWriteArgs struct {
@@ -31,7 +33,7 @@ func (f *FileWriteTool) Spec() ToolSpec {
 			"properties": {
 				"path": {
 					"type": "string",
-					"description": "Absolute or relative path to the file to write"
+					"description": "Absolute or relative path to the file to write (relative to workspace root)"
 				},
 				"content": {
 					"type": "string",
@@ -46,25 +48,38 @@ func (f *FileWriteTool) RequiresApproval() bool {
 	return true
 }
 
-func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
-	var a fileWriteArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return Result{Error: fmt.Sprintf("invalid arguments: %v", err)}, nil
-	}
-
-	if a.Path == "" {
-		return Result{Error: "path cannot be empty"}, nil
-	}
-
-	path := filepath.Clean(a.Path)
-
-	if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
-		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
+// Preview generates a diff preview of the proposed change WITHOUT modifying
+// any files. This is called before approval.
+func (f *FileWriteTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
+	a, path, err := f.validateArgs(args)
+	if err != nil {
+		return Preview{}, err
 	}
 
 	var oldContent string
-	existingData, err := os.ReadFile(path)
-	if err == nil {
+	existingData, readErr := os.ReadFile(path)
+	if readErr == nil {
+		oldContent = string(existingData)
+	}
+
+	diff := generateUnifiedDiff(path, oldContent, a.Content)
+
+	return Preview{
+		Description: fmt.Sprintf("Write %d bytes to %s", len(a.Content), path),
+		Diff:        diff,
+	}, nil
+}
+
+// Execute writes the file. This is called ONLY after approval.
+func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
+	a, path, err := f.validateArgs(args)
+	if err != nil {
+		return Result{Error: err.Error()}, nil
+	}
+
+	var oldContent string
+	existingData, readErr := os.ReadFile(path)
+	if readErr == nil {
 		oldContent = string(existingData)
 	}
 
@@ -87,6 +102,40 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		Output: fmt.Sprintf("Successfully wrote %d bytes to %s", len(a.Content), path),
 		Diff:   diff,
 	}, nil
+}
+
+func (f *FileWriteTool) validateArgs(args json.RawMessage) (fileWriteArgs, string, error) {
+	var a fileWriteArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return a, "", fmt.Errorf("invalid arguments: %v", err)
+	}
+
+	if a.Path == "" {
+		return a, "", fmt.Errorf("path cannot be empty")
+	}
+
+	// Workspace confinement.
+	path := a.Path
+	if f.WorkspaceRoot != "" {
+		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
+		if err != nil {
+			return a, "", err
+		}
+		path = validatedPath
+	} else {
+		path = filepath.Clean(a.Path)
+	}
+
+	// Check sensitive file protection.
+	if f.SensitiveMatcher != nil {
+		if blocked, reason := f.SensitiveMatcher.ShouldBlock(path, false); blocked {
+			return a, "", fmt.Errorf("%s: %s", path, reason)
+		}
+	} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
+		return a, "", fmt.Errorf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)
+	}
+
+	return a, path, nil
 }
 
 func generateUnifiedDiff(filename, oldContent, newContent string) string {

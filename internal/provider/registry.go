@@ -36,12 +36,12 @@ func (r *Registry) Switch(name string) error {
 	return nil
 }
 
-func (r *Registry) Active() Provider {
+func (r *Registry) Active() (Provider, error) {
 	p, ok := r.providers[r.active]
 	if !ok {
-		panic(fmt.Sprintf("no active provider (active=%q, registered=%d)", r.active, len(r.providers)))
+		return nil, fmt.Errorf("no active provider configured (active=%q, registered=%d)", r.active, len(r.providers))
 	}
-	return p
+	return p, nil
 }
 
 func (r *Registry) ActiveName() string {

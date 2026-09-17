@@ -12,7 +12,9 @@ import (
 )
 
 type ShellExecTool struct {
-	Timeout time.Duration
+	Timeout        time.Duration
+	WorkspaceRoot  string
+	MaxOutputBytes int
 }
 
 type shellExecArgs struct {
@@ -22,7 +24,7 @@ type shellExecArgs struct {
 func (s *ShellExecTool) Spec() ToolSpec {
 	return ToolSpec{
 		Name:        "shell_exec",
-		Description: "Execute a shell command and return its stdout and stderr. Use this to run build commands, tests, list files, inspect the system, etc. The command runs in the user's shell.",
+		Description: "Execute a shell command and return its stdout and stderr. Use this to run build commands, tests, list files, inspect the system, etc. The command runs in the user's shell within the workspace directory.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["command"],
@@ -40,6 +42,31 @@ func (s *ShellExecTool) RequiresApproval() bool {
 	return true
 }
 
+// Preview returns command execution metadata without running the command.
+func (s *ShellExecTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
+	var a shellExecArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return Preview{}, fmt.Errorf("invalid arguments: %v", err)
+	}
+
+	if strings.TrimSpace(a.Command) == "" {
+		return Preview{}, fmt.Errorf("command cannot be empty")
+	}
+
+	timeout := s.timeout()
+	workDir := s.WorkspaceRoot
+	if workDir == "" {
+		workDir = "(current directory)"
+	}
+
+	desc := fmt.Sprintf("Command: %s\nWorking directory: %s\nTimeout: %s", a.Command, workDir, timeout)
+	return Preview{
+		Description: desc,
+		Command:     a.Command,
+		WorkDir:     workDir,
+	}, nil
+}
+
 func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
 	var a shellExecArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -50,11 +77,7 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		return Result{Error: "command cannot be empty"}, nil
 	}
 
-	timeout := s.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
+	timeout := s.timeout()
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -65,22 +88,32 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", a.Command)
 	}
 
+	// Set working directory to workspace root.
+	if s.WorkspaceRoot != "" {
+		cmd.Dir = s.WorkspaceRoot
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
 
+	maxOutput := s.maxOutput()
+	stdoutStr := truncateOutput(stdout.String(), maxOutput)
+	stderrStr := truncateOutput(stderr.String(), maxOutput)
+
 	var output strings.Builder
-	if stdout.Len() > 0 {
-		output.WriteString(stdout.String())
+	if len(stdoutStr) > 0 {
+		output.WriteString("STDOUT:\n")
+		output.WriteString(stdoutStr)
 	}
-	if stderr.Len() > 0 {
+	if len(stderrStr) > 0 {
 		if output.Len() > 0 {
 			output.WriteString("\n")
 		}
 		output.WriteString("STDERR:\n")
-		output.WriteString(stderr.String())
+		output.WriteString(stderrStr)
 	}
 
 	result := Result{
@@ -88,11 +121,39 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	}
 
 	if err != nil {
-		result.Error = fmt.Sprintf("command failed: %v", err)
+		// Distinguish timeout from other errors.
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			result.Error = fmt.Sprintf("command timed out after %s", timeout)
+		} else if ctx.Err() == context.Canceled {
+			result.Error = "command was cancelled"
+		} else {
+			result.Error = fmt.Sprintf("command failed: %v", err)
+		}
 		if output.Len() > 0 {
-			result.Error = fmt.Sprintf("command failed: %v\n%s", err, output.String())
+			result.Error = fmt.Sprintf("%s\n%s", result.Error, output.String())
 		}
 	}
 
 	return result, nil
+}
+
+func (s *ShellExecTool) timeout() time.Duration {
+	if s.Timeout > 0 {
+		return s.Timeout
+	}
+	return 30 * time.Second
+}
+
+func (s *ShellExecTool) maxOutput() int {
+	if s.MaxOutputBytes > 0 {
+		return s.MaxOutputBytes
+	}
+	return 1024 * 1024 // 1MB default
+}
+
+func truncateOutput(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	return s[:maxBytes] + "\n... (output truncated)"
 }

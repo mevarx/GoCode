@@ -55,8 +55,9 @@ type ApprovalConfig struct {
 
 // PermissionsConfig specifies granular tool permissions.
 type PermissionsConfig struct {
-	AutoApprove []string `toml:"auto_approve"`
-	Deny        []string `toml:"deny"`
+	AutoApprove       []string `toml:"auto_approve"`
+	Deny              []string `toml:"deny"`
+	SensitivePatterns []string `toml:"sensitive_patterns"`
 }
 
 // MCPConfig specifies Model Context Protocol server configurations.
@@ -140,8 +141,9 @@ func DefaultConfig() Config {
 			AutoApproveShell:  false,
 		},
 		Permissions: PermissionsConfig{
-			AutoApprove: []string{"file_read"},
-			Deny:        []string{},
+			AutoApprove:       []string{"file_read"},
+			Deny:              []string{},
+			SensitivePatterns: []string{},
 		},
 		Session: SessionConfig{
 			Persist:    true,

@@ -12,8 +12,10 @@ import (
 )
 
 type FilePatchTool struct {
-	IgnoreMatcher ignore.Matcher
-	OnModified    func(path string)
+	IgnoreMatcher    ignore.Matcher
+	SensitiveMatcher *ignore.SensitiveMatcher
+	WorkspaceRoot    string
+	OnModified       func(path string)
 }
 
 type filePatchArgs struct {
@@ -32,7 +34,7 @@ func (f *FilePatchTool) Spec() ToolSpec {
 			"properties": {
 				"path": {
 					"type": "string",
-					"description": "Absolute or relative path to the file to patch"
+					"description": "Absolute or relative path to the file to patch (relative to workspace root)"
 				},
 				"find": {
 					"type": "string",
@@ -51,41 +53,30 @@ func (f *FilePatchTool) RequiresApproval() bool {
 	return true
 }
 
-func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
-	var a filePatchArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return Result{Error: fmt.Sprintf("invalid arguments: %v", err)}, nil
-	}
-
-	if a.Path == "" {
-		return Result{Error: "path cannot be empty"}, nil
-	}
-	if a.Find == "" {
-		return Result{Error: "find string cannot be empty"}, nil
-	}
-
-	path := filepath.Clean(a.Path)
-
-	if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
-		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
-	}
-
-	data, err := os.ReadFile(path)
+// Preview generates a diff preview of the proposed patch WITHOUT modifying
+// any files. This is called before approval.
+func (f *FilePatchTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
+	_, path, oldContent, newContent, count, err := f.computePatch(args)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return Result{Error: fmt.Sprintf("file not found: %s", path)}, nil
-		}
-		return Result{Error: fmt.Sprintf("cannot read file: %v", err)}, nil
+		return Preview{}, err
 	}
 
-	oldContent := string(data)
+	diff := generateUnifiedDiff(path, oldContent, newContent)
+	desc := fmt.Sprintf("Patch %s (%d occurrence(s) of find string, replacing first)", path, count)
 
-	count := strings.Count(oldContent, a.Find)
-	if count == 0 {
-		return Result{Error: fmt.Sprintf("find string not found in %s", path)}, nil
+	return Preview{
+		Description: desc,
+		Diff:        diff,
+	}, nil
+}
+
+// Execute applies the patch. This is called ONLY after approval.
+func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
+	_, path, oldContent, newContent, count, err := f.computePatch(args)
+	if err != nil {
+		return Result{Error: err.Error()}, nil
 	}
 
-	newContent := strings.Replace(oldContent, a.Find, a.Replace, 1)
 	diff := generateUnifiedDiff(path, oldContent, newContent)
 
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
@@ -106,4 +97,58 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	}
 
 	return result, nil
+}
+
+func (f *FilePatchTool) computePatch(args json.RawMessage) (filePatchArgs, string, string, string, int, error) {
+	var a filePatchArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return a, "", "", "", 0, fmt.Errorf("invalid arguments: %v", err)
+	}
+
+	if a.Path == "" {
+		return a, "", "", "", 0, fmt.Errorf("path cannot be empty")
+	}
+	if a.Find == "" {
+		return a, "", "", "", 0, fmt.Errorf("find string cannot be empty")
+	}
+
+	// Workspace confinement.
+	path := a.Path
+	if f.WorkspaceRoot != "" {
+		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
+		if err != nil {
+			return a, "", "", "", 0, err
+		}
+		path = validatedPath
+	} else {
+		path = filepath.Clean(a.Path)
+	}
+
+	// Check sensitive file protection.
+	if f.SensitiveMatcher != nil {
+		if blocked, reason := f.SensitiveMatcher.ShouldBlock(path, false); blocked {
+			return a, "", "", "", 0, fmt.Errorf("%s: %s", path, reason)
+		}
+	} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
+		return a, "", "", "", 0, fmt.Errorf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return a, "", "", "", 0, fmt.Errorf("file not found: %s", path)
+		}
+		return a, "", "", "", 0, fmt.Errorf("cannot read file: %v", err)
+	}
+
+	oldContent := string(data)
+
+	count := strings.Count(oldContent, a.Find)
+	if count == 0 {
+		return a, "", "", "", 0, fmt.Errorf("find string not found in %s", path)
+	}
+
+	newContent := strings.Replace(oldContent, a.Find, a.Replace, 1)
+
+	return a, path, oldContent, newContent, count, nil
 }

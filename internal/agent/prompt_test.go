@@ -35,6 +35,37 @@ func TestBuildSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptWithOptions(t *testing.T) {
+	opts := PromptOptions{
+		ProjectContext: "Custom project rules",
+		GlobalContext:  "Global user style",
+		WorkspaceRoot:  "/workspace/project",
+		OS:             "linux/amd64",
+		Provider:       "anthropic",
+		Model:          "claude-3-7-sonnet",
+	}
+
+	prompt := BuildSystemPromptWithOptions(opts)
+	if !strings.Contains(prompt, "## Environment") {
+		t.Errorf("expected Environment header in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "OS: linux/amd64") {
+		t.Errorf("expected OS info in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Workspace: /workspace/project") {
+		t.Errorf("expected Workspace info in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Provider: anthropic") {
+		t.Errorf("expected Provider info in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Model: claude-3-7-sonnet") {
+		t.Errorf("expected Model info in prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "code_search") {
+		t.Errorf("expected code_search guidance in prompt: %s", prompt)
+	}
+}
+
 func TestFindProjectContext_DirectAndAscending(t *testing.T) {
 	tmpDir := t.TempDir()
 	subDir := filepath.Join(tmpDir, "pkg", "subpkg")

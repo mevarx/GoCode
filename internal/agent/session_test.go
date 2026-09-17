@@ -131,4 +131,3 @@ func TestSession_ModifiedFiles(t *testing.T) {
 		t.Fatalf("expected 0 modified files after clear, got %d", len(s.ModifiedFiles()))
 	}
 }
-

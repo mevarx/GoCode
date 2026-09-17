@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -123,38 +126,55 @@ func (c *Client) Start() error {
 }
 
 func (c *Client) readLoop() {
-	scanner := bufio.NewScanner(c.stdout)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	reader := bufio.NewReaderSize(c.stdout, 10*1024*1024)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	for {
+		b, err := reader.Peek(1)
+		if err != nil {
+			break
 		}
 
-		var resp JSONRPCResponse
-		if err := json.Unmarshal(line, &resp); err != nil {
-			slog.Debug("mcp client received non-jsonrpc line", "line", string(line))
-			continue
-		}
-
-		if resp.ID != nil {
-			c.mu.Lock()
-			ch, ok := c.pending[*resp.ID]
-			if ok {
-				delete(c.pending, *resp.ID)
+		// Check for Content-Length header framing
+		if b[0] == 'C' || b[0] == 'c' {
+			header, err := reader.ReadString('\n')
+			if err != nil {
+				break
 			}
-			c.mu.Unlock()
-
-			if ok {
-				ch <- &resp
+			trimmedHeader := strings.TrimSpace(header)
+			if strings.HasPrefix(strings.ToLower(trimmedHeader), "content-length:") {
+				lenStr := strings.TrimSpace(trimmedHeader[15:])
+				contentLen, parseErr := strconv.Atoi(lenStr)
+				if parseErr == nil && contentLen > 0 {
+					// Read header separator (empty line)
+					for {
+						sep, err := reader.ReadString('\n')
+						if err != nil || strings.TrimSpace(sep) == "" {
+							break
+						}
+					}
+					// Read payload bytes
+					payload := make([]byte, contentLen)
+					_, readErr := io.ReadFull(reader, payload)
+					if readErr != nil {
+						break
+					}
+					c.handleMessage(payload)
+					continue
+				}
 			}
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		slog.Error("mcp client read loop error", "server", c.command, "error", err)
+		// Otherwise, read as newline-delimited JSON
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimSpace(line)
+			if len(line) > 0 {
+				c.handleMessage(line)
+			}
+		}
+		if err != nil {
+			break
+		}
 	}
 
 	c.mu.Lock()
@@ -167,6 +187,27 @@ func (c *Client) readLoop() {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+}
+
+func (c *Client) handleMessage(data []byte) {
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		slog.Debug("mcp client received non-jsonrpc line", "data", string(data))
+		return
+	}
+
+	if resp.ID != nil {
+		c.mu.Lock()
+		ch, ok := c.pending[*resp.ID]
+		if ok {
+			delete(c.pending, *resp.ID)
+		}
+		c.mu.Unlock()
+
+		if ok {
+			ch <- &resp
+		}
+	}
 }
 
 // Call sends a JSON-RPC request and awaits the response.

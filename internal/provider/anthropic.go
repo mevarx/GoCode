@@ -23,14 +23,15 @@ type AnthropicProvider struct {
 }
 
 func NewAnthropicProvider(cfg config.GatewayConfig) *AnthropicProvider {
+	baseTransport := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 15 * time.Second,
+	}
 	return &AnthropicProvider{
-		name:   "anthropic",
-		cfg:    cfg,
+		name: "anthropic",
+		cfg:  cfg,
 		client: &http.Client{
-			Transport: &http.Transport{
-				DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
-				TLSHandshakeTimeout: 15 * time.Second,
-			},
+			Transport: NewRetryTransport(baseTransport),
 		},
 	}
 }
@@ -277,11 +278,15 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 
 			case "content_block_stop":
 				if pt, ok := pendingTools[event.Index]; ok {
+					argsStr := pt.args.String()
+					if strings.TrimSpace(argsStr) == "" {
+						argsStr = "{}"
+					}
 					ch <- StreamChunk{
 						ToolCalls: []ToolCall{{
 							ID:   pt.id,
 							Name: pt.name,
-							Args: json.RawMessage(pt.args.String()),
+							Args: json.RawMessage(argsStr),
 						}},
 					}
 					delete(pendingTools, event.Index)

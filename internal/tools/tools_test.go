@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mevarx/GoCode/internal/ignore"
 )
 
 func TestFileReadTool_Spec(t *testing.T) {
@@ -37,8 +41,35 @@ func TestFileReadTool_Execute(t *testing.T) {
 	if result.Error != "" {
 		t.Fatalf("unexpected result error: %s", result.Error)
 	}
-	if result.Output != content {
-		t.Errorf("expected %q, got %q", content, result.Output)
+	if !strings.Contains(result.Output, content) {
+		t.Errorf("expected output to contain %q, got %q", content, result.Output)
+	}
+}
+
+func TestFileReadTool_OffsetAndLimit(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "multiline.txt")
+	content := "line 1\nline 2\nline 3\nline 4\nline 5"
+	os.WriteFile(testFile, []byte(content), 0o644)
+
+	tool := &FileReadTool{}
+	args, _ := json.Marshal(fileReadArgs{Path: testFile, Offset: 2, Limit: 2})
+
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("unexpected result error: %s", result.Error)
+	}
+	if !strings.Contains(result.Output, "line 2\nline 3") {
+		t.Errorf("expected lines 2 and 3, got %q", result.Output)
+	}
+	if strings.Contains(result.Output, "line 1") || strings.Contains(result.Output, "line 4") {
+		t.Errorf("expected output to only have lines 2 and 3, got %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "lines: 2-3 of 5") {
+		t.Errorf("expected metadata to indicate lines 2-3 of 5, got %q", result.Output)
 	}
 }
 
@@ -225,6 +256,86 @@ func TestShellExecTool_Execute(t *testing.T) {
 	}
 }
 
+func TestShellExecTool_WorkspaceCWD(t *testing.T) {
+	dir := t.TempDir()
+	tool := &ShellExecTool{WorkspaceRoot: dir}
+
+	var cmdStr string
+	if runtime.GOOS == "windows" {
+		cmdStr = "cd"
+	} else {
+		cmdStr = "pwd"
+	}
+	args, _ := json.Marshal(shellExecArgs{Command: cmdStr})
+
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("unexpected result error: %s", result.Error)
+	}
+	// Case-insensitive check for Windows drive letters/paths
+	cleanExpected := filepath.Clean(dir)
+	if !strings.Contains(strings.ToLower(result.Output), strings.ToLower(cleanExpected)) {
+		t.Errorf("expected CWD %q in output, got %q", cleanExpected, result.Output)
+	}
+}
+
+func TestShellExecTool_OutputTruncation(t *testing.T) {
+	tool := &ShellExecTool{MaxOutputBytes: 20}
+	args, _ := json.Marshal(shellExecArgs{Command: "echo 1234567890abcdefghijklmnopqrstuvwxyz"})
+
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Output, "truncated") {
+		t.Errorf("expected output to be truncated, got %q", result.Output)
+	}
+}
+
+func TestShellExecTool_Timeout(t *testing.T) {
+	tool := &ShellExecTool{Timeout: 50 * time.Millisecond}
+	var cmdStr string
+	if runtime.GOOS == "windows" {
+		cmdStr = "ping -n 5 127.0.0.1 > nul"
+	} else {
+		cmdStr = "sleep 2"
+	}
+	args, _ := json.Marshal(shellExecArgs{Command: cmdStr})
+
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Error, "timed out") {
+		t.Errorf("expected timeout error, got %q", result.Error)
+	}
+}
+
+func TestShellExecTool_Cancellation(t *testing.T) {
+	tool := &ShellExecTool{Timeout: 10 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	var cmdStr string
+	if runtime.GOOS == "windows" {
+		cmdStr = "ping -n 5 127.0.0.1 > nul"
+	} else {
+		cmdStr = "sleep 2"
+	}
+	args, _ := json.Marshal(shellExecArgs{Command: cmdStr})
+
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Error, "cancelled") && !strings.Contains(result.Error, "failed") {
+		t.Errorf("expected cancelled error, got %q", result.Error)
+	}
+}
+
 func TestToolRegistry(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(&FileReadTool{})
@@ -341,3 +452,80 @@ func TestTools_OnModified(t *testing.T) {
 	}
 }
 
+func TestTools_SensitiveFileProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env")
+	_ = os.WriteFile(envFile, []byte("SECRET_KEY=12345"), 0o644)
+
+	matcher := ignore.NewSensitiveMatcher(nil, nil)
+
+	// file_read
+	readTool := &FileReadTool{SensitiveMatcher: matcher}
+	args, _ := json.Marshal(fileReadArgs{Path: envFile})
+	res, _ := readTool.Execute(context.Background(), args)
+	if !strings.Contains(res.Error, "sensitive file pattern") {
+		t.Errorf("expected file_read to block .env, got: %s", res.Error)
+	}
+
+	// file_write
+	writeTool := &FileWriteTool{SensitiveMatcher: matcher}
+	writeArgs, _ := json.Marshal(fileWriteArgs{Path: envFile, Content: "new"})
+	resW, _ := writeTool.Execute(context.Background(), writeArgs)
+	if !strings.Contains(resW.Error, "sensitive file pattern") {
+		t.Errorf("expected file_write to block .env, got: %s", resW.Error)
+	}
+
+	// file_patch
+	patchTool := &FilePatchTool{SensitiveMatcher: matcher}
+	patchArgs, _ := json.Marshal(filePatchArgs{Path: envFile, Find: "SECRET", Replace: "PUBLIC"})
+	resP, _ := patchTool.Execute(context.Background(), patchArgs)
+	if !strings.Contains(resP.Error, "sensitive file pattern") {
+		t.Errorf("expected file_patch to block .env, got: %s", resP.Error)
+	}
+}
+
+func TestApprovalGate_DenialDoesNotModifyFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "precious.txt")
+	originalContent := "original precious content"
+	_ = os.WriteFile(filePath, []byte(originalContent), 0o644)
+
+	gate := NewApprovalGate()
+	// Always deny in OnPresent
+	gate.OnPresent = func(toolName string, args json.RawMessage, preview string) (bool, error) {
+		if preview == "" {
+			t.Errorf("expected preview to be generated before approval")
+		}
+		return false, nil // DENY
+	}
+
+	// file_write denial
+	writeTool := &FileWriteTool{}
+	writeArgs, _ := json.Marshal(fileWriteArgs{Path: filePath, Content: "malicious overwrite"})
+	res, err := gate.WrapExecution(context.Background(), writeTool, writeArgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(res.Output, "denied") {
+		t.Errorf("expected denied message, got: %q", res.Output)
+	}
+	data, _ := os.ReadFile(filePath)
+	if string(data) != originalContent {
+		t.Errorf("file was modified despite denial: %q", string(data))
+	}
+
+	// file_patch denial
+	patchTool := &FilePatchTool{}
+	patchArgs, _ := json.Marshal(filePatchArgs{Path: filePath, Find: "precious", Replace: "destroyed"})
+	resPatch, err := gate.WrapExecution(context.Background(), patchTool, patchArgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(resPatch.Output, "denied") {
+		t.Errorf("expected denied message, got: %q", resPatch.Output)
+	}
+	data, _ = os.ReadFile(filePath)
+	if string(data) != originalContent {
+		t.Errorf("file was patched despite denial: %q", string(data))
+	}
+}

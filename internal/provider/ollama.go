@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/ollama/ollama/api"
 )
@@ -15,13 +17,23 @@ type OllamaProvider struct {
 }
 
 func NewOllamaProvider(host string) (*OllamaProvider, error) {
+	var client *api.Client
+	var err error
 	if host != "" {
-		os.Setenv("OLLAMA_HOST", host)
-	}
-
-	client, err := api.ClientFromEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ollama client: %w", err)
+		hostURL := host
+		if !strings.Contains(hostURL, "://") {
+			hostURL = "http://" + hostURL
+		}
+		u, parseErr := url.Parse(hostURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid ollama host %q: %w", host, parseErr)
+		}
+		client = api.NewClient(u, http.DefaultClient)
+	} else {
+		client, err = api.ClientFromEnvironment()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ollama client: %w", err)
+		}
 	}
 
 	return &OllamaProvider{

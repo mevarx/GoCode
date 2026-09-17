@@ -131,7 +131,7 @@ GoCode automatically persists all conversations to SQLite. Sessions are auto-res
 /new
 ```
 
-Sessions are stored in `~/.local/share/gocode/sessions.db` (Linux/macOS) or `%LOCALAPPDATA%\gocode\sessions.db` (Windows).
+Sessions are stored in `~/.local/share/gocode/sessions/sessions.db` (Linux/macOS) or `%LOCALAPPDATA%\gocode\sessions\sessions.db` (Windows).
 
 ---
 
@@ -259,8 +259,9 @@ api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4o"
 
 [permissions]
-auto_approve = ["file_read"]  # Tools that execute without confirmation
-deny = []                      # Tools that are permanently blocked
+auto_approve = ["file_read", "code_search"]  # Tools that execute without confirmation
+deny = []                                    # Tools that are permanently blocked
+sensitive_patterns = ["*.vault", "custom.env"] # Additional patterns to block from AI access
 
 [tools.shell]
 timeout_seconds = 30  # Maximum seconds a shell command may run
@@ -293,12 +294,13 @@ GoCode operates under a strict **Human-in-the-Loop Security Architecture**. The 
 
 | Tool Name | Purpose | Approval Gate |
 | :-- | :-- | :-: |
-| `file_read` | Inspect file contents and workspace context | Automatic |
-| `file_write` | Create new files or overwrite existing files | **Requires Confirmation** |
-| `file_patch` | Perform target string replacements & targeted code edits | **Requires Confirmation** |
-| `shell_exec` | Run terminal commands (builds, tests, git operations) | **Requires Confirmation** |
+| `file_read` | Inspect file contents and workspace context (with line offset/limit) | Automatic |
+| `code_search` | Search files via regex/plain text with context lines & glob filtering | Automatic |
+| `file_write` | Create new files or overwrite existing files (with unified diff preview) | **Requires Confirmation** |
+| `file_patch` | Perform target string replacements & targeted code edits (with unified diff preview) | **Requires Confirmation** |
+| `shell_exec` | Run terminal commands confined to workspace root | **Requires Confirmation** |
 
-Tools can be auto-approved or denied via the `[permissions]` section in `config.toml`.
+Tools can be auto-approved or denied via the `[permissions]` section in `config.toml`. Protected sensitive patterns (`.env*`, keys, certificates, cloud credentials) are unconditionally blocked from inspection.
 
 ---
 

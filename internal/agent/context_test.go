@@ -98,3 +98,68 @@ func TestTruncate_EmptyHistory(t *testing.T) {
 		t.Errorf("expected empty result, got %d", len(result))
 	}
 }
+
+func TestTruncate_PreservesToolPairs(t *testing.T) {
+	cm := NewContextManager(30) // Low limit to force dropping turn 1
+	history := []provider.Message{
+		{Role: "system", Content: "sys"},
+		// Turn 1
+		{Role: "user", Content: "first turn with long query text that takes up tokens"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "shell_exec", Args: []byte(`{"command":"ls"}`)}}},
+		{Role: "tool", Content: "file1.txt\nfile2.txt"},
+		{Role: "assistant", Content: "here are the files"},
+		// Turn 2
+		{Role: "user", Content: "turn two"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_2", Name: "code_search", Args: []byte(`{"query":"test"}`)}}},
+		{Role: "tool", Content: "match found"},
+		{Role: "assistant", Content: "found it"},
+	}
+
+	result := cm.Truncate(history)
+
+	// Result must start with system message
+	if result[0].Role != "system" {
+		t.Fatalf("expected system message first, got %s", result[0].Role)
+	}
+
+	// Result must not start non-system messages with "tool" role
+	if len(result) > 1 && result[1].Role == "tool" {
+		t.Fatalf("orphaned tool message at index 1!")
+	}
+
+	// If a message has tool role, its corresponding assistant tool call must be present
+	for i, m := range result {
+		if m.Role == "tool" {
+			if i == 0 || len(result[i-1].ToolCalls) == 0 {
+				t.Fatalf("tool message at index %d has no preceding assistant tool call!", i)
+			}
+		}
+	}
+}
+
+func TestCompact(t *testing.T) {
+	cm := NewContextManager(8192)
+	history := []provider.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "turn 1"},
+		{Role: "assistant", Content: "resp 1"},
+		{Role: "user", Content: "turn 2"},
+		{Role: "assistant", Content: "resp 2"},
+		{Role: "user", Content: "turn 3"},
+		{Role: "assistant", Content: "resp 3"},
+	}
+
+	compacted := cm.Compact(history, 1) // keep only last turn
+	if len(compacted) >= len(history) {
+		t.Errorf("expected compacted history to be smaller than original")
+	}
+
+	// Should have system message, summary user+assistant, and turn 3
+	if compacted[0].Role != "system" {
+		t.Errorf("expected system message first")
+	}
+	lastIdx := len(compacted) - 1
+	if compacted[lastIdx].Content != "resp 3" {
+		t.Errorf("expected last response 'resp 3', got %q", compacted[lastIdx].Content)
+	}
+}

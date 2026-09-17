@@ -70,7 +70,6 @@ func (s *Session) Store() *session.SessionStore {
 	return s.store
 }
 
-
 func (s *Session) AddMessage(msg provider.Message) {
 	s.mu.Lock()
 	s.messages = append(s.messages, msg)
@@ -206,4 +205,3 @@ func (s *Session) LastAssistantMessage() string {
 	}
 	return ""
 }
-

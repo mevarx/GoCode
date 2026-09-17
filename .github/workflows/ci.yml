@@ -7,23 +7,46 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
-
-      - name: Build
-        run: go build ./...
-
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Verify Formatting (gofmt)
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files are not formatted with gofmt:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
 
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Build
+        run: go build ./...
       - name: Test
-        run: go test ./... -race
-
-      - name: Coverage
-        run: go test -coverprofile=coverage.out $(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+        run: go test ./... -v -count=1
+      - name: Test with Race (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Upload Coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out

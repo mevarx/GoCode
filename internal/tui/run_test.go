@@ -44,7 +44,7 @@ func TestInterruptCancelsRunningTurn(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		runAgentGoroutine(ctx, r, sess, tools.NewRegistry(), approval, inputCh, outputCh, cancelCh)
+		runAgentGoroutine(ctx, r, sess, tools.NewRegistry(), approval, inputCh, outputCh, cancelCh, "")
 		close(done)
 	}()
 
@@ -114,7 +114,7 @@ func TestUnknownSlashCommandIsRejected(t *testing.T) {
 	sess := agent.NewSession("llama3")
 	out := make(chan tea.Msg, 8)
 
-	if !handleSlashCommand(context.Background(), "/bogus", reg, sess, out) {
+	if !handleSlashCommand(context.Background(), "/bogus", reg, sess, out, "") {
 		t.Fatal("expected unknown slash command to be handled")
 	}
 	tm := drainOneToolMsg(t, out)
@@ -131,7 +131,7 @@ func TestPlainMessageIsNotACommand(t *testing.T) {
 	sess := agent.NewSession("llama3")
 	out := make(chan tea.Msg, 8)
 
-	if handleSlashCommand(context.Background(), "hello there", reg, sess, out) {
+	if handleSlashCommand(context.Background(), "hello there", reg, sess, out, "") {
 		t.Fatal("plain message must not be handled as a slash command")
 	}
 }
@@ -141,7 +141,7 @@ func TestModelSwitchValidatesAgainstProvider(t *testing.T) {
 	sess := agent.NewSession("gpt-4o")
 	out := make(chan tea.Msg, 8)
 
-	if !handleSlashCommand(context.Background(), "/model bogus", reg, sess, out) {
+	if !handleSlashCommand(context.Background(), "/model bogus", reg, sess, out, "") {
 		t.Fatal("expected /model to be handled")
 	}
 	tm := drainOneToolMsg(t, out)
@@ -152,7 +152,7 @@ func TestModelSwitchValidatesAgainstProvider(t *testing.T) {
 		t.Errorf("model should stay gpt-4o, got %q", sess.Model())
 	}
 
-	if !handleSlashCommand(context.Background(), "/model gemini-2.5-flash", reg, sess, out) {
+	if !handleSlashCommand(context.Background(), "/model gemini-2.5-flash", reg, sess, out, "") {
 		t.Fatal("expected /model to be handled")
 	}
 	tm = drainOneToolMsg(t, out)
@@ -170,7 +170,7 @@ func TestModelSwitchSkipsValidationWhenListUnavailable(t *testing.T) {
 	sess := agent.NewSession("llama3")
 	out := make(chan tea.Msg, 8)
 
-	if !handleSlashCommand(context.Background(), "/model llama3.1", r, sess, out) {
+	if !handleSlashCommand(context.Background(), "/model llama3.1", r, sess, out, "") {
 		t.Fatal("expected /model to be handled")
 	}
 	tm := drainOneToolMsg(t, out)
@@ -187,7 +187,7 @@ func TestModelQueryShowsActive(t *testing.T) {
 	sess := agent.NewSession("gpt-4o")
 	out := make(chan tea.Msg, 8)
 
-	if !handleSlashCommand(context.Background(), "/model", reg, sess, out) {
+	if !handleSlashCommand(context.Background(), "/model", reg, sess, out, "") {
 		t.Fatal("expected /model to be handled")
 	}
 	tm := drainOneToolMsg(t, out)

@@ -26,6 +26,13 @@ import (
 )
 
 var (
+	// Build-injected version information.
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
+var (
 	flagProvider  string
 	flagModel     string
 	flagConfig    string
@@ -33,6 +40,7 @@ var (
 	flagVerbose   bool
 	flagNew       bool
 	flagSessionID string
+	flagWorkdir   string
 	flagTail      int
 	flagFollow    bool
 )
@@ -45,11 +53,12 @@ func main() {
 		RunE:  runAgent,
 	}
 
-	rootCmd.Version = "0.3.0"
+	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, buildDate)
 
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider to use")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model to use")
 	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
+	rootCmd.Flags().StringVar(&flagWorkdir, "workdir", "", "Workspace root directory (defaults to current directory)")
 	rootCmd.Flags().BoolVar(&flagTUI, "tui", true, "Enable rich TUI (set --tui=false for plain mode)")
 	rootCmd.Flags().BoolVar(&flagNew, "new", false, "Start a new session instead of auto-resuming")
 	rootCmd.Flags().StringVar(&flagSessionID, "session", "", "Resume a specific session by ID")
@@ -262,30 +271,56 @@ func runAgent(cmd *cobra.Command, args []string) error {
 				newID = rec.ID
 			}
 		}
+		// Determine workspace root.
+		workspaceRoot := flagWorkdir
+		if workspaceRoot == "" {
+			workspaceRoot, _ = os.Getwd()
+		}
+		workspaceRoot, _ = filepath.Abs(workspaceRoot)
+
 		sess = agent.NewSessionWithStore(newID, providerName, model, sessionStore)
 
-		projCtx, _, _ := agent.FindProjectContext("")
-		globCtx, _, _ := agent.LoadGlobalContext()
-		sysPrompt := agent.BuildSystemPrompt(projCtx, globCtx)
+		opts := agent.DefaultPromptOptions(workspaceRoot, providerName, model)
+		sysPrompt := agent.BuildSystemPromptWithOptions(opts)
 		sess.AddMessage(provider.Message{
 			Role:    "system",
 			Content: sysPrompt,
 		})
 	}
 
-	ignoreMatcher := ignore.LoadMatcher("")
+	// Ensure workspaceRoot is set if session was resumed
+	workspaceRoot := flagWorkdir
+	if workspaceRoot == "" {
+		workspaceRoot, _ = os.Getwd()
+	}
+	workspaceRoot, _ = filepath.Abs(workspaceRoot)
+
+	ignoreMatcher := ignore.LoadMatcher(workspaceRoot)
+	sensitiveMatcher := ignore.NewSensitiveMatcher(ignoreMatcher, cfg.Permissions.SensitivePatterns)
 
 	toolRegistry := tools.NewRegistry()
 	shellTimeout := time.Duration(cfg.Tools.Shell.TimeoutSeconds) * time.Second
-	toolRegistry.Register(&tools.ShellExecTool{Timeout: shellTimeout})
-	toolRegistry.Register(&tools.FileReadTool{IgnoreMatcher: ignoreMatcher})
+	toolRegistry.Register(&tools.ShellExecTool{
+		Timeout:       shellTimeout,
+		WorkspaceRoot: workspaceRoot,
+	})
+	toolRegistry.Register(&tools.FileReadTool{
+		SensitiveMatcher: sensitiveMatcher,
+		WorkspaceRoot:    workspaceRoot,
+	})
 	toolRegistry.Register(&tools.FileWriteTool{
-		IgnoreMatcher: ignoreMatcher,
-		OnModified:    sess.TrackModifiedFile,
+		SensitiveMatcher: sensitiveMatcher,
+		WorkspaceRoot:    workspaceRoot,
+		OnModified:       sess.TrackModifiedFile,
 	})
 	toolRegistry.Register(&tools.FilePatchTool{
-		IgnoreMatcher: ignoreMatcher,
-		OnModified:    sess.TrackModifiedFile,
+		SensitiveMatcher: sensitiveMatcher,
+		WorkspaceRoot:    workspaceRoot,
+		OnModified:       sess.TrackModifiedFile,
+	})
+	toolRegistry.Register(&tools.CodeSearchTool{
+		SensitiveMatcher: sensitiveMatcher,
+		WorkspaceRoot:    workspaceRoot,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -305,10 +340,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	approval := tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
 
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval)
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot)
 	}
 
 	loop := agent.NewAgentLoop(providerRegistry, sess, toolRegistry, approval)
+	loop.WorkspaceRoot = workspaceRoot
 	return loop.Run(ctx)
 }
 

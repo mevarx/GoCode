@@ -101,6 +101,9 @@ func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, pr
 	return response == "y" || response == "yes", nil
 }
 
+// WrapExecution handles the full preview → approval → execute flow.
+// If the tool implements Previewer, a preview is generated first and shown
+// to the user before execution. Denied operations never call Execute.
 func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.RawMessage) (Result, error) {
 	toolName := tool.Spec().Name
 
@@ -116,7 +119,18 @@ func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.R
 		return tool.Execute(ctx, args)
 	}
 
-	approved, err := g.RequestApproval(toolName, args, "")
+	// Generate preview if the tool supports it.
+	var previewStr string
+	if previewer, ok := tool.(Previewer); ok {
+		preview, err := previewer.Preview(ctx, args)
+		if err != nil {
+			// Preview errors are validation errors — return them without executing.
+			return Result{Error: fmt.Sprintf("preview error: %v", err)}, nil
+		}
+		previewStr = preview.String()
+	}
+
+	approved, err := g.RequestApproval(toolName, args, previewStr)
 	if err != nil {
 		return Result{Error: fmt.Sprintf("approval error: %v", err)}, nil
 	}
@@ -129,4 +143,3 @@ func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.R
 
 	return tool.Execute(ctx, args)
 }
-

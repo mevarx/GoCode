@@ -112,3 +112,60 @@ func TestGatewayProxyProvider_Stream(t *testing.T) {
 		t.Fatalf("expected 'Hello world', got %q", text)
 	}
 }
+
+func TestGatewayProxyProvider_StreamMultipleToolCallsOrdered(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Send fragmented tool calls (deliberately out of order: index 1 first, then index 0)
+		fmt.Fprintln(w, `data: {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "call_b", "function": {"name": "tool_b", "arguments": "{\"b\":"}}]}}]} `)
+		fmt.Fprintln(w, `data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_a", "function": {"name": "tool_a", "arguments": "{\"a\":"}}]}}]} `)
+		fmt.Fprintln(w, `data: {"choices": [{"delta": {"tool_calls": [{"index": 1, "function": {"arguments": "2}"}}]}}]} `)
+		fmt.Fprintln(w, `data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]}}]} `)
+		fmt.Fprintln(w, `data: {"choices": [{"finish_reason": "tool_calls"}]}`)
+		fmt.Fprintln(w, `data: [DONE]`)
+	}))
+	defer server.Close()
+
+	cfg := config.GatewayConfig{
+		BaseURL:      server.URL,
+		APIKey:       "",
+		DefaultModel: "auto",
+	}
+
+	provider := NewGatewayProxyProvider("testprov", cfg)
+	ch, err := provider.Stream(context.Background(), "auto", []Message{
+		{Role: "user", Content: "call tools"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var assembledTools []ToolCall
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		if len(chunk.ToolCalls) > 0 {
+			assembledTools = append(assembledTools, chunk.ToolCalls...)
+		}
+	}
+
+	if len(assembledTools) != 2 {
+		t.Fatalf("expected 2 assembled tool calls, got %d", len(assembledTools))
+	}
+
+	// Must be ordered by index: index 0 first, index 1 second
+	if assembledTools[0].ID != "call_a" || assembledTools[0].Name != "tool_a" {
+		t.Errorf("expected tool 0 to be call_a, got %+v", assembledTools[0])
+	}
+	if string(assembledTools[0].Args) != `{"a":1}` {
+		t.Errorf("expected args '{\"a\":1}', got %s", string(assembledTools[0].Args))
+	}
+
+	if assembledTools[1].ID != "call_b" || assembledTools[1].Name != "tool_b" {
+		t.Errorf("expected tool 1 to be call_b, got %+v", assembledTools[1])
+	}
+	if string(assembledTools[1].Args) != `{"b":2}` {
+		t.Errorf("expected args '{\"b\":2}', got %s", string(assembledTools[1].Args))
+	}
+}

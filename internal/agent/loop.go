@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/tools"
@@ -20,6 +19,7 @@ type AgentLoop struct {
 	ToolRegistry   *tools.Registry
 	Approval       *tools.ApprovalGate
 	ContextManager *ContextManager
+	WorkspaceRoot  string
 }
 
 func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.Registry, approval *tools.ApprovalGate) *AgentLoop {
@@ -57,9 +57,8 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 	}
 
 	if !hasSystemMsg {
-		projCtx, _, _ := FindProjectContext("")
-		globCtx, _, _ := LoadGlobalContext()
-		sysPrompt := BuildSystemPrompt(projCtx, globCtx)
+		opts := DefaultPromptOptions(a.WorkspaceRoot, a.Registry.ActiveName(), a.Session.Model())
+		sysPrompt := BuildSystemPromptWithOptions(opts)
 		a.Session.AddMessage(provider.Message{
 			Role:    "system",
 			Content: sysPrompt,
@@ -86,155 +85,34 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 			continue
 		}
 
-		lowerInput := strings.ToLower(input)
-		switch {
-		case lowerInput == "exit" || lowerInput == "quit":
-			fmt.Println("Goodbye!")
-			return nil
-		case lowerInput == "/clear":
-			a.Session.Clear()
-			projCtx, _, _ := FindProjectContext("")
-			globCtx, _, _ := LoadGlobalContext()
-			a.Session.AddMessage(provider.Message{
-				Role:    "system",
-				Content: BuildSystemPrompt(projCtx, globCtx),
-			})
-			fmt.Println("[Session cleared]")
-			continue
-		case lowerInput == "/new":
-			st := a.Session.Store()
-			if st != nil {
-				newID := "sess_" + strings.ReplaceAll(time.Now().Format("20060102150405"), "-", "")
-				rec, err := st.CreateSession(newID, "", a.Registry.ActiveName(), a.Session.Model())
-				if err == nil {
-					a.Session.SetID(rec.ID)
-					a.Session.Clear()
-					projCtx, _, _ := FindProjectContext("")
-					globCtx, _, _ := LoadGlobalContext()
-					a.Session.AddMessage(provider.Message{
-						Role:    "system",
-						Content: BuildSystemPrompt(projCtx, globCtx),
-					})
-					fmt.Printf("[Started new session: %s]\n", rec.ID)
-					continue
+		cmdCtx := CommandContext{
+			Session:        a.Session,
+			Registry:       a.Registry,
+			ContextManager: a.ContextManager,
+			WorkspaceRoot:  a.WorkspaceRoot,
+			AskApproval: func(prompt string) bool {
+				fmt.Printf("%s [y/N]: ", prompt)
+				if !scanner.Scan() {
+					return false
 				}
-			}
-			a.Session.Clear()
-			fmt.Println("[Started new session]")
-			continue
-		case lowerInput == "/sessions":
-			st := a.Session.Store()
-			if st == nil {
-				fmt.Println("Session store is not enabled.")
-				continue
-			}
-			summaries, err := st.ListSessions(20)
-			if err != nil {
-				fmt.Printf("Error listing sessions: %v\n", err)
-				continue
-			}
-			if len(summaries) == 0 {
-				fmt.Println("No saved sessions found.")
-				continue
-			}
-			fmt.Println("\nSaved Sessions:")
-			fmt.Println(strings.Repeat("─", 65))
-			for _, sum := range summaries {
-				activeMarker := "  "
-				if sum.ID == a.Session.ID() {
-					activeMarker = "* "
+				ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+				return ans == "y" || ans == "yes"
+			},
+		}
+
+		cmdRes := HandleCommand(ctx, cmdCtx, input)
+		if cmdRes.Handled {
+			if cmdRes.Exit {
+				if cmdRes.Output != "" {
+					fmt.Println(cmdRes.Output)
 				}
-				fmt.Printf("%s%-24s | %-10s | %-12s | %2d msgs | %s\n",
-					activeMarker, sum.ID, sum.Provider, sum.Model, sum.MessageCount, sum.UpdatedAt.Local().Format("Jan 02 15:04"))
+				return nil
 			}
-			fmt.Println(strings.Repeat("─", 65))
-			fmt.Println("Resume a session with: /sessions <id> or /resume <id>")
-			continue
-		case strings.HasPrefix(lowerInput, "/sessions ") || strings.HasPrefix(lowerInput, "/resume "):
-			targetID := strings.TrimSpace(input[strings.Index(input, " "):])
-			st := a.Session.Store()
-			if st == nil {
-				fmt.Println("Session store is not enabled.")
-				continue
+			if cmdRes.Error != nil {
+				fmt.Printf("Error: %v\n", cmdRes.Error)
+			} else if cmdRes.Output != "" {
+				fmt.Println(cmdRes.Output)
 			}
-			rec, err := st.GetSession(targetID)
-			if err != nil || rec == nil {
-				fmt.Printf("Session %q not found.\n", targetID)
-				continue
-			}
-			a.Session.SetID(rec.ID)
-			a.Session.SetProvider(rec.Provider)
-			a.Session.SetModel(rec.Model)
-			a.Session.LoadMessages(rec.Messages)
-			if rec.Provider != "" {
-				_ = a.Registry.Switch(rec.Provider)
-			}
-			fmt.Printf("[Resumed session %s (%d messages, model: %s/%s)]\n", rec.ID, len(rec.Messages), rec.Provider, rec.Model)
-			continue
-		case strings.HasPrefix(lowerInput, "/commit"):
-			msg := strings.TrimSpace(strings.TrimPrefix(input, "/commit"))
-			if msg == "" {
-				msg = "Changes assisted by GoCode"
-			}
-			files := a.Session.ModifiedFiles()
-			if len(files) == 0 {
-				fmt.Println("No modified files tracked in this session.")
-				continue
-			}
-			trailer := fmt.Sprintf("Assisted-by: GoCode:%s", a.Session.Model())
-			fullCommitMsg := fmt.Sprintf("%s\n\n%s", msg, trailer)
-			fmt.Printf("Modified files (%d):\n", len(files))
-			for _, f := range files {
-				fmt.Printf("  • %s\n", f)
-			}
-			fmt.Printf("\nCommit message:\n%s\n", fullCommitMsg)
-			continue
-		case lowerInput == "/providers" || lowerInput == "/provider":
-			active := a.Registry.ActiveName()
-			available := a.Registry.List()
-			fmt.Printf("Active Provider: %s\nAvailable Providers: %s\n", active, strings.Join(available, ", "))
-			if models, err := a.Registry.Active().Models(ctx); err == nil && len(models) > 0 {
-				fmt.Printf("Available Models: %s\n", strings.Join(models, ", "))
-			}
-			continue
-		case strings.HasPrefix(lowerInput, "/provider "):
-			target := strings.TrimSpace(input[10:])
-			if err := a.Registry.Switch(target); err != nil {
-				fmt.Printf("Error switching provider: %v\n", err)
-			} else {
-				a.Session.SetProvider(target)
-				fmt.Printf("[Provider switched to %s]\n", target)
-				if models, err := a.Registry.Active().Models(ctx); err == nil && len(models) > 0 {
-					fmt.Printf("Available models for %s: %s\n", target, strings.Join(models, ", "))
-				}
-			}
-			continue
-		case lowerInput == "/model":
-			fmt.Printf("Active Model: %s\n", a.Session.Model())
-			if models, err := a.Registry.Active().Models(ctx); err == nil && len(models) > 0 {
-				fmt.Printf("Available Models (%s): %s\n", a.Registry.ActiveName(), strings.Join(models, ", "))
-			} else if err != nil {
-				fmt.Printf("Could not query models from %s: %v\n", a.Registry.ActiveName(), err)
-			}
-			continue
-		case strings.HasPrefix(lowerInput, "/model "):
-			targetModel := strings.TrimSpace(input[7:])
-			a.Session.SetModel(targetModel)
-			fmt.Printf("[Model set to %s]\n", targetModel)
-			continue
-		case lowerInput == "/help":
-			fmt.Println("Available commands:")
-			fmt.Println("  /sessions        — list previous sessions")
-			fmt.Println("  /sessions <id>   — resume session by ID")
-			fmt.Println("  /new             — start a new session")
-			fmt.Println("  /commit [msg]    — commit modified files with attribution trailer")
-			fmt.Println("  /providers       — list all providers and models")
-			fmt.Println("  /provider <name> — switch provider")
-			fmt.Println("  /model           — show current model")
-			fmt.Println("  /model <name>    — switch model")
-			fmt.Println("  /clear           — clear conversation history")
-			fmt.Println("  /help            — show this help")
-			fmt.Println("  exit             — quit GoCode")
 			continue
 		}
 
@@ -259,7 +137,10 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 
 func (a *AgentLoop) streamResponse(ctx context.Context) error {
 	for {
-		p := a.Registry.Active()
+		p, err := a.Registry.Active()
+		if err != nil {
+			return err
+		}
 		model := a.Session.Model()
 		providerToolSpecs := a.toolSpecsAsProvider()
 

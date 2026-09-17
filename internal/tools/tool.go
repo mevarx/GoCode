@@ -18,6 +18,36 @@ type Tool interface {
 	RequiresApproval() bool
 }
 
+// Previewer is an optional interface that tools can implement to provide
+// a preview of the proposed change before execution. This enables the
+// approval-before-execution flow where the user sees a diff/command
+// preview and approves before any filesystem changes are made.
+type Previewer interface {
+	Preview(ctx context.Context, args json.RawMessage) (Preview, error)
+}
+
+// Preview contains the information shown to the user before approval.
+type Preview struct {
+	Description string `json:"description,omitempty"`
+	Diff        string `json:"diff,omitempty"`
+	Command     string `json:"command,omitempty"`
+	WorkDir     string `json:"work_dir,omitempty"`
+}
+
+func (p Preview) String() string {
+	var parts []string
+	if p.Description != "" {
+		parts = append(parts, p.Description)
+	}
+	if p.Diff != "" {
+		parts = append(parts, "\n"+p.Diff)
+	}
+	if len(parts) == 0 {
+		return "(no preview available)"
+	}
+	return fmt.Sprintf("%s", joinParts(parts))
+}
+
 type Result struct {
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
@@ -63,4 +93,15 @@ func (r *Registry) List() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func joinParts(parts []string) string {
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += "\n"
+		}
+		result += p
+	}
+	return result
 }
