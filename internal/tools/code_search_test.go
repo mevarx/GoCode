@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -152,5 +155,29 @@ func TestCodeSearchTool_WorkspaceConfinement(t *testing.T) {
 	}
 	if !strings.Contains(res.Error, "escapes workspace") {
 		t.Errorf("expected escapes workspace error, got: %s", res.Error)
+	}
+}
+
+func TestCodeSearchTool_SearchFileScannerError(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "oversized.txt")
+	// Write a line that exceeds the 1MB buffer capacity
+	oversized := make([]byte, 1024*1024+10)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	oversized[len(oversized)-1] = '\n'
+	if err := os.WriteFile(filePath, oversized, 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	tool := &CodeSearchTool{WorkspaceRoot: dir}
+	re := regexp.MustCompile("a")
+	_, err := tool.searchFile(filePath, re, 0, 10)
+	if err == nil {
+		t.Fatal("expected error from scanner on oversized line, got nil")
+	}
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("expected bufio.ErrTooLong, got %v", err)
 	}
 }

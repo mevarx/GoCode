@@ -282,6 +282,10 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
 	if len(matchIndices) == 0 {
 		return nil, nil
 	}
