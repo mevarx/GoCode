@@ -178,3 +178,19 @@ func TestValidatePath_NewFileInWorkspace(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
+
+func TestValidatePath_NewFileInSymlinkedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	workspaceLink := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(root, workspaceLink); err != nil {
+		t.Skipf("cannot create symlinks on this platform: %v", err)
+	}
+
+	result, err := ValidatePath(workspaceLink, filepath.Join("new_subdir", "new_file.txt"))
+	if err != nil {
+		t.Fatalf("expected new file under symlinked workspace to be allowed, got: %v", err)
+	}
+	if expected := filepath.Join(workspaceLink, "new_subdir", "new_file.txt"); result != expected {
+		t.Errorf("expected returned path %q, got %q", expected, result)
+	}
+}

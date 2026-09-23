@@ -38,6 +38,7 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies
 - **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama
 - **9 Multi-Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, OmniRoute
+- **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service with its own base URL and API-key environment variable
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 ### v0.3.0 Additions
@@ -203,6 +204,23 @@ If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
 | **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
 | **Ollama (Local)** | `ollama` | _None_ | _Auto-detected_ | `http://localhost:11434` |
 
+### Add another API endpoint
+
+Use a named custom provider for DeepSeek, a company gateway, or another service that implements the OpenAI Chat Completions API:
+
+```bash
+gocode provider add deepseek \
+  --base-url https://api.deepseek.com \
+  --api-key-env DEEPSEEK_API_KEY \
+  --model deepseek-flash
+
+export DEEPSEEK_API_KEY="your-key"
+gocode --provider deepseek
+gocode provider list
+```
+
+Provider configuration stores the environment-variable name, not the key. Custom endpoints can also be managed with `gocode provider remove <name>` and live in `[provider.custom.<name>]` in `config.toml`. To make one the default, set `default = "deepseek"` in `[provider]`; otherwise select it with `gocode --provider deepseek`. The endpoint must support OpenAI Chat Completions; use the built-in `anthropic` provider for Anthropic's native API. See the [DeepSeek API compatibility guide](https://api-docs.deepseek.com/) for its current base URL and model IDs.
+
 ---
 
 ## In-Session Slash Commands
@@ -222,6 +240,7 @@ If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
 | `Ctrl+L` _(TUI)_ | Open interactive fuzzy model search picker |
 | `Ctrl+C` _(TUI)_ | Stop a running turn; press again (or when idle) to quit |
 | `Esc` _(TUI)_ | Stop a running turn, or clear the current input |
+| _(TUI status bar)_ | Shows the active provider, model, and workspace |
 | `exit`, `quit`, `/exit`, `/quit` | Exit the agent session |
 
 ---
