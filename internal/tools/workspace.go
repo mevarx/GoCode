@@ -43,41 +43,51 @@ func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 		return "", err
 	}
 
-	// Evaluate symlinks if the path exists.
-	// If the path doesn't exist yet (e.g., for file_write creating a new file),
-	// we evaluate the parent directory's symlinks.
-	resolvedPath := absPath
-	if _, err := os.Lstat(absPath); err == nil {
-		resolved, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve symlinks for %s: %w", requestedPath, err)
-		}
-		resolvedPath = resolved
-	} else if os.IsNotExist(err) {
-		// Path doesn't exist yet — evaluate parent directory.
-		parentDir := filepath.Dir(absPath)
-		if _, statErr := os.Stat(parentDir); statErr == nil {
-			resolvedParent, evalErr := filepath.EvalSymlinks(parentDir)
-			if evalErr != nil {
-				return "", fmt.Errorf("failed to resolve symlinks for parent %s: %w", parentDir, evalErr)
-			}
-			resolvedPath = filepath.Join(resolvedParent, filepath.Base(absPath))
-		}
-		// If parent doesn't exist either, we'll check the cleaned path directly
-		// (file_write will create directories as needed, but we still validate).
+	// Resolve the nearest existing ancestor so new paths remain comparable with
+	// the canonical workspace path even when the workspace itself is a symlink.
+	resolvedPath, err := resolveExistingAncestor(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve symlinks for %s: %w", requestedPath, err)
+	}
+	resolvedRoot, err := resolveExistingAncestor(absRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve workspace root symlinks: %w", err)
 	}
 
-	// Second check: the resolved (symlink-resolved) path must also be within workspace.
-	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		// If workspace root itself can't be resolved, use the original.
-		resolvedRoot = absRoot
-	}
+	// The resolved (symlink-resolved) path must also be within the workspace.
 	if err := checkPathWithinRoot(resolvedRoot, resolvedPath); err != nil {
 		return "", fmt.Errorf("symlink %s resolves outside workspace: %w", requestedPath, err)
 	}
 
 	return absPath, nil
+}
+
+func resolveExistingAncestor(path string) (string, error) {
+	candidate := filepath.Clean(path)
+	var missing []string
+	for {
+		_, err := os.Lstat(candidate)
+		if err == nil {
+			resolved, err := filepath.EvalSymlinks(candidate)
+			if err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return filepath.Clean(path), nil
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
 }
 
 // checkPathWithinRoot verifies that absPath is at or under absRoot.
