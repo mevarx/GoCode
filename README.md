@@ -41,6 +41,16 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service with its own base URL and API-key environment variable
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
+### v0.4.0 Additions
+
+- **Hardened Security** — workspace path confinement, sensitive file protection, bounded shell execution, and approval-before-execution diff previews
+- **`code_search` Tool** — search the workspace with per-file offsets and result metadata
+- **Custom Provider Commands** — manage OpenAI-compatible endpoints via `gocode provider add` / `list` / `remove`
+- **Turn-Aware Context Compaction** — keeps long sessions reliable without losing context
+- **Provider Retry Transport** — automatic retries with backoff on transient provider failures
+- **Symlink-Aware Workspace Resolution** — resolves workspace paths through symlinks
+- **Multi-Platform CI Quality Matrix** — race-detected testing and trimmed release binaries with ldflags versioning
+
 ### v0.3.0 Additions
 
 - **Interruptible Generation** — Cancel turns in progress with `Ctrl+C` or `Esc` without terminating the session
