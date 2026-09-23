@@ -27,6 +27,9 @@ var gradientColors = []string{
 
 func renderBanner(providerName, modelName, version string, termWidth int) string {
 	logoWidth := lipgloss.Width(asciiLines[0])
+	if termWidth > 0 && termWidth < logoWidth {
+		return renderCompactBanner(providerName, modelName, version, termWidth)
+	}
 
 	var renderedLines []string
 	for _, line := range asciiLines {
@@ -95,6 +98,37 @@ func renderBanner(providerName, modelName, version string, termWidth int) string
 	}
 
 	return block
+}
+
+func renderCompactBanner(providerName, modelName, version string, termWidth int) string {
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#58a6ff")).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(termWidth).
+		Render("GoCode")
+	tagline := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#6e7681")).
+		Align(lipgloss.Center).
+		Width(termWidth).
+		Render("Terminal coding agent")
+	meta := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#8b949e")).
+		Align(lipgloss.Center).
+		Width(termWidth).
+		Render(providerName + " · " + modelName + " · v" + version)
+	hints := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#8b949e")).
+		Align(lipgloss.Center).
+		Width(termWidth)
+	return strings.Join([]string{
+		title,
+		tagline,
+		meta,
+		"",
+		hints.Render("Enter to send · /help for commands"),
+		hints.Render("Ctrl+L to switch models"),
+	}, "\n")
 }
 
 func colorizeASCIILine(line string, colors []string) string {

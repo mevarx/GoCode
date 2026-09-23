@@ -20,16 +20,17 @@ type Config struct {
 
 // ProviderConfig specifies provider settings.
 type ProviderConfig struct {
-	Default    string        `toml:"default"`
-	Ollama     OllamaConfig  `toml:"ollama"`
-	OmniRoute  GatewayConfig `toml:"omniroute"`
-	OpenAI     GatewayConfig `toml:"openai"`
-	Gemini     GatewayConfig `toml:"gemini"`
-	Groq       GatewayConfig `toml:"groq"`
-	OpenRouter GatewayConfig `toml:"openrouter"`
-	Anthropic  GatewayConfig `toml:"anthropic"`
-	Qwen       GatewayConfig `toml:"qwen"`
-	Kimi       GatewayConfig `toml:"kimi"`
+	Default    string                   `toml:"default"`
+	Ollama     OllamaConfig             `toml:"ollama"`
+	OmniRoute  GatewayConfig            `toml:"omniroute"`
+	OpenAI     GatewayConfig            `toml:"openai"`
+	Gemini     GatewayConfig            `toml:"gemini"`
+	Groq       GatewayConfig            `toml:"groq"`
+	OpenRouter GatewayConfig            `toml:"openrouter"`
+	Anthropic  GatewayConfig            `toml:"anthropic"`
+	Qwen       GatewayConfig            `toml:"qwen"`
+	Kimi       GatewayConfig            `toml:"kimi"`
+	Custom     map[string]GatewayConfig `toml:"custom"`
 }
 
 // GatewayConfig configures an OpenAI-compatible gateway or cloud provider endpoint.
@@ -134,6 +135,7 @@ func DefaultConfig() Config {
 				APIKeyEnv:    "MOONSHOT_API_KEY",
 				DefaultModel: "moonshot-v1-8k",
 			},
+			Custom: make(map[string]GatewayConfig),
 		},
 		Approval: ApprovalConfig{
 			AutoApproveReads:  true,
@@ -184,6 +186,9 @@ func Load() (Config, error) {
 	if cfg.MCP.Servers == nil {
 		cfg.MCP.Servers = make(map[string]MCPServerConfig)
 	}
+	if cfg.Provider.Custom == nil {
+		cfg.Provider.Custom = make(map[string]GatewayConfig)
+	}
 
 	return cfg, nil
 }
@@ -207,6 +212,9 @@ func LoadFromPath(path string) (Config, error) {
 
 	if cfg.MCP.Servers == nil {
 		cfg.MCP.Servers = make(map[string]MCPServerConfig)
+	}
+	if cfg.Provider.Custom == nil {
+		cfg.Provider.Custom = make(map[string]GatewayConfig)
 	}
 
 	return cfg, nil

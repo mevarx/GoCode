@@ -161,15 +161,7 @@ func TestCodeSearchTool_WorkspaceConfinement(t *testing.T) {
 func TestCodeSearchTool_SearchFileScannerError(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "oversized.txt")
-	// Write a line that exceeds the 1MB buffer capacity
-	oversized := make([]byte, 1024*1024+10)
-	for i := range oversized {
-		oversized[i] = 'a'
-	}
-	oversized[len(oversized)-1] = '\n'
-	if err := os.WriteFile(filePath, oversized, 0o644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
+	writeOversizedSearchLine(t, filePath)
 
 	tool := &CodeSearchTool{WorkspaceRoot: dir}
 	re := regexp.MustCompile("a")
@@ -179,5 +171,41 @@ func TestCodeSearchTool_SearchFileScannerError(t *testing.T) {
 	}
 	if !errors.Is(err, bufio.ErrTooLong) {
 		t.Fatalf("expected bufio.ErrTooLong, got %v", err)
+	}
+}
+
+func TestCodeSearchTool_ReportsScannerErrorForFileAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "oversized.txt")
+	writeOversizedSearchLine(t, filePath)
+
+	tool := &CodeSearchTool{WorkspaceRoot: dir}
+	for _, searchPath := range []string{"oversized.txt", "."} {
+		t.Run(searchPath, func(t *testing.T) {
+			args, err := json.Marshal(codeSearchArgs{Query: "a", Path: searchPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := tool.Execute(context.Background(), args)
+			if err != nil {
+				t.Fatalf("Execute returned unexpected Go error: %v", err)
+			}
+			if !strings.Contains(result.Error, bufio.ErrTooLong.Error()) {
+				t.Fatalf("expected scanner error to be reported, got %+v", result)
+			}
+		})
+	}
+}
+
+func writeOversizedSearchLine(t *testing.T, path string) {
+	t.Helper()
+	oversized := make([]byte, 1024*1024+10)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	oversized[len(oversized)-1] = '\n'
+	if err := os.WriteFile(path, oversized, 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
 	}
 }

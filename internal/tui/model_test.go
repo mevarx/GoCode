@@ -1,17 +1,19 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func newTestModel(cancelCh chan struct{}) Model {
 	if cancelCh == nil {
 		cancelCh = make(chan struct{}, 1)
 	}
-	return NewModel("ollama", "llama3", "0.3.0", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
+	return NewModel("ollama", "llama3", "0.3.0", "", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
 }
 
 func cmdQuits(t *testing.T, cmd tea.Cmd) bool {
@@ -65,6 +67,35 @@ func TestCtrlCInterruptsStreamingTurn(t *testing.T) {
 	case <-cancelCh:
 	default:
 		t.Fatal("expected interrupt signal on cancelCh")
+	}
+}
+
+func TestWindowResizeFitsSmallTerminal(t *testing.T) {
+	m := newTestModel(nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 32, Height: 10})
+	m = updated.(Model)
+	if m.viewport.Width != 32 || m.viewport.Height != 3 {
+		t.Fatalf("unexpected viewport dimensions: %dx%d", m.viewport.Width, m.viewport.Height)
+	}
+	if got := lipgloss.Height(m.View()); got != 10 {
+		t.Errorf("expected terminal-height layout of 10 lines, got %d", got)
+	}
+	for i, line := range strings.Split(m.View(), "\n") {
+		if width := lipgloss.Width(line); width > 32 {
+			t.Errorf("view line %d is %d cells wide in a 32-cell terminal", i, width)
+		}
+	}
+}
+
+func TestStatusBarShowsWorkspace(t *testing.T) {
+	m := NewModel("deepseek", "deepseek-flash", "0.3.0", "/work/my-project", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), make(chan struct{}, 1), []list.Item{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	if got := m.renderStatusBar(); !strings.Contains(got, "my-project") {
+		t.Fatalf("expected workspace name in status bar, got %q", got)
+	}
+	if got := lipgloss.Width(m.renderStatusBar()); got != 100 {
+		t.Fatalf("expected status bar width 100, got %d", got)
 	}
 }
 

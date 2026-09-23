@@ -20,6 +20,9 @@ func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 	if requestedPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
 	}
+	// Treat both slash styles as separators so traversal checks behave the same
+	// when paths come from prompts or configuration created on another OS.
+	requestedPath = strings.ReplaceAll(requestedPath, "\\", string(filepath.Separator))
 
 	// Ensure workspace root is absolute.
 	absRoot, err := filepath.Abs(workspaceRoot)

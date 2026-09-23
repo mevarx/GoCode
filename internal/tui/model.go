@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -52,11 +53,12 @@ type Model struct {
 	textarea textarea.Model
 	focused  bool
 
-	providerName string
-	modelName    string
-	version      string
-	streaming    bool
-	spinner      spinner.Model
+	providerName  string
+	modelName     string
+	version       string
+	workspaceRoot string
+	streaming     bool
+	spinner       spinner.Model
 
 	modelPickerActive bool
 	modelPicker       list.Model
@@ -73,7 +75,7 @@ type Model struct {
 	cancelRequested bool
 }
 
-func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
+func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -90,18 +92,19 @@ func NewModel(providerName, modelName, version string, bridge *ApprovalBridge, i
 	picker := NewModelPicker(pickerItems, 80, 24)
 
 	return Model{
-		streamBuf:    &strings.Builder{},
-		textarea:     ta,
-		spinner:      sp,
-		providerName: providerName,
-		modelName:    modelName,
-		version:      version,
-		modelPicker:  picker,
-		bridge:       bridge,
-		inputCh:      inputCh,
-		outputCh:     outputCh,
-		cancelCh:     cancelCh,
-		focused:      true,
+		streamBuf:     &strings.Builder{},
+		textarea:      ta,
+		spinner:       sp,
+		providerName:  providerName,
+		modelName:     modelName,
+		version:       version,
+		workspaceRoot: workspaceRoot,
+		modelPicker:   picker,
+		bridge:        bridge,
+		inputCh:       inputCh,
+		outputCh:      outputCh,
+		cancelCh:      cancelCh,
+		focused:       true,
 	}
 }
 
@@ -120,25 +123,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.width = max(1, msg.Width)
+		m.height = max(1, msg.Height)
 		headerH := 1
-		footerH := m.textareaHeight() + 2
-		vpH := msg.Height - headerH - footerH
-		if vpH < 3 {
-			vpH = 3
+		footerH := m.textareaHeight() + 3
+		vpH := m.height - headerH - footerH
+		if vpH < 1 {
+			vpH = 1
 		}
+		atBottom := m.ready && m.viewport.AtBottom()
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, vpH)
+			m.viewport = viewport.New(m.width, vpH)
 			m.viewport.SetContent(m.renderMessages())
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width
+			m.viewport.Width = m.width
 			m.viewport.Height = vpH
+			m.viewport.SetContent(m.renderMessages())
+			if atBottom {
+				m.viewport.GotoBottom()
+			}
 		}
-		m.textarea.SetWidth(msg.Width - 4)
-		m.modelPicker.SetWidth(msg.Width - 10)
-		m.modelPicker.SetHeight(msg.Height - 6)
+		m.textarea.SetWidth(max(1, m.width-4))
+		m.modelPicker.SetWidth(max(1, m.width-10))
+		m.modelPicker.SetHeight(max(1, m.height-6))
 
 	case tea.KeyMsg:
 		if m.modelPickerActive {
@@ -175,8 +183,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlL:
 			m.modelPickerActive = true
-			m.modelPicker.SetWidth(m.width - 10)
-			m.modelPicker.SetHeight(m.height - 6)
+			m.modelPicker.SetWidth(max(1, m.width-10))
+			m.modelPicker.SetHeight(max(1, m.height-6))
 			return m, nil
 
 		case tea.KeyCtrlC:
@@ -353,10 +361,7 @@ func (m Model) View() string {
 		m.renderInputArea(),
 	)
 
-	hint := inputHintStyle.Render(" Enter: send  Shift+Enter: newline  Ctrl+L: models  Ctrl+C: quit  PgUp/PgDn: scroll")
-	if m.streaming {
-		hint = inputHintStyle.Render(" Generating…  Ctrl+C: stop generation (press twice to quit)")
-	}
+	hint := m.renderHelpLine()
 	base = lipgloss.JoinVertical(lipgloss.Left, base, hint)
 
 	if m.approvalActive {
@@ -371,12 +376,28 @@ func (m Model) View() string {
 }
 
 func (m *Model) renderStatusBar() string {
-	left := statusProviderStyle.Render(m.providerName) + statusSeparator + statusModelStyle.Render(m.modelName)
+	left := statusProviderStyle.Render("GoCode") + statusSeparator + statusProviderStyle.Render(m.providerName) + statusSeparator + statusModelStyle.Render(m.modelName)
 	if m.streaming {
 		left = left + statusSeparator + statusStreamingStyle.Render(m.spinner.View()+" generating…")
 	}
-	if pad := m.width - lipgloss.Width(left); pad > 0 {
-		left = left + statusBarStyle.Render(strings.Repeat(" ", pad))
+
+	contentWidth := max(1, m.width-2)
+	path := workspaceShortName(m.workspaceRoot)
+	right := ""
+	if path != "" && contentWidth >= 38 {
+		right = statusPathStyle.Render(path)
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right) > contentWidth {
+		leftText := "GoCode │ " + m.providerName + " │ " + m.modelName
+		if m.streaming {
+			leftText += " │ generating…"
+		}
+		return statusBarStyle.Width(contentWidth).Render(truncateToWidth(leftText, contentWidth))
+	}
+	if right != "" {
+		left += statusBarStyle.Render(strings.Repeat(" ", contentWidth-lipgloss.Width(left)-lipgloss.Width(right))) + right
+	} else if pad := contentWidth - lipgloss.Width(left); pad > 0 {
+		left += statusBarStyle.Render(strings.Repeat(" ", pad))
 	}
 	return left
 }
@@ -386,7 +407,51 @@ func (m *Model) renderInputArea() string {
 	if !m.focused {
 		style = inputBoxBlurStyle
 	}
-	return style.Width(m.width - 2).Render(m.textarea.View())
+	return style.Width(max(1, m.width-2)).Render(m.textarea.View())
+}
+
+func (m *Model) renderHelpLine() string {
+	text := "Enter send · Shift+Enter newline · Ctrl+L models · Esc clear · Ctrl+C quit · PgUp/PgDn scroll"
+	if m.streaming {
+		text = "Generating… · Ctrl+C stop; press again to quit"
+		if m.width < 48 {
+			text = "Generating… · Ctrl+C stop"
+		}
+	} else if m.width < 72 {
+		text = "Enter send · Shift+Enter newline · Esc clear · Ctrl+C quit"
+	}
+	if !m.streaming && m.width < 48 {
+		text = "Enter send · Esc clear · Ctrl+C quit"
+	}
+	return inputHintStyle.Render(truncateToWidth(text, m.width))
+}
+
+func workspaceShortName(root string) string {
+	if root == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Clean(root))
+}
+
+func truncateToWidth(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+	var result strings.Builder
+	for _, r := range text {
+		next := result.String() + string(r)
+		if lipgloss.Width(next)+lipgloss.Width("…") > width {
+			break
+		}
+		result.WriteRune(r)
+	}
+	return result.String() + "…"
 }
 
 func (m *Model) renderMessages() string {
@@ -404,15 +469,15 @@ func (m *Model) renderMessage(msg ChatMessage) string {
 	switch msg.Role {
 	case RoleUser:
 		label := userLabelStyle.Render("  ▶ " + msg.Label)
-		content := userBubbleStyle.Width(m.width - 6).Render(msg.Content)
+		content := userBubbleStyle.Width(max(1, m.width-6)).Render(msg.Content)
 		return label + "\n" + content + "\n"
 	case RoleAssistant:
 		label := asstLabelStyle.Render("  ✦ " + msg.Label)
-		content := asstContentStyle.Width(m.width - 4).Render(msg.Content)
+		content := asstContentStyle.Width(max(1, m.width-4)).Render(msg.Content)
 		return label + "\n" + content + "\n"
 	case RoleTool:
 		label := toolLabelStyle.Render("  " + msg.Label)
-		content := toolBubbleStyle.Width(m.width - 6).Render(msg.Content)
+		content := toolBubbleStyle.Width(max(1, m.width-6)).Render(msg.Content)
 		return label + "\n" + content + "\n"
 	case RoleError:
 		return errorStyle.Render("  ✗ "+msg.Label+": "+msg.Content) + "\n"

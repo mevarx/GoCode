@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -57,7 +58,7 @@ func main() {
 
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider to use")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model to use")
-	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
+	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "Path to config file")
 	rootCmd.Flags().StringVar(&flagWorkdir, "workdir", "", "Workspace root directory (defaults to current directory)")
 	rootCmd.Flags().BoolVar(&flagTUI, "tui", true, "Enable rich TUI (set --tui=false for plain mode)")
 	rootCmd.Flags().BoolVar(&flagNew, "new", false, "Start a new session instead of auto-resuming")
@@ -98,6 +99,7 @@ func main() {
 
 	mcpCmd.AddCommand(mcpAddCmd, mcpListCmd, mcpRemoveCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(newProviderCommand())
 
 	logsCmd := &cobra.Command{
 		Use:   "logs",
@@ -131,8 +133,10 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 		return cfg.Qwen
 	case "kimi":
 		return cfg.Kimi
+	case "anthropic":
+		return cfg.Anthropic
 	default:
-		return config.GatewayConfig{}
+		return cfg.Custom[name]
 	}
 }
 
@@ -198,6 +202,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	providerRegistry.Register(provider.NewAnthropicProvider(cfg.Provider.Anthropic))
+	if err := registerCustomProviders(providerRegistry, cfg.Provider.Custom); err != nil {
+		return fmt.Errorf("failed to configure custom providers: %w", err)
+	}
 
 	storePath := filepath.Join(config.SessionDir(), "sessions.db")
 	sessionStore, err := session.NewStore(storePath)
@@ -349,7 +356,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 }
 
 func runMCPAdd(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		return err
 	}
@@ -367,7 +374,7 @@ func runMCPAdd(cmd *cobra.Command, args []string) error {
 		Args:    mcpArgs,
 	}
 
-	if err := config.Save(cfg); err != nil {
+	if err := saveCLIConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -376,7 +383,7 @@ func runMCPAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runMCPList(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		return err
 	}
@@ -397,7 +404,7 @@ func runMCPList(cmd *cobra.Command, args []string) error {
 }
 
 func runMCPRemove(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		return err
 	}
@@ -409,7 +416,7 @@ func runMCPRemove(cmd *cobra.Command, args []string) error {
 
 	delete(cfg.MCP.Servers, name)
 
-	if err := config.Save(cfg); err != nil {
+	if err := saveCLIConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -471,7 +478,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadCLIConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -492,7 +499,14 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	for _, name := range gatewayProviderNames {
+	providerNames := append([]string(nil), gatewayProviderNames...)
+	customNames := make([]string, 0, len(cfg.Provider.Custom))
+	for name := range cfg.Provider.Custom {
+		customNames = append(customNames, name)
+	}
+	sort.Strings(customNames)
+	providerNames = append(providerNames, customNames...)
+	for _, name := range providerNames {
 		gCfg := gatewayConfigFor(cfg.Provider, name)
 		gw := provider.NewGatewayProxyProvider(name, gCfg)
 

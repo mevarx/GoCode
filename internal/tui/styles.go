@@ -35,6 +35,9 @@ var (
 	statusModelStyle = statusBarStyle.
 				Foreground(colorHighlight)
 
+	statusPathStyle = statusBarStyle.
+			Foreground(colorMutedFg)
+
 	statusStreamingStyle = statusBarStyle.
 				Foreground(colorWarning).
 				Bold(true)

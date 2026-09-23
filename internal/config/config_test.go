@@ -33,6 +33,11 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 		Command: "node",
 		Args:    []string{"server.js"},
 	}
+	cfg.Provider.Custom["deepseek"] = GatewayConfig{
+		BaseURL:      "https://api.deepseek.com",
+		APIKeyEnv:    "DEEPSEEK_API_KEY",
+		DefaultModel: "deepseek-flash",
+	}
 
 	if err := SaveToPath(cfg, tmpFile); err != nil {
 		t.Fatalf("failed to save config: %v", err)
@@ -57,5 +62,8 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if srv, ok := loaded.MCP.Servers["test-mcp"]; !ok || srv.Command != "node" {
 		t.Errorf("expected test-mcp server, got %+v", loaded.MCP.Servers)
+	}
+	if got := loaded.Provider.Custom["deepseek"]; got.BaseURL != "https://api.deepseek.com" || got.APIKeyEnv != "DEEPSEEK_API_KEY" || got.DefaultModel != "deepseek-flash" {
+		t.Errorf("unexpected custom provider config: %+v", got)
 	}
 }

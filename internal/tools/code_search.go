@@ -141,15 +141,16 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 			return Result{Error: "access denied: file is ignored or sensitive"}, nil
 		}
 		fileMatches, err := c.searchFile(rootDir, re, a.ContextLines, maxResults-matchCount)
-		if err == nil {
-			results = append(results, fileMatches...)
-			matchCount += len(fileMatches)
+		if err != nil {
+			return Result{Error: fmt.Sprintf("search failed: %s: %v", rootDir, err)}, nil
 		}
+		results = append(results, fileMatches...)
+		matchCount += len(fileMatches)
 	} else {
 		// Directory walk.
 		err = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return nil
+				return fmt.Errorf("search %s: %w", path, walkErr)
 			}
 
 			// Check context cancellation.
@@ -192,7 +193,7 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 
 			fileMatches, err := c.searchFile(path, re, a.ContextLines, maxResults-matchCount)
 			if err != nil {
-				return nil
+				return fmt.Errorf("search %s: %w", path, err)
 			}
 
 			results = append(results, fileMatches...)
@@ -206,7 +207,7 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 		})
 	}
 
-	if err != nil && err != filepath.SkipAll && ctx.Err() == nil {
+	if err != nil && err != filepath.SkipAll {
 		return Result{Error: fmt.Sprintf("search failed: %v", err)}, nil
 	}
 
