@@ -27,7 +27,7 @@
 
 Unlike heavy Python-based or Node.js-based AI CLI tools, GoCode compiles into a **single, zero-dependency binary** with instant startup latency and minimal memory footprint.
 
-GoCode is **provider-agnostic** and **local-first**: run completely offline with local LLMs via **Ollama**, or connect seamlessly to leading cloud AI models from **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, and more.
+GoCode is **provider-agnostic** and **local-first**: run completely offline with local LLMs via **Ollama** or **llama.cpp**, or connect seamlessly to leading cloud AI models from **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, **OpenCode Zen**, and more.
 
 ---
 
@@ -36,9 +36,9 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 ### Core Capabilities
 
 - **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies
-- **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama
-- **9 Multi-Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, OmniRoute
-- **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service with its own base URL and API-key environment variable
+- **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama or llama.cpp
+- **9 Built-in Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, and OmniRoute
+- **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service, including local llama.cpp, with its own base URL and API-key environment variable
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 ### v0.4.0 Additions
@@ -114,8 +114,8 @@ gocode --new
 # Resume a specific session
 gocode --session sess_20260815190405_a1b2c3d4
 
-# Use a specific provider and model
-gocode --provider gemini --model gemini-2.5-flash
+# Use a specific provider and current model
+gocode --provider openai --model gpt-6-astra
 
 # Plain terminal mode (no TUI)
 gocode --tui=false
@@ -202,17 +202,19 @@ If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
 
 ## Supported AI Providers
 
-| Provider | `--provider` | Environment Variable | Default Model | Base URL |
+| Provider | `--provider` | Environment Variable | Current model example | Base URL |
 | :-- | :-- | :-- | :-- | :-- |
-| **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | `https://api.anthropic.com/v1` |
-| **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-4o` | `https://api.openai.com/v1` |
-| **Groq** | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
-| **OpenRouter** | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` | `https://openrouter.ai/api/v1` |
-| **Qwen (DashScope)** | `qwen` | `DASHSCOPE_API_KEY` | `qwen-max` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| **Kimi (Moonshot)** | `kimi` | `MOONSHOT_API_KEY` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
+| **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | `https://api.anthropic.com/v1` |
+| **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-6-astra` | `https://api.openai.com/v1` |
+| **Groq** | `groq` | `GROQ_API_KEY` | _List with `/models`_ | `https://api.groq.com/openai/v1` |
+| **OpenRouter** | `openrouter` | `OPENROUTER_API_KEY` | _List with `/models`_ | `https://openrouter.ai/api/v1` |
+| **Qwen (DashScope)** | `qwen` | `DASHSCOPE_API_KEY` | _List with `/models`_ | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **Kimi (Moonshot)** | `kimi` | `MOONSHOT_API_KEY` | _List with `/models`_ | `https://api.moonshot.cn/v1` |
 | **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
 | **Ollama (Local)** | `ollama` | _None_ | _Auto-detected_ | `http://localhost:11434` |
+
+Model catalogs change frequently. Use `/providers` to list the models currently exposed by a provider and `/model <id>` to select one. The examples above are current recommended identifiers, not guarantees of account access; provider quotas, regions, and plan availability still apply.
 
 ### Add another API endpoint
 
@@ -230,6 +232,51 @@ gocode provider list
 ```
 
 Provider configuration stores the environment-variable name, not the key. Custom endpoints can also be managed with `gocode provider remove <name>` and live in `[provider.custom.<name>]` in `config.toml`. To make one the default, set `default = "deepseek"` in `[provider]`; otherwise select it with `gocode --provider deepseek`. The endpoint must support OpenAI Chat Completions; use the built-in `anthropic` provider for Anthropic's native API. See the [DeepSeek API compatibility guide](https://api-docs.deepseek.com/) for its current base URL and model IDs.
+
+### Connect a llama.cpp server
+
+`llama-server` exposes an OpenAI-compatible API, so connect it as a custom provider. Start the server with the model you want to use:
+
+```bash
+llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
+```
+
+Register the endpoint with GoCode (no API key is required for a local server):
+
+```bash
+gocode provider add llama-cpp \
+  --base-url http://127.0.0.1:8080/v1 \
+  --model <model-id-from-v1-models>
+
+gocode --provider llama-cpp
+```
+
+The model ID must match the identifier returned by `GET http://127.0.0.1:8080/v1/models`; use that endpoint to discover the exact ID. For a server exposed on another machine, use HTTPS or a trusted reverse proxy rather than exposing an unauthenticated HTTP port to the internet.
+
+### Connect OpenCode Zen free models directly
+
+GoCode can call the OpenCode Zen gateway directly as an OpenAI-compatible provider. This avoids an unofficial third-party proxy. Create an API key in the [OpenCode console](https://opencode.ai/auth), then configure the official Zen endpoint:
+
+```bash
+gocode provider add opencode-zen \
+  --base-url https://opencode.ai/zen/v1 \
+  --api-key-env OPENCODE_API_KEY \
+  --model deepseek-v4-flash-free
+
+export OPENCODE_API_KEY="your-opencode-api-key"
+gocode --provider opencode-zen
+gocode --provider opencode-zen --model mimo-v2.5-free
+```
+
+Zen currently lists free models including `deepseek-v4-flash-free`, `mimo-v2.5-free`, `nemotron-3-ultra-free`, `north-mini-code-free`, and `big-pickle`. Free-model availability, limits, and IDs can change, so inspect the live catalog before selecting a model:
+
+```bash
+curl https://opencode.ai/zen/v1/models \
+  -H "Authorization: Bearer $OPENCODE_API_KEY"
+```
+
+Use `/providers` in GoCode to list what the configured gateway currently returns. OpenCode Zen is a hosted service, not a local or guaranteed unlimited free tier; use the current [Zen model catalog](https://opencode.ai/docs/zen) for pricing and availability.
+
 
 ---
 
@@ -275,17 +322,17 @@ default_model = ""
 [provider.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"
-default_model = "gemini-2.5-flash"
+default_model = "gemini-3.8-flash"
 
 [provider.anthropic]
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-opus-5-5"
 
 [provider.openai]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
-default_model = "gpt-4o"
+default_model = "gpt-6-astra"
 
 [permissions]
 auto_approve = ["file_read", "code_search"]  # Tools that execute without confirmation
@@ -378,7 +425,7 @@ GoCode is an open-source terminal AI coding assistant used for automated code ge
 
 ### Can GoCode run completely offline?
 
-Yes. GoCode connects natively to **Ollama** running locally on your machine (`http://localhost:11434`). You can run open-weights models like `codellama`, `llama3.3`, `deepseek-coder`, or `qwen2.5-coder` with zero internet access and complete data privacy.
+Yes. GoCode connects natively to **Ollama** (`http://localhost:11434`) or a **llama.cpp** server (`http://localhost:8080/v1`). You can run open-weights models such as `llama3.3`, `deepseek-coder`, or `qwen-coder` with zero internet access and complete data privacy.
 
 ### How does GoCode compare to Cursor or Aider?
 
@@ -386,7 +433,7 @@ Unlike Cursor (which is an Electron IDE extension) or Aider (which runs on Pytho
 
 ### Which LLM API providers does GoCode support?
 
-GoCode supports 9 major provider gateways: Google Gemini, Anthropic Claude, OpenAI, Groq, OpenRouter, Qwen (Aliyun DashScope), Kimi (Moonshot AI), local Ollama servers, and OmniRoute proxies.
+GoCode supports 9 built-in provider gateways plus custom OpenAI-compatible endpoints: Google Gemini, Anthropic Claude, OpenAI, Groq, OpenRouter, Qwen (Aliyun DashScope), Kimi (Moonshot AI), local Ollama, OmniRoute proxies, llama.cpp, and OpenCode Zen.
 
 ### Is GoCode free to use?
 
