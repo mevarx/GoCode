@@ -40,6 +40,7 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **9 Built-in Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, and OmniRoute
 - **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service, including local llama.cpp, with its own base URL and API-key environment variable
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
+- **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 ### v0.4.0 Additions
 
@@ -340,7 +341,9 @@ deny = []                                    # Tools that are permanently blocke
 sensitive_patterns = ["*.vault", "custom.env"] # Additional patterns to block from AI access
 
 [tools.shell]
-timeout_seconds = 30  # Maximum seconds a shell command may run
+timeout_seconds = 30      # Maximum seconds a shell command may run
+max_output_bytes = 1048576 # Cap captured stdout+stderr per command
+redact_secrets = true      # Mask credential-shaped values in command output
 
 [mcp.servers.filesystem]
 command = "npx"
@@ -374,9 +377,32 @@ GoCode operates under a strict **Human-in-the-Loop Security Architecture**. The 
 | `code_search` | Search files via regex/plain text with context lines & glob filtering | Automatic |
 | `file_write` | Create new files or overwrite existing files (with unified diff preview) | **Requires Confirmation** |
 | `file_patch` | Perform target string replacements & targeted code edits (with unified diff preview) | **Requires Confirmation** |
-| `shell_exec` | Run terminal commands confined to workspace root | **Requires Confirmation** |
+| `shell_exec` | Run terminal commands in the workspace working directory (**not confined** — see below) | **Requires Confirmation** |
 
-Tools can be auto-approved or denied via the `[permissions]` section in `config.toml`. Protected sensitive patterns (`.env*`, keys, certificates, cloud credentials) are unconditionally blocked from inspection.
+Tools can be auto-approved or denied via the `[permissions]` section in `config.toml`.
+
+### What is actually enforced
+
+Being precise about the boundary matters more than claiming the widest one, so here is exactly where each control applies.
+
+**The file tools are confined.** `file_read`, `file_write`, `file_patch` and `code_search` resolve every path through the workspace root, reject traversal, and re-verify after resolving symlinks. Protected patterns (`.env*`, SSH keys, certificates, cloud credentials) are unconditionally blocked from inspection by these tools.
+
+**The shell is not confined.** `shell_exec` runs a command string through your shell with the workspace as its *working directory*. A working directory is not a sandbox: a command can read any file your user account can read, anywhere on the machine. GoCode cannot reliably prevent this — command substitution, pipes and interpreters defeat any static inspection of a shell string.
+
+What GoCode does instead, for `shell_exec`:
+
+- **Secret redaction** — credential-shaped values in command output (API keys, tokens, private key blocks, AWS keys, JWTs, `KEY=value` secrets) are masked before the output reaches the model or is written to your session transcript. Disable with `redact_secrets = false`.
+- **Advisory warnings** — a command that references a known-sensitive path is flagged in the approval prompt so you can decline it.
+- **The approval gate** — the real protection. Keep `shell_exec` out of `auto_approve` and read the command before approving.
+
+If you need a hard boundary, either deny `shell_exec` outright:
+
+```toml
+[permissions]
+deny = ["shell_exec"]
+```
+
+…or treat the approval prompt as the trust boundary it actually is. Do not put `shell_exec` in `auto_approve` on a machine holding credentials.
 
 ---
 

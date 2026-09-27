@@ -84,7 +84,9 @@ type ToolsConfig struct {
 }
 
 type ShellConfig struct {
-	TimeoutSeconds int `toml:"timeout_seconds"`
+	TimeoutSeconds int  `toml:"timeout_seconds"`
+	MaxOutputBytes int  `toml:"max_output_bytes"`
+	RedactSecrets  bool `toml:"redact_secrets"`
 }
 
 // DefaultConfig returns default configuration values.
@@ -154,6 +156,8 @@ func DefaultConfig() Config {
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
 				TimeoutSeconds: 30,
+				MaxOutputBytes: 1024 * 1024,
+				RedactSecrets:  true,
 			},
 		},
 		MCP: MCPConfig{

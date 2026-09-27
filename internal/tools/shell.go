@@ -15,6 +15,9 @@ type ShellExecTool struct {
 	Timeout        time.Duration
 	WorkspaceRoot  string
 	MaxOutputBytes int
+	// Guard applies secret redaction to output and surfaces advisory
+	// sensitive-path warnings in the approval preview. May be nil.
+	Guard *ShellGuard
 }
 
 type shellExecArgs struct {
@@ -24,7 +27,7 @@ type shellExecArgs struct {
 func (s *ShellExecTool) Spec() ToolSpec {
 	return ToolSpec{
 		Name:        "shell_exec",
-		Description: "Execute a shell command and return its stdout and stderr. Use this to run build commands, tests, list files, inspect the system, etc. The command runs in the user's shell within the workspace directory.",
+		Description: "Execute a shell command and return its stdout and stderr. Use this to run build commands, tests, list files, inspect the system, etc. The command runs in the user's shell with the workspace as its working directory. The shell is NOT confined to the workspace: it can read any file the user can. Do not use it to read credential or secret files — use file_read, which enforces the workspace boundary and sensitive-file protection.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["command"],
@@ -60,6 +63,7 @@ func (s *ShellExecTool) Preview(ctx context.Context, args json.RawMessage) (Prev
 	}
 
 	desc := fmt.Sprintf("Command: %s\nWorking directory: %s\nTimeout: %s", a.Command, workDir, timeout)
+	desc += DescribeFlags(s.Guard.FlagSensitivePaths(a.Command))
 	return Preview{
 		Description: desc,
 		Command:     a.Command,
@@ -103,6 +107,17 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	stdoutStr := truncateOutput(stdout.String(), maxOutput)
 	stderrStr := truncateOutput(stderr.String(), maxOutput)
 
+	// Redact credential-shaped values before they can reach the model or be
+	// written into the persisted session transcript.
+	var redactions []string
+	if s.Guard != nil {
+		var hits []string
+		stdoutStr, hits = s.Guard.RedactSecrets(stdoutStr)
+		redactions = append(redactions, hits...)
+		stderrStr, hits = s.Guard.RedactSecrets(stderrStr)
+		redactions = append(redactions, hits...)
+	}
+
 	var output strings.Builder
 	if len(stdoutStr) > 0 {
 		output.WriteString("STDOUT:\n")
@@ -119,6 +134,7 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	result := Result{
 		Output: output.String(),
 	}
+	result.Output += DescribeRedactions(redactions)
 
 	if err != nil {
 		// Distinguish timeout from other errors.

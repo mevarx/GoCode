@@ -308,8 +308,13 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	toolRegistry := tools.NewRegistry()
 	shellTimeout := time.Duration(cfg.Tools.Shell.TimeoutSeconds) * time.Second
 	toolRegistry.Register(&tools.ShellExecTool{
-		Timeout:       shellTimeout,
-		WorkspaceRoot: workspaceRoot,
+		Timeout:        shellTimeout,
+		WorkspaceRoot:  workspaceRoot,
+		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+		Guard: &tools.ShellGuard{
+			SensitiveMatcher:   sensitiveMatcher,
+			RedactSecretOutput: cfg.Tools.Shell.RedactSecrets,
+		},
 	})
 	toolRegistry.Register(&tools.FileReadTool{
 		SensitiveMatcher: sensitiveMatcher,
