@@ -20,6 +20,9 @@ type AgentLoop struct {
 	Approval       *tools.ApprovalGate
 	ContextManager *ContextManager
 	WorkspaceRoot  string
+	// GuardConfig carries the per-turn tool limits. Shared with the TUI path
+	// so both loops stop under the same conditions.
+	GuardConfig LoopGuardConfig
 }
 
 func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.Registry, approval *tools.ApprovalGate) *AgentLoop {
@@ -136,6 +139,11 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 }
 
 func (a *AgentLoop) streamResponse(ctx context.Context) error {
+	guard := NewLoopGuardWithConfig(a.GuardConfig)
+	return a.streamResponseGuarded(ctx, guard)
+}
+
+func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard) error {
 	for {
 		p, err := a.Registry.Active()
 		if err != nil {
@@ -145,7 +153,7 @@ func (a *AgentLoop) streamResponse(ctx context.Context) error {
 		providerToolSpecs := a.toolSpecsAsProvider()
 
 		history := a.ContextManager.Truncate(a.Session.History())
-		slog.Debug("streaming request", "provider", a.Registry.ActiveName(), "model", model, "history_len", len(history))
+		slog.Debug("streaming request", "provider", a.Registry.ActiveName(), "model", model, "history_len", len(history), "iteration", guard.iterations)
 
 		ch, err := p.Stream(ctx, model, history, providerToolSpecs)
 		if err != nil {
@@ -185,6 +193,21 @@ func (a *AgentLoop) streamResponse(ctx context.Context) error {
 		a.Session.AddMessage(assistantMsg)
 
 		if len(toolCalls) == 0 {
+			if s := guard.Summary(); s != "" {
+				fmt.Println(s)
+			}
+			return nil
+		}
+
+		// Bound the turn before executing anything. A failing tool that the
+		// model retries identically must still hit the cap, so the check
+		// happens here rather than after execution.
+		if err := guard.CheckCall(toolCalls); err != nil {
+			a.Session.AddMessage(provider.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Stopped: %v", err),
+			})
+			fmt.Printf("\n[GoCode] %v\n", err)
 			return nil
 		}
 

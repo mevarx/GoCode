@@ -206,10 +206,20 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to configure custom providers: %w", err)
 	}
 
-	storePath := filepath.Join(config.SessionDir(), "sessions.db")
-	sessionStore, err := session.NewStore(storePath)
-	if err != nil {
-		slog.Warn("failed to open session store", "path", storePath, "error", err)
+	// session.persist was previously parsed and then ignored, so
+	// `persist = false` still wrote every message to disk. Honor it now:
+	// with persistence off, the store is never opened, so nothing is read
+	// back on resume and nothing is written during the session.
+	var sessionStore *session.SessionStore
+	if cfg.Session.Persist {
+		storePath := filepath.Join(config.SessionDir(), "sessions.db")
+		sessionStore, err = session.NewStore(storePath)
+		if err != nil {
+			slog.Warn("failed to open session store", "path", storePath, "error", err)
+			sessionStore = nil
+		}
+	} else {
+		slog.Info("session persistence disabled by config")
 	}
 	if sessionStore != nil {
 		defer sessionStore.Close()
@@ -351,12 +361,20 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	approval := tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
 
+	// One guard configuration for both UI paths, so the plain loop and the TUI
+	// cannot disagree about when a turn is allowed to stop.
+	guardCfg := agent.LoopGuardConfig{
+		MaxIterations:     cfg.Tools.MaxToolIterations,
+		MaxRepeatedCalls:  cfg.Tools.MaxRepeatedToolCalls,
+	}
+
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot)
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg)
 	}
 
 	loop := agent.NewAgentLoop(providerRegistry, sess, toolRegistry, approval)
 	loop.WorkspaceRoot = workspaceRoot
+	loop.GuardConfig = guardCfg
 	return loop.Run(ctx)
 }
 
