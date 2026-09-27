@@ -39,6 +39,10 @@ type agentToolMsg struct {
 	result  string
 	isError bool
 }
+
+// agentExitMsg is emitted when a slash command asks the program to quit. Any
+// notice is rendered before the program stops.
+type agentExitMsg struct{ notice string }
 type approvalRequestMsg struct{ req ApprovalRequest }
 
 type Model struct {
@@ -278,6 +282,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addMessage(ChatMessage{Role: role, Label: label, Content: msg.result})
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
+
+	case agentExitMsg:
+		if msg.notice != "" {
+			m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: msg.notice})
+			m.viewport.GotoBottom()
+		}
+		m.streaming = false
+		return m, tea.Quit
 
 	case approvalRequestMsg:
 		if m.approvalActive {

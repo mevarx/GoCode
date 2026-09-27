@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
-	"strings"
+	"reflect"
 	"testing"
 	"time"
 
@@ -31,11 +31,16 @@ func (b *blockingProvider) Stream(ctx context.Context, model string, history []p
 	return ch, nil
 }
 
+func newEngine(p provider.Provider, sess *agent.Session) *agent.AgentLoop {
+	reg := provider.NewRegistry()
+	reg.Register(p)
+	return agent.NewAgentLoop(reg, sess, tools.NewRegistry(), tools.NewApprovalGate())
+}
+
 func TestInterruptCancelsRunningTurn(t *testing.T) {
-	r := provider.NewRegistry()
-	r.Register(&blockingProvider{})
 	sess := agent.NewSession("m")
-	approval := tools.NewApprovalGate()
+	engine := newEngine(&blockingProvider{}, sess)
+
 	inputCh := make(chan string, 1)
 	outputCh := make(chan tea.Msg, 64)
 	cancelCh := make(chan struct{}, 1)
@@ -44,31 +49,108 @@ func TestInterruptCancelsRunningTurn(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		runAgentGoroutine(ctx, r, sess, tools.NewRegistry(), approval, inputCh, outputCh, cancelCh, "", agent.NewContextManager(0))
+		runEngineGoroutine(ctx, engine, inputCh, outputCh, cancelCh)
 		close(done)
 	}()
 
 	inputCh <- "hello"
 	cancelCh <- struct{}{}
 
-	select {
-	case msg := <-outputCh:
-		doneMsg, ok := msg.(agentDoneMsg)
-		if !ok {
-			t.Fatalf("expected agentDoneMsg, got %T", msg)
+	// The turn may report the cancellation as an error event before the done
+	// message, so drain until the done message arrives.
+	deadline := time.After(3 * time.Second)
+	var doneSeen bool
+	for !doneSeen {
+		select {
+		case msg := <-outputCh:
+			switch m := msg.(type) {
+			case agentDoneMsg:
+				if !errors.Is(m.err, context.Canceled) {
+					t.Fatalf("expected context.Canceled after interrupt, got %v", m.err)
+				}
+				doneSeen = true
+			case agentToolMsg:
+				// Error events surfaced from the engine; keep draining.
+			default:
+				t.Fatalf("unexpected message type %T", msg)
+			}
+		case <-deadline:
+			t.Fatal("turn did not complete after interrupt")
 		}
-		if !errors.Is(doneMsg.err, context.Canceled) {
-			t.Fatalf("expected context.Canceled after interrupt, got %v", doneMsg.err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("turn did not complete after interrupt")
 	}
 
-	// The turn must be over and ready for the next input.
+	// The goroutine must still be alive and ready for the next input.
 	select {
 	case <-done:
-		t.Fatal("agent goroutine exited unexpectedly")
+		t.Fatal("engine goroutine exited unexpectedly")
 	default:
+	}
+}
+
+// The observer is wired once in Run. runEngineGoroutine must not replace it,
+// which is the wiring mistake that would silently disconnect the TUI from
+// engine output.
+func TestEngineGoroutinePreservesObserver(t *testing.T) {
+	sess := agent.NewSession("m")
+	engine := newEngine(&blockingProvider{}, sess)
+	engine.Observe = func(agent.LoopEvent) {}
+	original := engine.Observe
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputCh := make(chan string, 1)
+	go runEngineGoroutine(ctx, engine, inputCh, make(chan tea.Msg, 8), make(chan struct{}, 1))
+
+	inputCh <- "hi"
+	time.Sleep(150 * time.Millisecond)
+
+	if reflect.ValueOf(engine.Observe).Pointer() != reflect.ValueOf(original).Pointer() {
+		t.Error("runEngineGoroutine must not replace engine.Observe")
+	}
+}
+
+// /exit must emit EventExit so the program can quit, and report the exit
+// request to the caller.
+func TestExitCommandEmitsExitEvent(t *testing.T) {
+	sess := agent.NewSession("m")
+	engine := newEngine(&fakeProvider{name: "ollama", models: []string{"llama3"}}, sess)
+
+	var events []agent.LoopEvent
+	engine.Observe = func(ev agent.LoopEvent) { events = append(events, ev) }
+
+	err := engine.RunTurn(context.Background(), "/exit")
+	if !agent.IsExitRequest(err) {
+		t.Fatalf("expected exit request, got %v", err)
+	}
+
+	var sawExit bool
+	for _, ev := range events {
+		if ev.Kind == agent.EventExit {
+			sawExit = true
+		}
+	}
+	if !sawExit {
+		t.Error("expected an EventExit to be emitted")
+	}
+}
+
+// Plain input must be recorded as a user turn, not swallowed as a command.
+func TestPlainInputBecomesUserTurn(t *testing.T) {
+	sess := agent.NewSession("m")
+	engine := newEngine(&fakeProvider{name: "ollama", models: []string{"llama3"}}, sess)
+
+	// fakeProvider cannot stream, so RunTurn errors — but the message must
+	// already be in the session.
+	_ = engine.RunTurn(context.Background(), "hello there")
+
+	found := false
+	for _, m := range sess.History() {
+		if m.Role == "user" && m.Content == "hello there" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("plain input was not recorded as a user message")
 	}
 }
 
@@ -94,107 +176,46 @@ func newTestRegistry(models []string) *provider.Registry {
 	return r
 }
 
-func drainOneToolMsg(t *testing.T, out <-chan tea.Msg) agentToolMsg {
-	t.Helper()
-	select {
-	case msg := <-out:
-		tm, ok := msg.(agentToolMsg)
-		if !ok {
-			t.Fatalf("expected agentToolMsg, got %T", msg)
+// toTeaMsg must map every event kind the engine can emit, so the TUI never
+// silently drops engine output.
+func TestToTeaMsgCoversEveryEventKind(t *testing.T) {
+	cases := []struct {
+		ev   agent.LoopEvent
+		want string
+	}{
+		{agent.LoopEvent{Kind: agent.EventDelta, Text: "hi"}, "agentChunkMsg"},
+		{agent.LoopEvent{Kind: agent.EventToolResult, Tool: "t", Text: "out"}, "agentToolMsg"},
+		{agent.LoopEvent{Kind: agent.EventError, Text: "bad"}, "agentToolMsg"},
+		{agent.LoopEvent{Kind: agent.EventNotice, Text: "note"}, "agentToolMsg"},
+		{agent.LoopEvent{Kind: agent.EventExit, Text: "bye"}, "agentExitMsg"},
+	}
+	for _, tc := range cases {
+		msg := toTeaMsg(tc.ev)
+		if msg == nil {
+			t.Errorf("event kind %v produced nil message", tc.ev.Kind)
+			continue
 		}
-		return tm
+		if got := typeName(msg); got != tc.want {
+			t.Errorf("event kind %v mapped to %s, want %s", tc.ev.Kind, got, tc.want)
+		}
+	}
+}
+
+func TestToTeaMsgDropsTurnEnd(t *testing.T) {
+	if msg := toTeaMsg(agent.LoopEvent{Kind: agent.EventTurnEnd}); msg != nil {
+		t.Errorf("EventTurnEnd should map to nil, got %T", msg)
+	}
+}
+
+func typeName(v any) string {
+	switch v.(type) {
+	case agentChunkMsg:
+		return "agentChunkMsg"
+	case agentToolMsg:
+		return "agentToolMsg"
+	case agentExitMsg:
+		return "agentExitMsg"
 	default:
-		t.Fatal("no message produced")
-		return agentToolMsg{}
-	}
-}
-
-func TestUnknownSlashCommandIsRejected(t *testing.T) {
-	reg := newTestRegistry([]string{"llama3"})
-	sess := agent.NewSession("llama3")
-	out := make(chan tea.Msg, 8)
-
-	if !handleSlashCommand(context.Background(), "/bogus", reg, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("expected unknown slash command to be handled")
-	}
-	tm := drainOneToolMsg(t, out)
-	if !tm.isError {
-		t.Fatal("expected error message for unknown command")
-	}
-	if !strings.Contains(tm.result, "/help") {
-		t.Errorf("expected result to mention /help, got %q", tm.result)
-	}
-}
-
-func TestPlainMessageIsNotACommand(t *testing.T) {
-	reg := newTestRegistry([]string{"llama3"})
-	sess := agent.NewSession("llama3")
-	out := make(chan tea.Msg, 8)
-
-	if handleSlashCommand(context.Background(), "hello there", reg, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("plain message must not be handled as a slash command")
-	}
-}
-
-func TestModelSwitchValidatesAgainstProvider(t *testing.T) {
-	reg := newTestRegistry([]string{"gpt-4o", "gemini-2.5-flash"})
-	sess := agent.NewSession("gpt-4o")
-	out := make(chan tea.Msg, 8)
-
-	if !handleSlashCommand(context.Background(), "/model bogus", reg, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("expected /model to be handled")
-	}
-	tm := drainOneToolMsg(t, out)
-	if !tm.isError {
-		t.Fatalf("unknown model should be rejected, got %q", tm.result)
-	}
-	if sess.Model() != "gpt-4o" {
-		t.Errorf("model should stay gpt-4o, got %q", sess.Model())
-	}
-
-	if !handleSlashCommand(context.Background(), "/model gemini-2.5-flash", reg, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("expected /model to be handled")
-	}
-	tm = drainOneToolMsg(t, out)
-	if tm.isError {
-		t.Fatalf("valid model should be accepted, got %q", tm.result)
-	}
-	if sess.Model() != "gemini-2.5-flash" {
-		t.Errorf("expected model gemini-2.5-flash, got %q", sess.Model())
-	}
-}
-
-func TestModelSwitchSkipsValidationWhenListUnavailable(t *testing.T) {
-	r := provider.NewRegistry()
-	r.Register(&fakeProvider{name: "ollama", modelsError: errors.New("offline")})
-	sess := agent.NewSession("llama3")
-	out := make(chan tea.Msg, 8)
-
-	if !handleSlashCommand(context.Background(), "/model llama3.1", r, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("expected /model to be handled")
-	}
-	tm := drainOneToolMsg(t, out)
-	if tm.isError {
-		t.Fatalf("validation must be skipped when model list fails, got %q", tm.result)
-	}
-	if sess.Model() != "llama3.1" {
-		t.Errorf("expected model llama3.1, got %q", sess.Model())
-	}
-}
-
-func TestModelQueryShowsActive(t *testing.T) {
-	reg := newTestRegistry([]string{"gpt-4o", "gemini-2.5-flash"})
-	sess := agent.NewSession("gpt-4o")
-	out := make(chan tea.Msg, 8)
-
-	if !handleSlashCommand(context.Background(), "/model", reg, sess, out, "", agent.NewContextManager(0)) {
-		t.Fatal("expected /model to be handled")
-	}
-	tm := drainOneToolMsg(t, out)
-	if tm.isError {
-		t.Fatalf("expected model info, got %q", tm.result)
-	}
-	if !strings.Contains(tm.result, "gpt-4o") {
-		t.Errorf("expected active model in result, got %q", tm.result)
+		return "unknown"
 	}
 }

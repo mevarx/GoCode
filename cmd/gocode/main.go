@@ -210,16 +210,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// `persist = false` still wrote every message to disk. Honor it now:
 	// with persistence off, the store is never opened, so nothing is read
 	// back on resume and nothing is written during the session.
-	var sessionStore *session.SessionStore
-	if cfg.Session.Persist {
-		storePath := filepath.Join(config.SessionDir(), "sessions.db")
-		sessionStore, err = session.NewStore(storePath)
-		if err != nil {
-			slog.Warn("failed to open session store", "path", storePath, "error", err)
-			sessionStore = nil
-		}
-	} else {
-		slog.Info("session persistence disabled by config")
+	sessionStore, err := openSessionStore(cfg.Session.Persist, filepath.Join(config.SessionDir(), "sessions.db"))
+	if err != nil {
+		slog.Warn("failed to open session store", "error", err)
 	}
 	if sessionStore != nil {
 		defer sessionStore.Close()
@@ -376,6 +369,22 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	loop.WorkspaceRoot = workspaceRoot
 	loop.GuardConfig = guardCfg
 	return loop.Run(ctx)
+}
+
+// openSessionStore opens the SQLite session store when persistence is
+// enabled. It is a separate function so the persist=false path is directly
+// testable: with persistence off nothing is created and nothing is written.
+func openSessionStore(persist bool, dbPath string) (*session.SessionStore, error) {
+	if !persist {
+		slog.Info("session persistence disabled by config")
+		return nil, nil
+	}
+	store, err := session.NewStore(dbPath)
+	if err != nil {
+		slog.Warn("failed to open session store", "path", dbPath, "error", err)
+		return nil, err
+	}
+	return store, nil
 }
 
 func runMCPAdd(cmd *cobra.Command, args []string) error {

@@ -1,29 +1,23 @@
-package tui
+package agent
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
 // recordingProvider captures the history it was asked to stream, which is the
-// only way to observe whether runTurn truncated before sending.
+// only way to observe whether the engine truncated before sending.
 type recordingProvider struct {
-	mu       sync.Mutex
-	received [][]provider.Message
-	// toolCalls, when set, is emitted on every round-trip.
+	mu        sync.Mutex
+	received  [][]provider.Message
 	toolCalls []provider.ToolCall
-	// text, when set, is emitted before the tool calls.
-	text string
+	text      string
 }
 
 func (r *recordingProvider) Name() string { return "recording" }
@@ -72,19 +66,18 @@ func (r *recordingProvider) callCount() int {
 	return len(r.received)
 }
 
-// TestRunTurnTruncatesHistory is the regression test for the defect where the
-// TUI sent session.History() untruncated while the plain loop called
-// ContextManager.Truncate. With a tiny MaxTokens, a long history must arrive at
-// the provider already shortened.
-func TestRunTurnTruncatesHistory(t *testing.T) {
-	// Reply with text only, so the turn ends after one round-trip.
-	p := &recordingProvider{text: "done"}
-
+func engineWith(p provider.Provider, sess *Session) *AgentLoop {
 	reg := provider.NewRegistry()
 	reg.Register(p)
+	return NewAgentLoop(reg, sess, tools.NewRegistry(), tools.NewApprovalGate())
+}
 
-	sess := agent.NewSession("m")
-	// A long history: one system message plus many user/assistant turns.
+// TestRunTurnTruncatesHistory is the regression test for the defect where the
+// TUI sent session.History() untruncated while the plain loop truncated. The
+// engine is the single implementation, so this now covers both UIs.
+func TestRunTurnTruncatesHistory(t *testing.T) {
+	p := &recordingProvider{text: "done"}
+	sess := NewSession("m")
 	sess.AddMessage(provider.Message{Role: "system", Content: "system prompt"})
 	for i := 0; i < 40; i++ {
 		sess.AddMessage(provider.Message{Role: "user", Content: strings.Repeat("q", 200)})
@@ -92,13 +85,12 @@ func TestRunTurnTruncatesHistory(t *testing.T) {
 	}
 	full := len(sess.History())
 
-	out := make(chan tea.Msg, 256)
-	cm := agent.NewContextManager(0)
-	cm.MaxTokens = 300 // far below the full history
+	engine := engineWith(p, sess)
+	engine.ContextManager = NewContextManager(0)
+	engine.ContextManager.MaxTokens = 300
 
-	if err := runTurn(context.Background(), reg, sess, tools.NewRegistry(),
-		tools.NewApprovalGate(), nil, out, cm); err != nil {
-		t.Fatalf("runTurn returned error: %v", err)
+	if err := engine.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
 	}
 
 	received := p.lastHistory()
@@ -108,53 +100,43 @@ func TestRunTurnTruncatesHistory(t *testing.T) {
 	if len(received) == 0 {
 		t.Fatal("truncation removed everything")
 	}
-	// The system message must survive truncation.
 	if received[0].Role != "system" {
 		t.Errorf("expected system message first, got %q", received[0].Role)
 	}
-	// No orphaned tool message may lead the history.
 	if len(received) > 1 && received[1].Role == "tool" {
-		t.Errorf("history starts with an orphaned tool message")
+		t.Error("history starts with an orphaned tool message")
 	}
 }
 
-// The guard must stop a runaway turn in the TUI path exactly as it does in the
-// plain path, and must report it to the user.
+// The guard must stop a runaway turn, and must report it.
 func TestRunTurnStopsRunawayToolCalls(t *testing.T) {
 	p := &recordingProvider{toolCalls: []provider.ToolCall{{
 		ID:   "x",
 		Name: "file_read",
 		Args: json.RawMessage(`{"path":"missing.txt"}`),
 	}}}
+	sess := NewSession("m")
+	engine := engineWith(p, sess)
 
-	reg := provider.NewRegistry()
-	reg.Register(p)
-	sess := agent.NewSession("m")
-	sess.AddMessage(provider.Message{Role: "user", Content: "go"})
+	var events []LoopEvent
+	engine.Observe = func(ev LoopEvent) { events = append(events, ev) }
 
-	out := make(chan tea.Msg, 256)
-	// A tool registry without the tool: every call errors, which is the
-	// runaway shape — the model retries the same call forever.
-	if err := runTurn(context.Background(), reg, sess, tools.NewRegistry(),
-		tools.NewApprovalGate(), nil, out, agent.NewContextManager(0)); err != nil {
-		t.Fatalf("runTurn returned error: %v", err)
+	if err := engine.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
 	}
 
 	calls := p.callCount()
 	if calls == 0 {
 		t.Fatal("provider was never called")
 	}
-	if calls > agent.DefaultMaxRepeatedToolCalls+1 {
+	if calls > DefaultMaxRepeatedToolCalls+1 {
 		t.Errorf("runaway not stopped: provider called %d times", calls)
 	}
 
-	// The stop must be visible to the user.
 	var sawStop bool
-	for len(out) > 0 {
-		if msg, ok := (<-out).(agentToolMsg); ok {
-			if msg.isError && strings.Contains(msg.result, "identical arguments") {
-				sawStop = true
-			}
+	for _, ev := range events {
+		if ev.Kind == EventError && strings.Contains(ev.Text, "identical arguments") {
+			sawStop = true
 		}
 	}
 	if !sawStop {
@@ -162,32 +144,12 @@ func TestRunTurnStopsRunawayToolCalls(t *testing.T) {
 	}
 }
 
-// A nil ContextManager must not panic; runTurn falls back to a default.
-func TestRunTurnTolerantOfNilContextManager(t *testing.T) {
-	p := &recordingProvider{text: "ok"}
-	reg := provider.NewRegistry()
-	reg.Register(p)
-	sess := agent.NewSession("m")
-	sess.AddMessage(provider.Message{Role: "user", Content: "go"})
-
-	out := make(chan tea.Msg, 16)
-	err := runTurn(context.Background(), reg, sess, tools.NewRegistry(),
-		tools.NewApprovalGate(), nil, out, nil)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 // A provider that cannot stream must surface the error, not spin.
 func TestRunTurnSurfacesStreamError(t *testing.T) {
-	reg := provider.NewRegistry()
-	reg.Register(&errProvider{})
-	sess := agent.NewSession("m")
-	sess.AddMessage(provider.Message{Role: "user", Content: "go"})
+	sess := NewSession("m")
+	engine := engineWith(&errProvider{}, sess)
 
-	out := make(chan tea.Msg, 16)
-	err := runTurn(context.Background(), reg, sess, tools.NewRegistry(),
-		tools.NewApprovalGate(), nil, out, agent.NewContextManager(0))
+	err := engine.RunTurn(context.Background(), "go")
 	if err == nil {
 		t.Fatal("expected stream error to be returned")
 	}
@@ -200,5 +162,9 @@ func (e *errProvider) Name() string { return "err" }
 func (e *errProvider) Models(context.Context) ([]string, error) { return nil, nil }
 
 func (e *errProvider) Stream(context.Context, string, []provider.Message, []provider.ToolSpec) (<-chan provider.StreamChunk, error) {
-	return nil, errors.New("boom")
+	return nil, errBoom{}
 }
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "boom" }

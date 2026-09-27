@@ -1,20 +1,57 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"os"
 	"strings"
 
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
+// LoopEventKind classifies what the agent loop is reporting.
+type LoopEventKind int
+
+const (
+	// EventDelta is a fragment of assistant text, suitable for streaming to
+	// a display.
+	EventDelta LoopEventKind = iota
+	// EventToolResult reports the outcome of a single tool call.
+	EventToolResult
+	// EventNotice is informational output that is not an error, such as the
+	// tool-usage summary or a slash command's result.
+	EventNotice
+	// EventError reports a failure the user should see.
+	EventError
+	// EventExit reports that a slash command asked the UI to shut down. The
+	// UI renders any accompanying notice and then quits.
+	EventExit
+	// EventTurnEnd signals that the turn finished, successfully or not.
+	EventTurnEnd
+)
+
+// LoopEvent is a single thing the agent loop wants the UI to show.
+//
+// The loop does not know whether it is driving a plain terminal or a Bubble
+// Tea program, so it reports rather than prints. There is exactly one engine;
+// each UI supplies a renderer for these events.
+type LoopEvent struct {
+	Kind    LoopEventKind
+	Text    string // delta text, notice body, or error text
+	Tool    string // tool name for EventToolResult
+	IsError bool
+	// Err carries the underlying error on EventTurnEnd.
+	Err error
+}
+
+// maxDisplayedToolOutput caps how much of a tool result is rendered. The full
+// result always goes to the model and the session transcript; this only limits
+// what the user sees.
+const maxDisplayedToolOutput = 2000
+
+// AgentLoop is the single agent engine. Both the plain terminal loop and the
+// TUI drive this same type: Run for the plain loop, RunTurn for the TUI.
 type AgentLoop struct {
 	Registry       *provider.Registry
 	Session        *Session
@@ -25,6 +62,14 @@ type AgentLoop struct {
 	// GuardConfig carries the per-turn tool limits. Shared with the TUI path
 	// so both loops stop under the same conditions.
 	GuardConfig LoopGuardConfig
+	// Observe, when set, receives every event the loop produces. Nil means
+	// events are discarded, which is only appropriate in tests.
+	Observe func(LoopEvent)
+	// AskApproval, when set, is used by slash commands that need to prompt
+	// the user (for example /commit). The plain terminal loop supplies a
+	// stdin-backed implementation; the TUI relies on the approval gate's
+	// OnPresent instead and leaves this nil.
+	AskApproval func(prompt string) bool
 }
 
 func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.Registry, approval *tools.ApprovalGate) *AgentLoop {
@@ -35,6 +80,17 @@ func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.
 		Approval:       approval,
 		ContextManager: NewContextManager(0),
 	}
+}
+
+// emit reports an event to the observer, if one is attached.
+func (a *AgentLoop) emit(ev LoopEvent) {
+	if a.Observe != nil {
+		a.Observe(ev)
+	}
+}
+
+func (a *AgentLoop) emitDelta(text string) {
+	a.emit(LoopEvent{Kind: EventDelta, Text: text})
 }
 
 func (a *AgentLoop) toolSpecsAsProvider() []provider.ToolSpec {
@@ -50,113 +106,77 @@ func (a *AgentLoop) toolSpecsAsProvider() []provider.ToolSpec {
 	return providerSpecs
 }
 
-func (a *AgentLoop) Run(ctx context.Context) error {
-	// One reader for both the prompt loop and the approval gate. Two
-	// independent scanners over the same stdin raced for buffered bytes,
-	// which broke approvals whenever input was piped.
-	stdin := bufio.NewReader(os.Stdin)
-	if a.Approval != nil {
-		a.Approval.SetInputReader(stdin)
-	}
-
-	hasSystemMsg := false
+// EnsureSystemPrompt adds the system prompt if the session has none.
+func (a *AgentLoop) EnsureSystemPrompt() {
 	for _, m := range a.Session.History() {
 		if m.Role == "system" {
-			hasSystemMsg = true
-			break
+			return
 		}
 	}
-
-	if !hasSystemMsg {
-		opts := DefaultPromptOptions(a.WorkspaceRoot, a.Registry.ActiveName(), a.Session.Model())
-		sysPrompt := BuildSystemPromptWithOptions(opts)
-		a.Session.AddMessage(provider.Message{
-			Role:    "system",
-			Content: sysPrompt,
-		})
-	}
-
-	fmt.Println("GoCode — Terminal Coding Agent")
-	fmt.Printf("Session: %s | Provider: %s | Model: %s\n", a.Session.ID(), a.Registry.ActiveName(), a.Session.Model())
-	if toolNames := a.ToolRegistry.List(); len(toolNames) > 0 {
-		fmt.Printf("Tools: %s\n", strings.Join(toolNames, ", "))
-	}
-	fmt.Println("Type your message (or 'exit' to quit, '/help' for commands)")
-	fmt.Println(strings.Repeat("─", 50))
-
-	for {
-		fmt.Print("\n> ")
-
-		line, readErr := stdin.ReadString('\n')
-		// A final line without a trailing newline is still valid input.
-		if readErr != nil && line == "" {
-			break
-		}
-		input := strings.TrimSpace(line)
-
-		if input == "" {
-			continue
-		}
-
-		cmdCtx := CommandContext{
-			Session:        a.Session,
-			Registry:       a.Registry,
-			ContextManager: a.ContextManager,
-			WorkspaceRoot:  a.WorkspaceRoot,
-			AskApproval: func(prompt string) bool {
-				fmt.Printf("%s [y/N]: ", prompt)
-				ans, err := stdin.ReadString('\n')
-				if err != nil && ans == "" {
-					return false
-				}
-				ans = strings.ToLower(strings.TrimSpace(ans))
-				return ans == "y" || ans == "yes"
-			},
-		}
-
-		cmdRes := HandleCommand(ctx, cmdCtx, input)
-		if cmdRes.Handled {
-			if cmdRes.Exit {
-				if cmdRes.Output != "" {
-					fmt.Println(cmdRes.Output)
-				}
-				return nil
-			}
-			if cmdRes.Error != nil {
-				fmt.Printf("Error: %v\n", cmdRes.Error)
-			} else if cmdRes.Output != "" {
-				fmt.Println(cmdRes.Output)
-			}
-			continue
-		}
-
-		a.Session.AddMessage(provider.Message{
-			Role:    "user",
-			Content: input,
-		})
-
-		if err := a.streamResponse(ctx); err != nil {
-			slog.Error("stream failed", "error", err)
-			fmt.Printf("\nError: %v\n", err)
-			continue
-		}
-	}
-
-	if err := stdinErr(stdin); err != nil {
-		return fmt.Errorf("error reading stdin: %w", err)
-	}
-
-	return nil
+	opts := DefaultPromptOptions(a.WorkspaceRoot, a.Registry.ActiveName(), a.Session.Model())
+	a.Session.AddMessage(provider.Message{
+		Role:    "system",
+		Content: BuildSystemPromptWithOptions(opts),
+	})
 }
 
-// stdinErr reports a non-EOF read error, if any, that the loop exited on.
-func stdinErr(r *bufio.Reader) error {
-	if _, err := r.Peek(1); err != nil && !errors.Is(err, io.EOF) {
-		return err
+// RunTurn processes one user input line: a slash command if it is one,
+// otherwise a full agent turn including any tool calls.
+//
+// This is the entry point the TUI uses. The plain loop in Run calls it too,
+// so there is one implementation of turn handling in the codebase.
+func (a *AgentLoop) RunTurn(ctx context.Context, input string) error {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
 	}
-	return nil
+
+	if res := a.handleSlashCommand(ctx, input); res.Handled {
+		if res.Exit {
+			if res.Output != "" {
+				a.emit(LoopEvent{Kind: EventExit, Text: res.Output})
+			} else {
+				a.emit(LoopEvent{Kind: EventExit})
+			}
+			return errExitRequested
+		}
+		if res.Error != nil {
+			a.emit(LoopEvent{Kind: EventError, Text: res.Error.Error()})
+		} else if res.Output != "" {
+			a.emit(LoopEvent{Kind: EventNotice, Text: res.Output})
+		}
+		return nil
+	}
+
+	a.Session.AddMessage(provider.Message{Role: "user", Content: input})
+	return a.streamResponse(ctx)
 }
 
+// errExitRequested signals that a slash command asked the UI to quit.
+var errExitRequested = fmt.Errorf("exit requested")
+
+// IsExitRequest reports whether err came from a /exit-style command.
+func IsExitRequest(err error) bool {
+	return err == errExitRequested
+}
+
+func (a *AgentLoop) handleSlashCommand(ctx context.Context, input string) CommandResult {
+	ask := a.AskApproval
+	if ask == nil {
+		ask = func(string) bool { return false }
+	}
+	cmdCtx := CommandContext{
+		Session:        a.Session,
+		Registry:       a.Registry,
+		ContextManager: a.ContextManager,
+		WorkspaceRoot:  a.WorkspaceRoot,
+		AskApproval:    ask,
+	}
+	return HandleCommand(ctx, cmdCtx, input)
+}
+
+// streamResponse runs a full agent turn: repeated provider round-trips until
+// the model stops requesting tools, bounded by the loop guard.
 func (a *AgentLoop) streamResponse(ctx context.Context) error {
 	guard := NewLoopGuardWithConfig(a.GuardConfig)
 	return a.streamResponseGuarded(ctx, guard)
@@ -171,8 +191,8 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 		model := a.Session.Model()
 		providerToolSpecs := a.toolSpecsAsProvider()
 
+		// Truncation happens here, once, for every UI.
 		history := a.ContextManager.Truncate(a.Session.History())
-		slog.Debug("streaming request", "provider", a.Registry.ActiveName(), "model", model, "history_len", len(history), "iteration", guard.iterations)
 
 		ch, err := p.Stream(ctx, model, history, providerToolSpecs)
 		if err != nil {
@@ -182,38 +202,47 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 		var fullResponse strings.Builder
 		var toolCalls []provider.ToolCall
 
-		fmt.Print("\n")
 		for chunk := range ch {
 			if chunk.Err != nil {
 				return fmt.Errorf("stream chunk error: %w", chunk.Err)
 			}
 
 			if chunk.Delta != "" {
-				fmt.Print(chunk.Delta)
+				a.emitDelta(chunk.Delta)
 				fullResponse.WriteString(chunk.Delta)
 			}
 
 			if len(chunk.ToolCalls) > 0 {
 				toolCalls = append(toolCalls, chunk.ToolCalls...)
 			}
+
+			// Honor cancellation promptly, so Ctrl+C and Esc stop a turn
+			// instead of waiting for the provider to finish.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 
-		if fullResponse.Len() > 0 {
-			fmt.Println()
-		} else if len(toolCalls) == 0 {
-			fmt.Printf("[No response received from provider %q. Verify provider API keys/credentials or switch with /provider]\n", a.Registry.ActiveName())
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
-		assistantMsg := provider.Message{
+		if fullResponse.Len() == 0 && len(toolCalls) == 0 {
+			a.emit(LoopEvent{
+				Kind: EventNotice,
+				Text: fmt.Sprintf("[No response received from provider %q. Verify provider API keys/credentials or switch with /provider]", a.Registry.ActiveName()),
+			})
+		}
+
+		a.Session.AddMessage(provider.Message{
 			Role:      "assistant",
 			Content:   fullResponse.String(),
 			ToolCalls: toolCalls,
-		}
-		a.Session.AddMessage(assistantMsg)
+		})
 
 		if len(toolCalls) == 0 {
 			if s := guard.Summary(); s != "" {
-				fmt.Println(s)
+				a.emit(LoopEvent{Kind: EventNotice, Text: s})
 			}
 			return nil
 		}
@@ -226,7 +255,7 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 				Role:    "assistant",
 				Content: fmt.Sprintf("Stopped: %v", err),
 			})
-			fmt.Printf("\n[GoCode] %v\n", err)
+			a.emit(LoopEvent{Kind: EventError, Text: err.Error()})
 			return nil
 		}
 
@@ -238,23 +267,31 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 
 func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.ToolCall) error {
 	for _, tc := range toolCalls {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		tool := a.ToolRegistry.Get(tc.Name)
 		if tool == nil {
+			msg := fmt.Sprintf("Error: unknown tool %q", tc.Name)
 			a.Session.AddMessage(provider.Message{
 				Role:       "tool",
-				Content:    fmt.Sprintf("Error: unknown tool %q", tc.Name),
+				Content:    msg,
 				ToolCallID: tc.ID,
 			})
+			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, Text: msg, IsError: true})
 			continue
 		}
 
 		result, err := a.Approval.WrapExecution(ctx, tool, json.RawMessage(tc.Args))
 		if err != nil {
+			msg := fmt.Sprintf("Error executing %s: %v", tc.Name, err)
 			a.Session.AddMessage(provider.Message{
 				Role:       "tool",
-				Content:    fmt.Sprintf("Error executing %s: %v", tc.Name, err),
+				Content:    msg,
 				ToolCallID: tc.ID,
 			})
+			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, Text: msg, IsError: true})
 			continue
 		}
 
@@ -269,16 +306,19 @@ func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.To
 			ToolCallID: tc.ID,
 		})
 
-		fmt.Printf("\n[%s result]\n", tc.Name)
+		display := result.Output
 		if result.Error != "" {
-			fmt.Printf("Error: %s\n", result.Error)
-		} else if result.Output != "" {
-			output := result.Output
-			if len(output) > 2000 {
-				output = output[:2000] + "\n... (truncated)"
-			}
-			fmt.Println(output)
+			display = result.Error
 		}
+		if len(display) > maxDisplayedToolOutput {
+			display = display[:maxDisplayedToolOutput] + "\n… (truncated)"
+		}
+		a.emit(LoopEvent{
+			Kind:    EventToolResult,
+			Tool:    tc.Name,
+			Text:    display,
+			IsError: result.Error != "",
+		})
 	}
 
 	return nil

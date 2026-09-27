@@ -40,8 +40,10 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 
 	lower := strings.ToLower(trimmed)
 
-	// Check exit / quit
-	if lower == "exit" || lower == "quit" {
+	// Check exit / quit, with or without a leading slash. The documented
+	// commands are /exit and /quit, but bare "exit" has always worked, so
+	// both spellings are accepted.
+	if lower == "exit" || lower == "quit" || lower == "/exit" || lower == "/quit" {
 		return CommandResult{Handled: true, Exit: true, Output: "Goodbye!"}
 	}
 
@@ -70,7 +72,9 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
   /providers       — List all available providers and their models
   /provider <name> — Switch active provider
   /model           — Show current model
-  /model <name>    — Switch model`,
+  /model <name>    — Switch model
+  /exit            — Quit GoCode
+  /quit            — Quit GoCode`,
 		}
 
 	case "/clear":
