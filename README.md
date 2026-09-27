@@ -42,6 +42,20 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
+
+### v0.5.0 Additions
+
+Correctness and safety fixes, each verified against the real binary:
+
+- **Bounded Agent Turns** — a turn now stops at an iteration cap (default 50) or after repeated identical tool calls (default 3). Previously a model that kept requesting tools looped without limit; a reproduced runaway made 68,077 provider requests in one turn before being killed, and now stops after 4 with an explanation.
+- **Context Truncation in the TUI** — the default UI now truncates history before every provider request, matching the plain loop. History previously grew unbounded in the mode most users run until the provider rejected the request.
+- **Approval Gate Works on Piped Input** — the gate and the prompt loop now share one stdin reader. Previously a piped `y` was swallowed by a second buffered scanner and every approval failed with `failed to read input`, so nothing could be approved non-interactively.
+- **`session.persist` Honored** — `persist = false` now actually disables the session store. It was parsed and ignored, so every message was written regardless.
+- **Dead Config Keys Removed** — `approval.auto_approve_reads` / `_writes` / `_shell` and `session.history_dir` were parsed but never read. Use `permissions.auto_approve` and `permissions.deny`.
+- **Secret Redaction in `shell_exec` Output** — credential-shaped values are masked before output reaches the model or the session transcript, and commands referencing sensitive paths are flagged in the approval preview.
+- **Anthropic Stream Parser Tested** — first coverage for the native Anthropic path, including tool-argument reassembly across fragmented events.
+- **New `[tools]` Limits** — `max_tool_iterations` and `max_repeated_tool_calls` tune the turn guard; zero or negative uses the defaults.
+
 ### v0.4.0 Additions
 
 - **Hardened Security** — workspace path confinement, sensitive file protection, bounded shell execution, and approval-before-execution diff previews
@@ -129,7 +143,7 @@ gocode -v
 
 ## Session Management
 
-GoCode automatically persists all conversations to SQLite. Sessions are auto-resumed by default.
+GoCode persists conversations to SQLite and auto-resumes the last session by default. Set `persist = false` under `[session]` to keep a conversation entirely in memory — nothing is written to disk and nothing is resumed on the next run.
 
 ```bash
 # List saved sessions
@@ -339,6 +353,13 @@ default_model = "gpt-6-astra"
 auto_approve = ["file_read", "code_search"]  # Tools that execute without confirmation
 deny = []                                    # Tools that are permanently blocked
 sensitive_patterns = ["*.vault", "custom.env"] # Additional patterns to block from AI access
+
+[session]
+persist = true                # Set false to keep the conversation out of the SQLite store
+
+[tools]
+max_tool_iterations = 50      # Cap provider round-trips per turn
+max_repeated_tool_calls = 3   # Cap identical tool calls (same name + arguments) per turn
 
 [tools.shell]
 timeout_seconds = 30      # Maximum seconds a shell command may run
