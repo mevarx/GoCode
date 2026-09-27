@@ -11,7 +11,6 @@ import (
 // Config represents top-level configuration options.
 type Config struct {
 	Provider    ProviderConfig    `toml:"provider"`
-	Approval    ApprovalConfig    `toml:"approval"`
 	Permissions PermissionsConfig `toml:"permissions"`
 	Session     SessionConfig     `toml:"session"`
 	Tools       ToolsConfig       `toml:"tools"`
@@ -47,13 +46,6 @@ type OllamaConfig struct {
 	DefaultModel string `toml:"default_model"`
 }
 
-// ApprovalConfig specifies tool approval thresholds (deprecated in favor of Permissions).
-type ApprovalConfig struct {
-	AutoApproveReads  bool `toml:"auto_approve_reads"`
-	AutoApproveWrites bool `toml:"auto_approve_writes"`
-	AutoApproveShell  bool `toml:"auto_approve_shell"`
-}
-
 // PermissionsConfig specifies granular tool permissions.
 type PermissionsConfig struct {
 	AutoApprove       []string `toml:"auto_approve"`
@@ -75,12 +67,20 @@ type MCPServerConfig struct {
 
 // SessionConfig specifies session settings.
 type SessionConfig struct {
-	Persist    bool   `toml:"persist"`
-	HistoryDir string `toml:"history_dir"`
+	// Persist controls whether conversations are written to the SQLite
+	// store. It was previously parsed and then ignored, so `persist = false`
+	// had no effect while the documentation implied it did.
+	Persist bool `toml:"persist"`
 }
 
 type ToolsConfig struct {
 	Shell ShellConfig `toml:"shell"`
+	// MaxToolIterations caps provider round-trips per user turn. Zero or
+	// negative uses the built-in default.
+	MaxToolIterations int `toml:"max_tool_iterations"`
+	// MaxRepeatedToolCalls caps identical tool calls (same name and same
+	// arguments) within one turn. Zero or negative uses the built-in default.
+	MaxRepeatedToolCalls int `toml:"max_repeated_tool_calls"`
 }
 
 type ShellConfig struct {
@@ -139,19 +139,13 @@ func DefaultConfig() Config {
 			},
 			Custom: make(map[string]GatewayConfig),
 		},
-		Approval: ApprovalConfig{
-			AutoApproveReads:  true,
-			AutoApproveWrites: false,
-			AutoApproveShell:  false,
-		},
 		Permissions: PermissionsConfig{
 			AutoApprove:       []string{"file_read"},
 			Deny:              []string{},
 			SensitivePatterns: []string{},
 		},
 		Session: SessionConfig{
-			Persist:    true,
-			HistoryDir: SessionDir(),
+			Persist: true,
 		},
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
@@ -183,10 +177,6 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 
-	if cfg.Session.HistoryDir == "" {
-		cfg.Session.HistoryDir = SessionDir()
-	}
-
 	if cfg.MCP.Servers == nil {
 		cfg.MCP.Servers = make(map[string]MCPServerConfig)
 	}
@@ -208,10 +198,6 @@ func LoadFromPath(path string) (Config, error) {
 
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("failed to parse config file %s: %w", path, err)
-	}
-
-	if cfg.Session.HistoryDir == "" {
-		cfg.Session.HistoryDir = SessionDir()
 	}
 
 	if cfg.MCP.Servers == nil {
