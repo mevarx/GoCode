@@ -43,6 +43,13 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 
+### v0.5.1 Additions
+
+- **One Agent Engine, Two Views** — `internal/agent.AgentLoop` is now the only implementation of an agent turn. The TUI is a view over it rather than a second loop. Previously two copies of the same logic had to be kept in sync by hand, which is how the TUI came to omit context truncation while the plain loop did it. Verified by grep: one `Stream` call site, one `Truncate` call site, one tool-dispatch site.
+- **`/exit` and `/quit` Now Work** — both were documented in `/help` and the README, but only the bare words `exit` and `quit` were recognized; the documented slash form fell through to the unknown-command path.
+- **Test Coverage in the Wiring Layer** — `cmd/gocode` 12.4% → 16.0%, `config` 19.2% → 21.9%, `agent` 57.2% → 66.6%. The config keys added in v0.5.0 are now asserted to round-trip, so a renamed key fails a test rather than silently disabling a user's limits.
+- **Secret-Scanner Noise Removed** — test fixtures for the shell redaction suite are built at runtime rather than written as literals, so routine pushes no longer raise credential alerts. No real credential was ever committed; the fixtures were placeholders that detectors could not distinguish from live keys.
+
 ### v0.5.0 Additions
 
 Correctness and safety fixes, each verified against the real binary:
