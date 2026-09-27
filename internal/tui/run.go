@@ -22,9 +22,16 @@ func Run(
 	approval *tools.ApprovalGate,
 	version string,
 	workspaceRoot string,
+	guardCfg agent.LoopGuardConfig,
 ) error {
 	bridge := NewApprovalBridge()
 	approval.OnPresent = bridge.RequestApproval
+
+	// One ContextManager for the whole session, shared with the slash-command
+	// handler. Previously handleSlashCommand built a fresh NewContextManager(0)
+	// per invocation, so /context and /compact reported statistics for a
+	// throwaway object rather than the session being sent to the provider.
+	contextManager := agent.NewContextManager(0)
 
 	inputCh := make(chan string, 1)
 	outputCh := make(chan tea.Msg, 256)
@@ -56,7 +63,7 @@ func Run(
 
 	m := NewModel(registry.ActiveName(), session.Model(), version, workspaceRoot, bridge, inputCh, outputCh, cancelCh, pickerItems)
 
-	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh, cancelCh, workspaceRoot)
+	go runAgentGoroutine(tuiCtx, registry, session, toolRegistry, approval, inputCh, outputCh, cancelCh, workspaceRoot, contextManager)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
@@ -85,6 +92,7 @@ func runAgentGoroutine(
 	outputCh chan<- tea.Msg,
 	cancelCh <-chan struct{},
 	workspaceRoot string,
+	contextManager *agent.ContextManager,
 ) {
 	toolSpecs := toolSpecsAsProvider(toolRegistry)
 
@@ -97,7 +105,7 @@ func runAgentGoroutine(
 			cancelWatcherDone := make(chan struct{})
 			go watchCancelSignal(cancelCh, turnCtx, turnCancel, cancelWatcherDone)
 
-			if handled := handleSlashCommand(turnCtx, input, registry, session, outputCh, workspaceRoot); handled {
+			if handled := handleSlashCommand(turnCtx, input, registry, session, outputCh, workspaceRoot, contextManager); handled {
 				sendMsg(ctx, outputCh, agentDoneMsg{})
 				turnCancel()
 				<-cancelWatcherDone
@@ -106,7 +114,7 @@ func runAgentGoroutine(
 
 			session.AddMessage(provider.Message{Role: "user", Content: input})
 
-			err := runTurn(turnCtx, registry, session, toolRegistry, approval, toolSpecs, outputCh)
+			err := runTurn(turnCtx, registry, session, toolRegistry, approval, toolSpecs, outputCh, contextManager)
 			sendMsg(ctx, outputCh, agentDoneMsg{err: err})
 			turnCancel()
 			<-cancelWatcherDone
@@ -134,13 +142,23 @@ func runTurn(
 	approval *tools.ApprovalGate,
 	toolSpecs []provider.ToolSpec,
 	outputCh chan<- tea.Msg,
+	contextManager *agent.ContextManager,
 ) error {
+	guard := agent.NewLoopGuard()
+	if contextManager == nil {
+		contextManager = agent.NewContextManager(0)
+	}
+
 	for {
 		p, err := registry.Active()
 		if err != nil {
 			return fmt.Errorf("active provider error: %w", err)
 		}
-		ch, err := p.Stream(ctx, session.Model(), session.History(), toolSpecs)
+		// Truncate before sending. The plain loop in agent/loop.go has always
+		// done this; the TUI path did not, so in the default UI mode history
+		// grew without bound until the provider rejected the request.
+		history := contextManager.Truncate(session.History())
+		ch, err := p.Stream(ctx, session.Model(), history, toolSpecs)
 		if err != nil {
 			return fmt.Errorf("stream error: %w", err)
 		}
@@ -175,6 +193,20 @@ func runTurn(
 		})
 
 		if len(toolCalls) == 0 {
+			if s := guard.Summary(); s != "" {
+				sendMsg(ctx, outputCh, agentToolMsg{name: "GoCode", result: s})
+			}
+			return nil
+		}
+
+		// Bound the turn before executing anything, so a failing tool the model
+		// retries identically still hits the cap.
+		if err := guard.CheckCall(toolCalls); err != nil {
+			session.AddMessage(provider.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("Stopped: %v", err),
+			})
+			sendMsg(ctx, outputCh, agentToolMsg{name: "GoCode", result: err.Error(), isError: true})
 			return nil
 		}
 
@@ -251,11 +283,15 @@ func handleSlashCommand(
 	session *agent.Session,
 	outputCh chan<- tea.Msg,
 	workspaceRoot string,
+	contextManager *agent.ContextManager,
 ) bool {
+	if contextManager == nil {
+		contextManager = agent.NewContextManager(0)
+	}
 	cmdCtx := agent.CommandContext{
 		Session:        session,
 		Registry:       registry,
-		ContextManager: agent.NewContextManager(0),
+		ContextManager: contextManager,
 		WorkspaceRoot:  workspaceRoot,
 	}
 
