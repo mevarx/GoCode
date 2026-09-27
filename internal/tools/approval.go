@@ -15,6 +15,44 @@ type ApprovalGate struct {
 	deny        map[string]bool
 	mu          sync.RWMutex
 	OnPresent   func(toolName string, args json.RawMessage, preview string) (bool, error)
+
+	// inputReader, when set, is used instead of opening a new reader on
+	// os.Stdin. The plain agent loop already holds a bufio.Scanner over
+	// stdin; a second scanner buffers ahead and swallows the piped answer,
+	// so approvals failed whenever input was piped rather than typed
+	// interactively. Sharing one reader removes the race entirely.
+	inputReader *bufio.Reader
+	muInput     sync.Mutex
+}
+
+// SetInputReader makes the gate read approval answers from r. Callers that
+// already read from the same stream must pass their existing reader so that
+// buffered data is not lost between the prompt and the gate.
+func (g *ApprovalGate) SetInputReader(r *bufio.Reader) {
+	g.muInput.Lock()
+	defer g.muInput.Unlock()
+	g.inputReader = r
+}
+
+// readLine returns the next input line, preferring the injected reader.
+func (g *ApprovalGate) readLine() (string, error) {
+	g.muInput.Lock()
+	r := g.inputReader
+	g.muInput.Unlock()
+
+	if r != nil {
+		line, err := r.ReadString('\n')
+		if err != nil && line == "" {
+			return "", err
+		}
+		return line, nil
+	}
+
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return line, nil
 }
 
 func NewApprovalGate() *ApprovalGate {
@@ -92,12 +130,12 @@ func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, pr
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Print("Approve? [y/N]: ")
 
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return false, fmt.Errorf("failed to read input")
+	line, err := g.readLine()
+	if err != nil {
+		return false, fmt.Errorf("failed to read input: %w", err)
 	}
 
-	response := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	response := strings.TrimSpace(strings.ToLower(line))
 	return response == "y" || response == "yes", nil
 }
 

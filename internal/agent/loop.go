@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -49,7 +51,13 @@ func (a *AgentLoop) toolSpecsAsProvider() []provider.ToolSpec {
 }
 
 func (a *AgentLoop) Run(ctx context.Context) error {
-	scanner := bufio.NewScanner(os.Stdin)
+	// One reader for both the prompt loop and the approval gate. Two
+	// independent scanners over the same stdin raced for buffered bytes,
+	// which broke approvals whenever input was piped.
+	stdin := bufio.NewReader(os.Stdin)
+	if a.Approval != nil {
+		a.Approval.SetInputReader(stdin)
+	}
 
 	hasSystemMsg := false
 	for _, m := range a.Session.History() {
@@ -79,10 +87,12 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 	for {
 		fmt.Print("\n> ")
 
-		if !scanner.Scan() {
+		line, readErr := stdin.ReadString('\n')
+		// A final line without a trailing newline is still valid input.
+		if readErr != nil && line == "" {
 			break
 		}
-		input := strings.TrimSpace(scanner.Text())
+		input := strings.TrimSpace(line)
 
 		if input == "" {
 			continue
@@ -95,10 +105,11 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 			WorkspaceRoot:  a.WorkspaceRoot,
 			AskApproval: func(prompt string) bool {
 				fmt.Printf("%s [y/N]: ", prompt)
-				if !scanner.Scan() {
+				ans, err := stdin.ReadString('\n')
+				if err != nil && ans == "" {
 					return false
 				}
-				ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+				ans = strings.ToLower(strings.TrimSpace(ans))
 				return ans == "y" || ans == "yes"
 			},
 		}
@@ -131,10 +142,18 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := stdinErr(stdin); err != nil {
 		return fmt.Errorf("error reading stdin: %w", err)
 	}
 
+	return nil
+}
+
+// stdinErr reports a non-EOF read error, if any, that the loop exited on.
+func stdinErr(r *bufio.Reader) error {
+	if _, err := r.Peek(1); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
 	return nil
 }
 
