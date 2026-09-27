@@ -364,8 +364,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// One guard configuration for both UI paths, so the plain loop and the TUI
 	// cannot disagree about when a turn is allowed to stop.
 	guardCfg := agent.LoopGuardConfig{
-		MaxIterations:     cfg.Tools.MaxToolIterations,
-		MaxRepeatedCalls:  cfg.Tools.MaxRepeatedToolCalls,
+		MaxIterations:    cfg.Tools.MaxToolIterations,
+		MaxRepeatedCalls: cfg.Tools.MaxRepeatedToolCalls,
 	}
 
 	if flagTUI {
