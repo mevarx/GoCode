@@ -1,6 +1,10 @@
 module github.com/mevarx/GoCode
 
-go 1.26.0
+// Pinned to go1.26.8: go1.26.0 through go1.26.5 carry four standard-library
+// CVEs reachable from this module's HTTP client (GO-2026-6218 net/url quadratic
+// parsing, GO-2026-6090 crypto/tls post-handshake messages, GO-2026-5972
+// encoding/asn1 recursion depth, GO-2026-5026 x/net/idna punycode).
+go 1.26.8
 
 require (
 	github.com/BurntSushi/toml v1.6.0

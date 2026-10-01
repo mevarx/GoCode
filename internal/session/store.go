@@ -93,6 +93,7 @@ func (s *SessionStore) migrate() error {
 		content TEXT NOT NULL,
 		tool_calls TEXT,
 		tool_call_id TEXT,
+		reasoning_content TEXT,
 		created_at DATETIME NOT NULL,
 		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
@@ -101,7 +102,67 @@ func (s *SessionStore) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.addMissingColumns()
+}
+
+// addMissingColumns brings an existing database up to the current schema.
+//
+// CREATE TABLE IF NOT EXISTS is a no-op when the table already exists, so a
+// database created by an older release never gains a column added to the
+// schema above. Each entry is additive and idempotent.
+func (s *SessionStore) addMissingColumns() error {
+	migrations := []struct {
+		column string
+	}{
+		// reasoning_content stores model thinking output, which some
+		// providers require to be replayed into history on the next turn.
+		{column: "reasoning_content"},
+	}
+
+	for _, m := range migrations {
+		exists, err := s.columnExists("messages", m.column)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		// The column name comes from the literal table above, never from
+		// user input, so interpolating it into the DDL is safe.
+		stmt := fmt.Sprintf("ALTER TABLE messages ADD COLUMN %s TEXT", m.column)
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add column %s to messages: %w", m.column, err)
+		}
+	}
+	return nil
+}
+
+// columnExists reports whether table already has the named column.
+func (s *SessionStore) columnExists(table, column string) (bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return false, fmt.Errorf("failed to scan column info for %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Close closes the underlying SQLite database.
@@ -175,10 +236,10 @@ func (s *SessionStore) AppendMessage(sessionID string, msg provider.Message) err
 	defer tx.Rollback()
 
 	insertMsg := `
-	INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, reasoning_content, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
-	if _, err := tx.Exec(insertMsg, sessionID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, now); err != nil {
+	if _, err := tx.Exec(insertMsg, sessionID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.ReasoningContent, now); err != nil {
 		return fmt.Errorf("failed to insert message: %w", err)
 	}
 
@@ -240,10 +301,10 @@ func (s *SessionStore) SaveSession(rec *SessionRecord) error {
 			toolCallsJSON = string(b)
 		}
 		insertMsg := `
-		INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, reasoning_content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		`
-		if _, err := tx.Exec(insertMsg, rec.ID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, now); err != nil {
+		if _, err := tx.Exec(insertMsg, rec.ID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.ReasoningContent, now); err != nil {
 			return fmt.Errorf("failed to insert message: %w", err)
 		}
 	}
@@ -276,7 +337,7 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT role, content, tool_calls, tool_call_id
+		SELECT role, content, tool_calls, tool_call_id, reasoning_content
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY id ASC
@@ -290,11 +351,15 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 		var msg provider.Message
 		var toolCallsJSON sql.NullString
 		var toolCallID sql.NullString
-		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &toolCallID); err != nil {
+		var reasoningContent sql.NullString
+		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &toolCallID, &reasoningContent); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 		if toolCallID.Valid {
 			msg.ToolCallID = toolCallID.String
+		}
+		if reasoningContent.Valid {
+			msg.ReasoningContent = reasoningContent.String
 		}
 		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 			_ = json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls)

@@ -100,6 +100,7 @@ func main() {
 	mcpCmd.AddCommand(mcpAddCmd, mcpListCmd, mcpRemoveCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(newProviderCommand())
+	rootCmd.AddCommand(newAuthCommand())
 
 	logsCmd := &cobra.Command{
 		Use:   "logs",
@@ -115,9 +116,26 @@ func main() {
 	}
 }
 
-var gatewayProviderNames = []string{"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi"}
+// gatewayProviderNames lists every built-in provider that speaks the
+// OpenAI-compatible Chat Completions protocol and is therefore served by
+// GatewayProxyProvider. Each name must have a matching field on
+// config.ProviderConfig; TestGatewayProviderNamesAreWired enforces that.
+var gatewayProviderNames = []string{
+	"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi",
+	"hermes", "xai", "mistral", "minimax", "deepseek", "together",
+	"fireworks", "cerebras", "zhipu", "nvidia",
+}
 
+// gatewayConfigFor resolves a provider name to its configuration.
+//
+// An explicitly configured custom provider wins over the built-in of the same
+// name. Before a provider became built-in, a user could legitimately have
+// added it via `provider add`; that entry is an explicit choice and must keep
+// working instead of being silently shadowed by the built-in default.
 func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConfig {
+	if custom, ok := cfg.Custom[name]; ok {
+		return custom
+	}
 	switch name {
 	case "omniroute":
 		return cfg.OmniRoute
@@ -133,6 +151,26 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 		return cfg.Qwen
 	case "kimi":
 		return cfg.Kimi
+	case "hermes":
+		return cfg.Hermes
+	case "xai":
+		return cfg.XAI
+	case "mistral":
+		return cfg.Mistral
+	case "minimax":
+		return cfg.MiniMax
+	case "deepseek":
+		return cfg.DeepSeek
+	case "together":
+		return cfg.Together
+	case "fireworks":
+		return cfg.Fireworks
+	case "cerebras":
+		return cfg.Cerebras
+	case "zhipu":
+		return cfg.Zhipu
+	case "nvidia":
+		return cfg.Nvidia
 	case "anthropic":
 		return cfg.Anthropic
 	default:
@@ -202,6 +240,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	providerRegistry.Register(provider.NewAnthropicProvider(cfg.Provider.Anthropic))
+	providerRegistry.Register(provider.NewCopilotProvider(cfg.Provider.Copilot))
 	if err := registerCustomProviders(providerRegistry, cfg.Provider.Custom); err != nil {
 		return fmt.Errorf("failed to configure custom providers: %w", err)
 	}
@@ -259,6 +298,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			}
 		case "anthropic":
 			model = cfg.Provider.Anthropic.DefaultModel
+		case "copilot":
+			model = cfg.Provider.Copilot.DefaultModel
 		default:
 			gCfg := gatewayConfigFor(cfg.Provider, providerName)
 			model = gCfg.DefaultModel
@@ -572,6 +613,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		ap := provider.NewAnthropicProvider(anthropicCfg)
 		models, _ := ap.Models(ctx)
 		fmt.Printf("✓ %-14s configured (default: %s, %d models known)\n", "anthropic", anthropicCfg.DefaultModel, len(models))
+	}
+
+	copilotCfg := cfg.Provider.Copilot
+	copilotEnv := copilotCfg.OAuthTokenEnv
+	if copilotEnv == "" {
+		copilotEnv = "GITHUB_COPILOT_TOKEN"
+	}
+	if os.Getenv(copilotEnv) == "" {
+		fmt.Printf("⚠ %-14s no GitHub OAuth token (set %s or run `gocode auth copilot`)\n", "copilot", copilotEnv)
+	} else {
+		cp := provider.NewCopilotProvider(copilotCfg)
+		models, err := cp.Models(ctx)
+		if err != nil {
+			fmt.Printf("✗ %-14s token exchange failed: %v\n", "copilot", err)
+		} else {
+			fmt.Printf("✓ %-14s reachable (default: %s, %d models)\n", "copilot", copilotCfg.DefaultModel, len(models))
+		}
 	}
 
 	fmt.Println("──────────────────────────────────────────")

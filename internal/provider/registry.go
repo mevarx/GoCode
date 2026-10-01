@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"fmt"
 )
 
@@ -58,14 +57,4 @@ func (r *Registry) List() []string {
 		names = append(names, k)
 	}
 	return names
-}
-
-func (r *Registry) AllModels(ctx context.Context) map[string][]string {
-	result := make(map[string][]string)
-	for name, p := range r.providers {
-		if models, err := p.Models(ctx); err == nil && len(models) > 0 {
-			result[name] = models
-		}
-	}
-	return result
 }

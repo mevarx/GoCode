@@ -1,0 +1,22 @@
+# Keep line endings stable across platforms. Without this, core.autocrlf=true
+# on Windows rewrites working-tree files to CRLF, which then fails the CI gofmt
+# gate ("The following files are not formatted with gofmt") even though the
+# committed content is correct.
+*.go    text=auto eol=lf
+*.md    text=auto eol=lf
+*.toml  text=auto eol=lf
+*.mod   text=auto eol=lf
+*.sum   text=auto eol=lf
+*.yaml  text=auto eol=lf
+*.yml   text=auto eol=lf
+*.json  text=auto eol=lf
+*.txt   text=auto eol=lf
+Makefile text=auto eol=lf
+LICENSE  text=auto eol=lf
+.gitattributes text eol=lf
+.gitignore text=auto eol=lf
+
+# Binaries must never be line-ending translated.
+*.exe   binary
+*.db    binary
+*.out   binary

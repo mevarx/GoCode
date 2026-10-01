@@ -29,7 +29,37 @@ type ProviderConfig struct {
 	Anthropic  GatewayConfig            `toml:"anthropic"`
 	Qwen       GatewayConfig            `toml:"qwen"`
 	Kimi       GatewayConfig            `toml:"kimi"`
+	Hermes     GatewayConfig            `toml:"hermes"`
+	XAI        GatewayConfig            `toml:"xai"`
+	Mistral    GatewayConfig            `toml:"mistral"`
+	MiniMax    GatewayConfig            `toml:"minimax"`
+	DeepSeek   GatewayConfig            `toml:"deepseek"`
+	Together   GatewayConfig            `toml:"together"`
+	Fireworks  GatewayConfig            `toml:"fireworks"`
+	Cerebras   GatewayConfig            `toml:"cerebras"`
+	Zhipu      GatewayConfig            `toml:"zhipu"`
+	Nvidia     GatewayConfig            `toml:"nvidia"`
+	Copilot    CopilotConfig            `toml:"copilot"`
 	Custom     map[string]GatewayConfig `toml:"custom"`
+}
+
+// CopilotConfig configures GitHub Copilot.
+//
+// Copilot is not a plain bearer-token API. It needs a long-lived GitHub OAuth
+// token, which is exchanged for a short-lived Copilot JWT that also carries a
+// dynamic API base URL. Both layers are modelled here; see
+// internal/provider/copilot.go for the exchange.
+type CopilotConfig struct {
+	// OAuthTokenEnv names the environment variable holding a GitHub OAuth
+	// token (the `ghu_...` form produced by `gocode auth copilot`). The token
+	// itself is never written into config.toml.
+	OAuthTokenEnv string `toml:"oauth_token_env"`
+	DefaultModel  string `toml:"default_model"`
+	// EditorVersion and EditorPluginVersion are sent as the Copilot
+	// integration headers. Copilot rejects requests whose headers do not look
+	// like a real editor client.
+	EditorVersion       string `toml:"editor_version"`
+	EditorPluginVersion string `toml:"editor_plugin_version"`
 }
 
 // GatewayConfig configures an OpenAI-compatible gateway or cloud provider endpoint.
@@ -136,6 +166,65 @@ func DefaultConfig() Config {
 				BaseURL:      "https://api.moonshot.cn/v1",
 				APIKeyEnv:    "MOONSHOT_API_KEY",
 				DefaultModel: "moonshot-v1-8k",
+			},
+			// Hermes exposes itself as an OpenAI-compatible endpoint on
+			// 127.0.0.1:8642, gated by API_SERVER_KEY. This makes a running
+			// Hermes gateway usable as a GoCode backend (and vice versa).
+			Hermes: GatewayConfig{
+				BaseURL:      "http://127.0.0.1:8642/v1",
+				APIKeyEnv:    "HERMES_API_SERVER_KEY",
+				DefaultModel: "hermes-agent",
+			},
+			XAI: GatewayConfig{
+				BaseURL:      "https://api.x.ai/v1",
+				APIKeyEnv:    "XAI_API_KEY",
+				DefaultModel: "grok-code-fast-1",
+			},
+			Mistral: GatewayConfig{
+				BaseURL:      "https://api.mistral.ai/v1",
+				APIKeyEnv:    "MISTRAL_API_KEY",
+				DefaultModel: "mistral-large-latest",
+			},
+			MiniMax: GatewayConfig{
+				BaseURL:      "https://api.minimax.io/v1",
+				APIKeyEnv:    "MINIMAX_API_KEY",
+				DefaultModel: "MiniMax-M2.5",
+			},
+			DeepSeek: GatewayConfig{
+				BaseURL:      "https://api.deepseek.com/v1",
+				APIKeyEnv:    "DEEPSEEK_API_KEY",
+				DefaultModel: "deepseek-chat",
+			},
+			Together: GatewayConfig{
+				BaseURL:      "https://api.together.xyz/v1",
+				APIKeyEnv:    "TOGETHER_API_KEY",
+				DefaultModel: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+			},
+			Fireworks: GatewayConfig{
+				BaseURL:      "https://api.fireworks.ai/inference/v1",
+				APIKeyEnv:    "FIREWORKS_API_KEY",
+				DefaultModel: "accounts/fireworks/models/kimi-k2-thinking",
+			},
+			Cerebras: GatewayConfig{
+				BaseURL:      "https://api.cerebras.ai/v1",
+				APIKeyEnv:    "CEREBRAS_API_KEY",
+				DefaultModel: "qwen-3-coder-480b",
+			},
+			Zhipu: GatewayConfig{
+				BaseURL:      "https://open.bigmodel.cn/api/paas/v4",
+				APIKeyEnv:    "ZHIPU_API_KEY",
+				DefaultModel: "glm-4.6",
+			},
+			Nvidia: GatewayConfig{
+				BaseURL:      "https://integrate.api.nvidia.com/v1",
+				APIKeyEnv:    "NVIDIA_API_KEY",
+				DefaultModel: "qwen/qwen3-coder-480b-a35b-instruct",
+			},
+			Copilot: CopilotConfig{
+				OAuthTokenEnv:       "GITHUB_COPILOT_TOKEN",
+				DefaultModel:        "gpt-4.1",
+				EditorVersion:       "vscode/1.111.0",
+				EditorPluginVersion: "copilot-chat/0.40.0",
 			},
 			Custom: make(map[string]GatewayConfig),
 		},

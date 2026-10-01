@@ -37,11 +37,24 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 
 - **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies
 - **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama or llama.cpp
-- **9 Built-in Provider Gateways** — Ollama, OpenAI, Gemini, Claude, Groq, OpenRouter, Qwen, Kimi, and OmniRoute
+- **20 Built-in Provider Gateways** — Ollama, OpenAI, Gemini, Claude, GitHub Copilot, xAI (SpaceXAI), Mistral, MiniMax, DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, Qwen, Kimi, Hermes Agent, and OmniRoute
 - **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service, including local llama.cpp, with its own base URL and API-key environment variable
 - **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
+
+### v0.5.2 Additions
+
+- **Eleven New Provider Endpoints** — GitHub Copilot, xAI (SpaceXAI), Mistral, MiniMax, DeepSeek, Together, Fireworks, Cerebras, Zhipu (GLM), NVIDIA NIM, and a Hermes Agent bridge (`127.0.0.1:8642`). Every base URL was taken from the vendor's own documentation rather than guessed.
+- **GitHub Copilot Support** — Copilot is not a bearer-token API, so it gets a real provider rather than a config row: a GitHub OAuth token is exchanged for a short-lived Copilot JWT, and the exchange also returns the API address to use. The JWT is cached and refreshed 60s before expiry, and re-exchanged when the underlying OAuth token rotates. `gocode auth copilot --client-id <id>` runs GitHub's device flow and stores the token with owner-only permissions. **The token exchange endpoint and editor headers are reverse-engineered from GitHub's VS Code extension and are not documented by GitHub — treat this as best-effort.**
+- **SSRF Guard on the Copilot Base URL** — because that base URL arrives in a network response, it is validated before the JWT is sent to it: HTTPS only, GitHub-owned hosts only, no credentials in the URL, no port. An untrusted host is a hard error, never a silent downgrade. Covered by tests including `api.githubcopilot.com.evil.com` and `user:pass@api.githubcopilot.com`.
+- **Reasoning Preserved Across Turns** — MiniMax and DeepSeek document that the complete assistant message, including its `reasoning_content`, must be replayed into history to keep the reasoning chain intact across a tool-call turn. That field was previously dropped at the stream boundary, silently degrading multi-turn tool calling on those providers. It now flows stream → session → SQLite → next request.
+- **Existing Databases Migrated In Place** — `CREATE TABLE IF NOT EXISTS` does not add columns to an existing table, so the new `reasoning_content` column is added by an explicit, idempotent migration. Verified by opening a hand-built pre-v0.5.2 database: old data survives and new writes work.
+- **Custom Providers No Longer Break on Name Collisions** — making `deepseek` built-in would have made GoCode **refuse to start** for anyone who had already added it via `provider add`. A saved custom endpoint now takes precedence over the same-named built-in, covered by a regression test.
+- **Four Standard-Library CVEs Closed** — `govulncheck` reported 12 reachable vulnerabilities at v0.5.1. Four were Go stdlib CVEs (GO-2026-6218, GO-2026-6090, GO-2026-5972, GO-2026-5026) reachable from this module's HTTP client; pinning `go 1.26.8` in `go.mod` clears them, taking the count to 8. The remaining 8 are Ollama advisories against the `github.com/ollama/ollama` module with **no upstream fix** (`Fixed in: N/A`); upgrading to v0.35.0 was tested and does not clear them, so the dependency was left alone. They are server-side issues in Ollama itself — keep Ollama bound to loopback.
+- **Duplicated SSE Parser Removed** — the gateway proxy and Copilot each carried their own ~120-line copy of the OpenAI streaming parser. They now share one `streamOpenAISSE`, so tool-call assembly and `[DONE]` handling cannot drift apart. Net −120 lines even after adding Copilot and reasoning support.
+- **Dead Code Removed** — `Registry.AllModels`, `GatewayProxyProvider.DefaultModel` and `BaseURL` had zero callers. Removed rather than shipped.
+- **`.gitattributes` Added** — with `core.autocrlf=true` on Windows, a stash/pop round-trip silently rewrote working-tree files to CRLF and failed CI's `gofmt` gate on files whose committed content was correct. Line endings are now pinned per file type.
 
 ### v0.5.1 Additions
 
@@ -229,31 +242,78 @@ If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
 | **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
 | **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | `https://api.anthropic.com/v1` |
 | **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-6-astra` | `https://api.openai.com/v1` |
+| **GitHub Copilot** | `copilot` | `GITHUB_COPILOT_TOKEN` | `gpt-4.1` | _dynamic, see below_ |
+| **xAI (SpaceXAI)** | `xai` | `XAI_API_KEY` | `grok-code-fast-1` | `https://api.x.ai/v1` |
+| **Mistral** | `mistral` | `MISTRAL_API_KEY` | `mistral-large-latest` | `https://api.mistral.ai/v1` |
+| **MiniMax** | `minimax` | `MINIMAX_API_KEY` | `MiniMax-M2.5` | `https://api.minimax.io/v1` |
+| **DeepSeek** | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | `https://api.deepseek.com/v1` |
 | **Groq** | `groq` | `GROQ_API_KEY` | _List with `/models`_ | `https://api.groq.com/openai/v1` |
 | **OpenRouter** | `openrouter` | `OPENROUTER_API_KEY` | _List with `/models`_ | `https://openrouter.ai/api/v1` |
+| **Together** | `together` | `TOGETHER_API_KEY` | `Qwen/Qwen3-Coder-480B-A35B-Instruct` | `https://api.together.xyz/v1` |
+| **Fireworks** | `fireworks` | `FIREWORKS_API_KEY` | _List with `/models`_ | `https://api.fireworks.ai/inference/v1` |
+| **Cerebras** | `cerebras` | `CEREBRAS_API_KEY` | `qwen-3-coder-480b` | `https://api.cerebras.ai/v1` |
+| **Zhipu (GLM)** | `zhipu` | `ZHIPU_API_KEY` | `glm-4.6` | `https://open.bigmodel.cn/api/paas/v4` |
+| **NVIDIA NIM** | `nvidia` | `NVIDIA_API_KEY` | `qwen/qwen3-coder-480b-a35b-instruct` | `https://integrate.api.nvidia.com/v1` |
 | **Qwen (DashScope)** | `qwen` | `DASHSCOPE_API_KEY` | _List with `/models`_ | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | **Kimi (Moonshot)** | `kimi` | `MOONSHOT_API_KEY` | _List with `/models`_ | `https://api.moonshot.cn/v1` |
+| **Hermes Agent** | `hermes` | `HERMES_API_SERVER_KEY` | `hermes-agent` | `http://127.0.0.1:8642/v1` |
 | **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
 | **Ollama (Local)** | `ollama` | _None_ | _Auto-detected_ | `http://localhost:11434` |
 
 Model catalogs change frequently. Use `/providers` to list the models currently exposed by a provider and `/model <id>` to select one. The examples above are current recommended identifiers, not guarantees of account access; provider quotas, regions, and plan availability still apply.
 
-### Add another API endpoint
+### GitHub Copilot
 
-Use a named custom provider for DeepSeek, a company gateway, or another service that implements the OpenAI Chat Completions API:
+Copilot is not a plain bearer-token API, so it has its own provider. It uses two layers: a long-lived GitHub OAuth token is exchanged for a short-lived Copilot JWT, and that exchange also returns the API address to use. The JWT is cached and refreshed shortly before it expires.
+
+Log in once with GitHub's device flow, using a client id from an OAuth App you register at [github.com/settings/developers](https://github.com/settings/developers):
 
 ```bash
-gocode provider add deepseek \
-  --base-url https://api.deepseek.com \
-  --api-key-env DEEPSEEK_API_KEY \
-  --model deepseek-flash
+gocode auth copilot --client-id <your-oauth-app-client-id>
+gocode --provider copilot
+```
 
-export DEEPSEEK_API_KEY="your-key"
-gocode --provider deepseek
+The token is written to `<config-dir>/copilot_token` with owner-only permissions and read automatically; `GITHUB_COPILOT_TOKEN` takes precedence when set. A device flow is required because Copilot has no copy-paste API key — you cannot use a plain PAT here. An active Copilot subscription is required; the exchange returns a clear error when the account has none.
+
+The token exchange endpoint and the `Editor-Version` headers are reverse-engineered from GitHub's own VS Code extension and are **not documented by GitHub**. They can change or be removed without notice, so treat Copilot support as best-effort.
+
+### Connect to a Hermes Agent instance
+
+If you run Hermes Agent, its API server speaks the OpenAI Chat Completions API on `127.0.0.1:8642`, so it can serve as GoCode's backend — and GoCode as Hermes'. Enable it in Hermes first:
+
+```bash
+# in ~/.hermes/.env
+API_SERVER_ENABLED=true
+API_SERVER_KEY=change-me-local-dev
+```
+
+Then point GoCode at it:
+
+```bash
+export HERMES_API_SERVER_KEY="change-me-local-dev"
+gocode --provider hermes
+```
+
+The model is `hermes-agent` by default (a Hermes profile advertises its profile name instead). Use `--model` to override.
+
+### Add another API endpoint
+
+Use a named custom provider for a company gateway or any other service that implements the OpenAI Chat Completions API but is not built in:
+
+```bash
+gocode provider add my-gateway \
+  --base-url https://gateway.internal/v1 \
+  --api-key-env MY_GATEWAY_KEY \
+  --model my-model
+
+export MY_GATEWAY_KEY="your-key"
+gocode --provider my-gateway
 gocode provider list
 ```
 
-Provider configuration stores the environment-variable name, not the key. Custom endpoints can also be managed with `gocode provider remove <name>` and live in `[provider.custom.<name>]` in `config.toml`. To make one the default, set `default = "deepseek"` in `[provider]`; otherwise select it with `gocode --provider deepseek`. The endpoint must support OpenAI Chat Completions; use the built-in `anthropic` provider for Anthropic's native API. See the [DeepSeek API compatibility guide](https://api-docs.deepseek.com/) for its current base URL and model IDs.
+Provider configuration stores the environment-variable name, not the key. Custom endpoints can also be managed with `gocode provider remove <name>` and live in `[provider.custom.<name>]` in `config.toml`. To make one the default, set `default = "my-gateway"` in `[provider]`; otherwise select it with `gocode --provider my-gateway`. The endpoint must support OpenAI Chat Completions; use the built-in `anthropic` provider for Anthropic's native API.
+
+A custom provider you added earlier keeps working even if its name has since become a built-in — your saved endpoint wins over the built-in default rather than being silently replaced.
 
 ### Connect a llama.cpp server
 
@@ -355,6 +415,27 @@ default_model = "claude-opus-5-5"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-6-astra"
+
+# GitHub Copilot uses two-layer auth: the OAuth token below is exchanged for a
+# short-lived JWT at request time. Set it with `gocode auth copilot`, which
+# writes to <config-dir>/copilot_token, or export it yourself.
+[provider.copilot]
+oauth_token_env = "GITHUB_COPILOT_TOKEN"
+default_model = "gpt-4.1"
+editor_version = "vscode/1.111.0"
+editor_plugin_version = "copilot-chat/0.40.0"
+
+# Every other built-in gateway is configured the same way. Only the section you
+# want to change needs to appear in your file; the rest come from defaults.
+# [provider.xai]
+# base_url = "https://api.x.ai/v1"
+# api_key_env = "XAI_API_KEY"
+# default_model = "grok-code-fast-1"
+
+# [provider.hermes]
+# base_url = "http://127.0.0.1:8642/v1"
+# api_key_env = "HERMES_API_SERVER_KEY"
+# default_model = "hermes-agent"
 
 [permissions]
 auto_approve = ["file_read", "code_search"]  # Tools that execute without confirmation

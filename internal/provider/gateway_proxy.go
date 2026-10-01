@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -41,10 +39,6 @@ func (p *GatewayProxyProvider) Name() string {
 	return p.name
 }
 
-func (p *GatewayProxyProvider) BaseURL() string {
-	return p.cfg.BaseURL
-}
-
 func (p *GatewayProxyProvider) getAPIKey() string {
 	if p.cfg.APIKey != "" {
 		return p.cfg.APIKey
@@ -65,10 +59,6 @@ func (p *GatewayProxyProvider) setCustomHeaders(req *http.Request) {
 		req.Header.Set("HTTP-Referer", "https://github.com/mevarx/GoCode")
 		req.Header.Set("X-Title", "GoCode")
 	}
-}
-
-func (p *GatewayProxyProvider) DefaultModel() string {
-	return p.cfg.DefaultModel
 }
 
 func (p *GatewayProxyProvider) Models(ctx context.Context) ([]string, error) {
@@ -116,6 +106,10 @@ type openAIMessage struct {
 	Content    string           `json:"content,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent is replayed on assistant turns so providers that
+	// thread reasoning through the request (MiniMax, DeepSeek) keep the
+	// chain continuous across a tool-call round trip.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type openAIToolCall struct {
@@ -143,8 +137,11 @@ type openAIToolFunction struct {
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content string `json:"content"`
+			// ReasoningContent is the DeepSeek-style thinking field used by
+			// MiniMax, DeepSeek and Hermes-compatible endpoints.
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -161,47 +158,14 @@ type openAIStreamChunk struct {
 func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error) {
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/chat/completions"
 
-	messages := make([]openAIMessage, 0, len(history))
-	for _, msg := range history {
-		oMsg := openAIMessage{
-			Role:       msg.Role,
-			Content:    msg.Content,
-			ToolCallID: msg.ToolCallID,
-		}
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				oMsg.ToolCalls = append(oMsg.ToolCalls, openAIToolCall{
-					ID:   tc.ID,
-					Type: "function",
-					Function: openAIToolCallFunction{
-						Name:      tc.Name,
-						Arguments: string(tc.Args),
-					},
-				})
-			}
-		}
-		messages = append(messages, oMsg)
-	}
-
 	payload := map[string]interface{}{
 		"model":    model,
-		"messages": messages,
+		"messages": buildOpenAIMessages(history),
 		"stream":   true,
 	}
 
 	if len(tools) > 0 {
-		toolSpecs := make([]openAIToolSpec, 0, len(tools))
-		for _, ts := range tools {
-			toolSpecs = append(toolSpecs, openAIToolSpec{
-				Type: "function",
-				Function: openAIToolFunction{
-					Name:        ts.Name,
-					Description: ts.Description,
-					Parameters:  ts.Parameters,
-				},
-			})
-		}
-		payload["tools"] = toolSpecs
+		payload["tools"] = buildOpenAITools(tools)
 	}
 
 	bodyBytes, err := json.Marshal(payload)
@@ -233,122 +197,7 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 	go func() {
 		defer resp.Body.Close()
 		defer close(ch)
-
-		scanner := bufio.NewScanner(resp.Body)
-		type pendingToolCall struct {
-			id   string
-			name string
-			args strings.Builder
-		}
-		pendingTools := make(map[int]*pendingToolCall)
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, ":") {
-				continue
-			}
-
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data == "[DONE]" {
-				if len(pendingTools) > 0 {
-					var indices []int
-					for idx := range pendingTools {
-						indices = append(indices, idx)
-					}
-					sort.Ints(indices)
-
-					var finalToolCalls []ToolCall
-					for _, idx := range indices {
-						pt := pendingTools[idx]
-						argsStr := pt.args.String()
-						if strings.TrimSpace(argsStr) == "" {
-							argsStr = "{}"
-						}
-						finalToolCalls = append(finalToolCalls, ToolCall{
-							ID:   pt.id,
-							Name: pt.name,
-							Args: json.RawMessage(argsStr),
-						})
-					}
-					ch <- StreamChunk{ToolCalls: finalToolCalls, Done: true}
-				} else {
-					ch <- StreamChunk{Done: true}
-				}
-				return
-			}
-
-			var chunk openAIStreamChunk
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-
-			for _, choice := range chunk.Choices {
-				if choice.Delta.Content != "" {
-					ch <- StreamChunk{Delta: choice.Delta.Content}
-				}
-
-				for _, tc := range choice.Delta.ToolCalls {
-					idx := tc.Index
-					pt, exists := pendingTools[idx]
-					if !exists {
-						pt = &pendingToolCall{
-							id:   tc.ID,
-							name: tc.Function.Name,
-						}
-						if pt.id == "" {
-							pt.id = fmt.Sprintf("call_%s_%d", tc.Function.Name, idx)
-						}
-						pendingTools[idx] = pt
-					}
-
-					if tc.ID != "" {
-						pt.id = tc.ID
-					}
-					if tc.Function.Name != "" {
-						pt.name = tc.Function.Name
-					}
-					if tc.Function.Arguments != "" {
-						pt.args.WriteString(tc.Function.Arguments)
-					}
-				}
-
-				if choice.FinishReason == "tool_calls" || choice.FinishReason == "stop" {
-					if len(pendingTools) > 0 {
-						var indices []int
-						for idx := range pendingTools {
-							indices = append(indices, idx)
-						}
-						sort.Ints(indices)
-
-						var toolCalls []ToolCall
-						for _, idx := range indices {
-							pt := pendingTools[idx]
-							argsStr := pt.args.String()
-							if strings.TrimSpace(argsStr) == "" {
-								argsStr = "{}"
-							}
-							toolCalls = append(toolCalls, ToolCall{
-								ID:   pt.id,
-								Name: pt.name,
-								Args: json.RawMessage(argsStr),
-							})
-						}
-						pendingTools = make(map[int]*pendingToolCall)
-						ch <- StreamChunk{
-							ToolCalls: toolCalls,
-						}
-					}
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: fmt.Errorf("error reading stream from %s: %w", p.name, err), Done: true}
-		}
+		streamOpenAISSE(resp.Body, ch, p.name)
 	}()
 
 	return ch, nil

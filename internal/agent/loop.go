@@ -200,6 +200,7 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 		}
 
 		var fullResponse strings.Builder
+		var fullReasoning strings.Builder
 		var toolCalls []provider.ToolCall
 
 		for chunk := range ch {
@@ -210,6 +211,13 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 			if chunk.Delta != "" {
 				a.emitDelta(chunk.Delta)
 				fullResponse.WriteString(chunk.Delta)
+			}
+
+			// Reasoning is captured but not displayed: it is model-internal
+			// thinking that some providers require to be replayed on the next
+			// turn, so it belongs in history without cluttering the terminal.
+			if chunk.Reasoning != "" {
+				fullReasoning.WriteString(chunk.Reasoning)
 			}
 
 			if len(chunk.ToolCalls) > 0 {
@@ -235,9 +243,10 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 		}
 
 		a.Session.AddMessage(provider.Message{
-			Role:      "assistant",
-			Content:   fullResponse.String(),
-			ToolCalls: toolCalls,
+			Role:             "assistant",
+			Content:          fullResponse.String(),
+			ToolCalls:        toolCalls,
+			ReasoningContent: fullReasoning.String(),
 		})
 
 		if len(toolCalls) == 0 {

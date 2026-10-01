@@ -99,30 +99,47 @@ func saveCLIConfig(cfg config.Config) error {
 
 func addCustomProvider(cfg *config.Config, name string, endpoint config.GatewayConfig) (string, config.GatewayConfig, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	if !providerNamePattern.MatchString(name) {
-		return "", config.GatewayConfig{}, fmt.Errorf("invalid provider name %q: use 1-32 lowercase letters, digits, hyphens, or underscores; it must start with a letter", name)
-	}
 	if isBuiltInProvider(name) {
 		return "", config.GatewayConfig{}, fmt.Errorf("%q is a built-in provider name", name)
 	}
-	baseURL, err := validateProviderBaseURL(endpoint.BaseURL)
+	validated, err := validateCustomProvider(name, endpoint)
 	if err != nil {
 		return "", config.GatewayConfig{}, err
-	}
-	endpoint.BaseURL = baseURL
-	endpoint.DefaultModel = strings.TrimSpace(endpoint.DefaultModel)
-	if endpoint.DefaultModel == "" {
-		return "", config.GatewayConfig{}, fmt.Errorf("default model cannot be empty")
-	}
-	endpoint.APIKeyEnv = strings.TrimSpace(endpoint.APIKeyEnv)
-	if endpoint.APIKeyEnv != "" && !apiKeyEnvPattern.MatchString(endpoint.APIKeyEnv) {
-		return "", config.GatewayConfig{}, fmt.Errorf("invalid API key environment variable name %q", endpoint.APIKeyEnv)
 	}
 	if cfg.Provider.Custom == nil {
 		cfg.Provider.Custom = make(map[string]config.GatewayConfig)
 	}
-	cfg.Provider.Custom[name] = endpoint
-	return name, endpoint, nil
+	cfg.Provider.Custom[validated.name] = validated.endpoint
+	return validated.name, validated.endpoint, nil
+}
+
+type customProvider struct {
+	name     string
+	endpoint config.GatewayConfig
+}
+
+// validateCustomProvider normalizes and checks a custom endpoint without
+// rejecting built-in names, so it can be reused when loading a saved config
+// whose names may predate the provider becoming built-in.
+func validateCustomProvider(name string, endpoint config.GatewayConfig) (customProvider, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if !providerNamePattern.MatchString(name) {
+		return customProvider{}, fmt.Errorf("invalid provider name %q: use 1-32 lowercase letters, digits, hyphens, or underscores; it must start with a letter", name)
+	}
+	baseURL, err := validateProviderBaseURL(endpoint.BaseURL)
+	if err != nil {
+		return customProvider{}, err
+	}
+	endpoint.BaseURL = baseURL
+	endpoint.DefaultModel = strings.TrimSpace(endpoint.DefaultModel)
+	if endpoint.DefaultModel == "" {
+		return customProvider{}, fmt.Errorf("default model cannot be empty")
+	}
+	endpoint.APIKeyEnv = strings.TrimSpace(endpoint.APIKeyEnv)
+	if endpoint.APIKeyEnv != "" && !apiKeyEnvPattern.MatchString(endpoint.APIKeyEnv) {
+		return customProvider{}, fmt.Errorf("invalid API key environment variable name %q", endpoint.APIKeyEnv)
+	}
+	return customProvider{name: name, endpoint: endpoint}, nil
 }
 
 func validateProviderBaseURL(raw string) (string, error) {
@@ -145,7 +162,7 @@ func validateProviderBaseURL(raw string) (string, error) {
 
 func isBuiltInProvider(name string) bool {
 	switch name {
-	case "ollama", "anthropic":
+	case "ollama", "anthropic", "copilot":
 		return true
 	}
 	for _, builtIn := range gatewayProviderNames {
@@ -164,10 +181,16 @@ func registerCustomProviders(registry *provider.Registry, configured map[string]
 	sort.Strings(names)
 	seen := make(map[string]struct{}, len(names))
 	for _, rawName := range names {
-		name, endpoint, err := addCustomProvider(&config.Config{}, rawName, configured[rawName])
+		// A name that has since become built-in is allowed through here: the
+		// user configured it explicitly before that happened, so it must keep
+		// working rather than making startup fail. Registering it after the
+		// built-ins replaces the built-in in the registry, and
+		// gatewayConfigFor prefers it for the same reason.
+		validated, err := validateCustomProvider(rawName, configured[rawName])
 		if err != nil {
 			return fmt.Errorf("custom provider %q: %w", rawName, err)
 		}
+		name, endpoint := validated.name, validated.endpoint
 		if name != rawName {
 			return fmt.Errorf("custom provider name %q must be lowercase", rawName)
 		}
@@ -187,13 +210,21 @@ func runProviderList(cmd *cobra.Command, args []string) error {
 	}
 
 	names := append([]string(nil), gatewayProviderNames...)
-	names = append(names, "anthropic", "ollama")
+	names = append(names, "anthropic", "copilot", "ollama")
 	sort.Strings(names)
 	fmt.Fprintln(cmd.OutOrStdout(), "Built-in providers:")
 	for _, name := range names {
 		endpoint := gatewayConfigFor(cfg.Provider, name)
 		if name == "ollama" {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %-12s %s  model=%s\n", name, cfg.Provider.Ollama.Host, cfg.Provider.Ollama.DefaultModel)
+			continue
+		}
+		if name == "copilot" {
+			envName := cfg.Provider.Copilot.OAuthTokenEnv
+			if envName == "" {
+				envName = "GITHUB_COPILOT_TOKEN"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  %-12s %s  model=%s  key=$%s (GitHub OAuth)\n", name, "github copilot", cfg.Provider.Copilot.DefaultModel, envName)
 			continue
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "  %-12s %s  model=%s  key=%s\n", name, endpoint.BaseURL, endpoint.DefaultModel, apiKeySource(endpoint))

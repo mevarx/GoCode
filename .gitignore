@@ -4,3 +4,4 @@ bin/
 .env
 config.local.toml
 dist/
+coverage.out
