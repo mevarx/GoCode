@@ -615,23 +615,28 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ %-14s configured (default: %s, %d models known)\n", "anthropic", anthropicCfg.DefaultModel, len(models))
 	}
 
-	copilotCfg := cfg.Provider.Copilot
-	copilotEnv := copilotCfg.OAuthTokenEnv
-	if copilotEnv == "" {
-		copilotEnv = "GITHUB_COPILOT_TOKEN"
-	}
-	if os.Getenv(copilotEnv) == "" {
-		fmt.Printf("⚠ %-14s no GitHub OAuth token (set %s or run `gocode auth copilot`)\n", "copilot", copilotEnv)
-	} else {
-		cp := provider.NewCopilotProvider(copilotCfg)
-		models, err := cp.Models(ctx)
-		if err != nil {
-			fmt.Printf("✗ %-14s token exchange failed: %v\n", "copilot", err)
-		} else {
-			fmt.Printf("✓ %-14s reachable (default: %s, %d models)\n", "copilot", copilotCfg.DefaultModel, len(models))
-		}
-	}
+	// Ask the provider whether it has a token rather than reimplementing the
+	// lookup; otherwise a user who ran `gocode auth copilot` (which saves the
+	// token to a file) is wrongly told they have no credentials.
+	cp := provider.NewCopilotProvider(cfg.Provider.Copilot)
+	fmt.Println(copilotDoctorLine(cp, ctx, cfg.Provider.Copilot.DefaultModel))
 
 	fmt.Println("──────────────────────────────────────────")
 	return nil
+}
+
+// copilotDoctorLine renders the `doctor` status line for Copilot.
+//
+// It asks the provider rather than inspecting the environment, so the reported
+// state always matches what the provider can actually authenticate with.
+// Extracted so the token-availability path is testable without a network call.
+func copilotDoctorLine(cp *provider.CopilotProvider, ctx context.Context, defaultModel string) string {
+	if !cp.HasToken() {
+		return fmt.Sprintf("⚠ %-14s no GitHub OAuth token (run `gocode auth copilot`, or set $%s)", "copilot", cp.TokenEnvName())
+	}
+	models, err := cp.Models(ctx)
+	if err != nil {
+		return fmt.Sprintf("✗ %-14s token exchange failed: %v", "copilot", err)
+	}
+	return fmt.Sprintf("✓ %-14s reachable (default: %s, %d models)", "copilot", defaultModel, len(models))
 }

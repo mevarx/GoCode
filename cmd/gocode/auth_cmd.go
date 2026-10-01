@@ -106,7 +106,11 @@ func runCopilotLogin(cmd *cobra.Command, clientID string, timeout time.Duration)
 	}
 
 	fmt.Fprintf(out, "✓ GitHub Copilot authorized. Token saved to %s\n", path)
-	fmt.Fprintf(out, "  Set $%s to that token, then run: gocode --provider copilot\n", "GITHUB_COPILOT_TOKEN")
+	// Do not tell the user to export it: the provider reads this file
+	// automatically, and exporting a live credential into every shell is
+	// strictly worse than leaving it in one 0600 file.
+	fmt.Fprintf(out, "  It is picked up automatically. Run: gocode --provider copilot\n")
+	fmt.Fprintf(out, "  (%s takes precedence if you prefer to set it.)\n", "GITHUB_COPILOT_TOKEN")
 	return nil
 }
 

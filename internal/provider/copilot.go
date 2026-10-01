@@ -121,6 +121,25 @@ func (p *CopilotProvider) oauthToken() string {
 	return ""
 }
 
+// HasToken reports whether a GitHub OAuth token is available from either the
+// environment or the saved token file.
+//
+// This exists so `gocode doctor` can ask the provider itself instead of
+// reimplementing the lookup. When it checked only the environment variable, a
+// user who had completed `gocode auth copilot` was told they had no token even
+// though the provider could authenticate fine.
+func (p *CopilotProvider) HasToken() bool {
+	return p.oauthToken() != ""
+}
+
+// TokenEnvName returns the environment variable this provider reads first.
+func (p *CopilotProvider) TokenEnvName() string {
+	if p.cfg.OAuthTokenEnv != "" {
+		return p.cfg.OAuthTokenEnv
+	}
+	return "GITHUB_COPILOT_TOKEN"
+}
+
 // applyIntegrationHeaders sets the headers Copilot requires to treat a request
 // as coming from a real editor client. Copilot rejects requests without them.
 func (p *CopilotProvider) applyIntegrationHeaders(req *http.Request) {
@@ -250,10 +269,11 @@ func (p *CopilotProvider) exchangeToken(ctx context.Context, oauthToken string) 
 		return "", "", time.Time{}, fmt.Errorf("copilot token exchange returned an empty token; the account likely has no active Copilot subscription")
 	}
 
-	apiBase, apiErr := resolveCopilotAPI(parsed.Endpoints.API, p.allowAPIURL)
-	if apiErr != nil && parsed.Endpoints.API != "" {
-		// An untrusted base URL is a hard error, not a silent downgrade.
-		return "", "", time.Time{}, apiErr
+	// resolveCopilotAPI returns a non-nil error only for a non-empty raw URL,
+	// so this is a hard failure rather than a silent fall back to the default.
+	apiBase, err := resolveCopilotAPI(parsed.Endpoints.API, p.allowAPIURL)
+	if err != nil {
+		return "", "", time.Time{}, err
 	}
 
 	var expiry time.Time

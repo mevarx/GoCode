@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -237,6 +239,65 @@ func TestCopilotErrorsWhenNoOAuthToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "gocode auth copilot") {
 		t.Errorf("error should tell the user how to log in, got %q", err)
+	}
+}
+
+// HasToken must agree with what the provider will actually use. `gocode doctor`
+// consults it, and it previously reported "no token" to users who had saved
+// one with `gocode auth copilot` because it only looked at the environment.
+func TestCopilotHasTokenSeesSavedTokenFile(t *testing.T) {
+	envName := "GOCODE_TEST_COPILOT_TOKEN"
+	t.Setenv(envName, "")
+
+	// Point the saved-token lookup at a temp dir by setting the platform
+	// config dir, then write a token the way `gocode auth copilot` does.
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+
+	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: envName})
+	if p.HasToken() {
+		t.Fatal("HasToken should be false with no env var and no saved file")
+	}
+
+	path := config.CopilotTokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("  ghu_saved_token_value\n"), 0o600); err != nil {
+		t.Fatalf("failed to write token: %v", err)
+	}
+
+	if !p.HasToken() {
+		t.Error("HasToken must see a token saved by `gocode auth copilot`")
+	}
+	// Whitespace around the saved token must not defeat the check.
+	if got := p.oauthToken(); got != "ghu_saved_token_value" {
+		t.Errorf("saved token not trimmed: got %q", got)
+	}
+}
+
+// The environment variable wins over the saved file, so a user can override a
+// stale login without re-running the device flow.
+func TestCopilotEnvTokenOverridesSavedFile(t *testing.T) {
+	envName := "GOCODE_TEST_COPILOT_TOKEN"
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+
+	path := config.CopilotTokenPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("ghu_from_file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envName, "ghu_from_env")
+
+	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: envName})
+	if got := p.oauthToken(); got != "ghu_from_env" {
+		t.Errorf("env var must win over the saved file, got %q", got)
+	}
+	if got := p.TokenEnvName(); got != envName {
+		t.Errorf("TokenEnvName = %q, want %q", got, envName)
 	}
 }
 
