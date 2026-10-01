@@ -229,7 +229,26 @@ func TestCopilotStreamSendsBearerJWTToDynamicBaseURL(t *testing.T) {
 	}
 }
 
+// isolateConfigDir redirects every platform-specific config path at a temp
+// directory so a test touching the saved Copilot token cannot read or clobber
+// the real one.
+//
+// config.ConfigDir() uses APPDATA on Windows and XDG_CONFIG_HOME / $HOME
+// elsewhere. Setting only APPDATA meant the macOS and Linux runs wrote a token
+// into ~/.config/gocode, which sibling tests then read back.
+func isolateConfigDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	t.Setenv("LOCALAPPDATA", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_DATA_HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("HOME", dir)
+}
+
 func TestCopilotErrorsWhenNoOAuthToken(t *testing.T) {
+	isolateConfigDir(t)
 	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: "GOCODE_TEST_MISSING_TOKEN"})
 	t.Setenv("GOCODE_TEST_MISSING_TOKEN", "")
 
@@ -251,8 +270,7 @@ func TestCopilotHasTokenSeesSavedTokenFile(t *testing.T) {
 
 	// Point the saved-token lookup at a temp dir by setting the platform
 	// config dir, then write a token the way `gocode auth copilot` does.
-	t.Setenv("APPDATA", t.TempDir())
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	isolateConfigDir(t)
 
 	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: envName})
 	if p.HasToken() {
@@ -280,8 +298,7 @@ func TestCopilotHasTokenSeesSavedTokenFile(t *testing.T) {
 // stale login without re-running the device flow.
 func TestCopilotEnvTokenOverridesSavedFile(t *testing.T) {
 	envName := "GOCODE_TEST_COPILOT_TOKEN"
-	t.Setenv("APPDATA", t.TempDir())
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	isolateConfigDir(t)
 
 	path := config.CopilotTokenPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

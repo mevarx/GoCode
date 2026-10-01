@@ -11,6 +11,25 @@ import (
 	"github.com/mevarx/GoCode/internal/provider"
 )
 
+// isolateConfigDir points every platform-specific config path at a temp
+// directory so a test that reads or writes the saved Copilot token cannot see
+// — or clobber — the developer's real one.
+//
+// config.ConfigDir() uses APPDATA on Windows and XDG_CONFIG_HOME / $HOME
+// elsewhere, so all of them have to be redirected. Setting only APPDATA left
+// macOS and Linux tests writing into ~/.config/gocode.
+func isolateConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	t.Setenv("LOCALAPPDATA", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_DATA_HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("HOME", dir)
+	return dir
+}
+
 // A user who completed `gocode auth copilot` has a token saved on disk.
 // `doctor` must not tell them they have none.
 //
@@ -19,8 +38,7 @@ import (
 // with the provider that actually does the work.
 func TestDoctorReportsCopilotTokenFromSavedFile(t *testing.T) {
 	t.Setenv("GOCODE_TEST_COPILOT_TOKEN", "")
-	t.Setenv("APPDATA", t.TempDir())
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	isolateConfigDir(t)
 
 	path := config.CopilotTokenPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -54,8 +72,7 @@ func TestDoctorReportsCopilotTokenFromSavedFile(t *testing.T) {
 // With no token anywhere, doctor must still say so and point at the fix.
 func TestDoctorReportsMissingCopilotToken(t *testing.T) {
 	t.Setenv("GOCODE_TEST_COPILOT_TOKEN", "")
-	t.Setenv("APPDATA", t.TempDir())
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	isolateConfigDir(t)
 
 	p := provider.NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: "GOCODE_TEST_COPILOT_TOKEN"})
 
