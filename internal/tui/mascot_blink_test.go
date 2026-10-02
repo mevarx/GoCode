@@ -20,7 +20,7 @@ func TestMascotEventuallyBlinksWithoutAnyStateChange(t *testing.T) {
 	// often than the 4s cycle because frame rate and blink period differ.
 	for i := 0; i < 400; i++ {
 		msgNow = func() time.Time { return start.Add(time.Duration(i) * 20 * time.Millisecond) }
-		m.step()
+		m.step(msgNow())
 		if m.faceFor(msgNow()).left != faces[mascotIdle].left {
 			blinked = true
 			break

@@ -325,7 +325,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, pollApproval(m.bridge)
 
 	case frameMsg:
-		m.mascot.step()
+		m.mascot.step(msg.at)
 		// Re-arm only for the current turn, so a late frame from a finished
 		// turn cannot keep a chain ticking behind the live one.
 		if m.animating && msg.epoch == m.animEpoch {

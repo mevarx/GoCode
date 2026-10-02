@@ -143,12 +143,14 @@ func (m mascot) rest() mascot {
 	return m
 }
 
-// step advances the animation by one frame.
-func (m *mascot) step() {
+// step advances the animation by one frame. It takes the frame's own timestamp
+// rather than reading the clock, so a batched or delayed frame advances the
+// springs by when it was scheduled, not by when it was finally processed.
+func (m *mascot) step(now time.Time) {
 	// Arm the blink on the first frame: setState cannot do it because it
 	// no-ops when the state is unchanged.
 	if m.eyes.at.IsZero() {
-		m.eyes.at = msgNow()
+		m.eyes.at = now
 	}
 
 	// Ease the amplitude toward the target for the current state so switching
@@ -165,7 +167,7 @@ func (m *mascot) step() {
 
 	wave := waveAt(m.phase)
 	m.bob.step(m.amp * wave)
-	m.sway.step(m.amp * 0.5 * -wave)
+	m.sway.step(m.amp * -wave)
 }
 
 // amplitudeEaseRate is the per-frame fraction by which motion amplitude
@@ -216,26 +218,25 @@ func (m *mascot) faceFor(now time.Time) face {
 
 // inline renders the mascot as a single line, for the status bar.
 //
-// Width is fixed at 7 cells in every state so the status bar never reflows:
-// six glyphs, but the mouth (︶︵︷) is presentation-form and measures two cells.
+// The sprite is 7 cells — "(", two eyes, a space, ")" and the mouth, whose
+// presentation-form glyph measures two — inside a field one cell wider. That
+// spare cell is the sway spring's travel: as it pushes, the pad moves from the
+// right of the mascot to its left, so the field is exactly 8 cells wide in
+// every state and the mascot visibly slides without the bar ever reflowing.
 func (m mascot) inline(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 
-	// The trailing pad reserves the sway spring's sideways shift, keeping the
-	// field width provably constant. Normally empty: sway peaks below a cell.
-	const cellWidth = 7
-	// spriteCells is the unpadded width: "(", two eyes, a space, ")" and the
-	// mouth, whose glyph is two cells wide.
 	const spriteCells = 7
-	shift := quantize(m.sway.value(), 0, 1)
-	pad := strings.Repeat(" ", cellWidth-spriteCells+shift)
+	const cellWidth = spriteCells + 1
+	shift := quantize(m.sway.value(), 0, cellWidth-spriteCells)
 
 	var b strings.Builder
+	b.WriteString(st.body.Render(strings.Repeat(" ", shift)))
 	b.WriteString(st.body.Render("("))
 	b.WriteString(st.eye.Render(f.left + " " + f.right))
 	b.WriteString(st.body.Render(")"))
 	b.WriteString(st.mouth.Render(f.mouth))
-	b.WriteString(st.body.Render(pad))
+	b.WriteString(st.body.Render(strings.Repeat(" ", cellWidth-spriteCells-shift)))
 	return b.String()
 }
 
@@ -255,9 +256,19 @@ func (m mascot) hero(now time.Time, st mascotStyles) string {
 	// rather than a narrow stalk floating over a wider box.
 	const total = 2 + faceWidth + 2
 
+	// antennaCol is the column the stalk occupies: directly above the ┴ in the
+	// lid, which is the centre of the face box. padTo would centre it within
+	// the whole field including the two-space indent, landing it one cell left
+	// of the joint.
+	antennaCol := 2 + 1 + (faceWidth-1)/2
+	antennaRow := func(glyph string) string {
+		return strings.Repeat(" ", antennaCol) + glyph +
+			strings.Repeat(" ", total-antennaCol-lipgloss.Width(glyph))
+	}
+
 	rows := []string{
-		st.tip.Render(padTo(tip, total)),
-		st.body.Render(padTo("│", total)),
+		st.tip.Render(antennaRow(tip)),
+		st.body.Render(antennaRow("│")),
 		// The ┴ is where the antenna meets the lid; without it the stalk
 		// reads as passing through the box rather than into it.
 		st.body.Render("  ╭──┴──╮"),

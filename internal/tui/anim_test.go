@@ -438,7 +438,7 @@ func TestMascotStateTransitionsDoNotPanic(t *testing.T) {
 			}
 			for i := 0; i < 120; i++ {
 				now := base.Add(time.Duration(i) * cadence(to))
-				m.step()
+				m.step(msgNow())
 				if off := m.cellOffset(); off < -1 || off > 1 {
 					t.Fatalf("%v→%v frame %d: cellOffset %d outside [-1, 1]", from, to, i, off)
 				}
@@ -466,7 +466,7 @@ func TestMascotStepStaysFinite(t *testing.T) {
 	for i, s := range animAllStates() {
 		m.setState(s, now.Add(time.Duration(i)*time.Second))
 		for f := 0; f < 200; f++ {
-			m.step()
+			m.step(msgNow())
 			if math.IsNaN(m.bob.value()) || math.IsInf(m.bob.value(), 0) {
 				t.Fatalf("bob became %v in state %v after %d frames", m.bob.value(), s, f)
 			}
@@ -487,12 +487,12 @@ func TestMascotAmplitudeEasesRatherThanSnaps(t *testing.T) {
 	m := newMascot()
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	m.setState(mascotWorking, now)
-	m.step()
+	m.step(msgNow())
 	if math.Abs(m.amp-amplitude(mascotWorking)) < 1e-9 {
 		t.Error("amplitude jumped straight to the working target on the first frame; it should ease")
 	}
 	for i := 0; i < 400; i++ {
-		m.step()
+		m.step(msgNow())
 	}
 	if math.Abs(m.amp-amplitude(mascotWorking)) > 0.01 {
 		t.Errorf("amplitude settled at %v, want %v", m.amp, amplitude(mascotWorking))
@@ -534,10 +534,10 @@ func TestMascotDoesNotBlinkWhileWorking(t *testing.T) {
 
 // --- layout ---------------------------------------------------------------
 
-// animInlineWidth is the visible cell width of inline(). Pinned as a constant so
-// a future glyph swap has to update this test deliberately rather than silently
-// reflow the status bar.
-const animInlineWidth = 7
+// animInlineWidth is the visible cell width of inline(): the 7-cell mascot plus
+// the one cell of sway travel. Pinned as a constant so a future glyph swap has
+// to update this test deliberately rather than silently reflow the status bar.
+const animInlineWidth = 8
 
 // The status bar must not reflow mid-animation: inline() occupies a fixed cell
 // width in every state, at every blink phase, under every colour scheme.
@@ -570,7 +570,7 @@ func TestMascotInlineWidthIsConstant(t *testing.T) {
 				for _, offset := range []time.Duration{0, 10 * time.Millisecond, 109 * time.Millisecond, 110 * time.Millisecond, 3 * time.Second} {
 					for i := 0; i < 30; i++ {
 						now := start.Add(offset + time.Duration(i)*cadence(s))
-						m.step()
+						m.step(msgNow())
 						out := m.inline(now, sk.st)
 						if got := animVisibleWidth(out); got != animInlineWidth {
 							t.Fatalf("inline() width = %d cells in state %v at %v (blink offset %v), want %d: %q",
@@ -593,7 +593,7 @@ func TestMascotInlineWidthIsIdenticalAcrossStates(t *testing.T) {
 			m := newMascot()
 			m.state = s
 			m.eyes.at = start
-			m.step()
+			m.step(msgNow())
 			w := animVisibleWidth(m.inline(start.Add(offset), mascotFaceStyles))
 			seen[w] = append(seen[w], s)
 		}
@@ -680,7 +680,7 @@ func TestMascotHeroRowsAlign(t *testing.T) {
 
 	for i := 0; i < 120; i++ {
 		now := start.Add(time.Duration(i) * cadence(mascotWorking))
-		m.step()
+		m.step(msgNow())
 		rows := strings.Split(m.hero(now, mascotFaceStyles), "\n")
 		if len(rows) < 5 {
 			t.Fatalf("frame %d: hero has %d rows, expected at least 5", i, len(rows))

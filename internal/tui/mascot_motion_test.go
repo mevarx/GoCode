@@ -19,7 +19,7 @@ func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 			const frames = 600
 			var peak float64
 			for i := 0; i < frames; i++ {
-				m.step()
+				m.step(msgNow())
 				if v := m.bob.value(); v > peak {
 					peak = v
 				}
@@ -59,7 +59,7 @@ func TestWorkingAnimatesMoreThanIdle(t *testing.T) {
 		m.setState(state, nowForTest())
 		var hi float64
 		for i := 0; i < 600; i++ {
-			m.step()
+			m.step(msgNow())
 			if v := m.bob.value(); v > hi {
 				hi = v
 			}
@@ -80,7 +80,7 @@ func TestInlineWidthSurvivesSway(t *testing.T) {
 
 	widths := map[int]bool{}
 	for i := 0; i < 600; i++ {
-		m.step()
+		m.step(msgNow())
 		widths[lipgloss.Width(stripANSI(m.inline(nowForTest(), mascotFaceStyles)))] = true
 	}
 

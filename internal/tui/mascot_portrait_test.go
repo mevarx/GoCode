@@ -48,7 +48,7 @@ func TestRestClearsSpringMotion(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())
 	for i := 0; i < 30; i++ {
-		m.step()
+		m.step(msgNow())
 	}
 	if m.cellOffset() == 0 && m.bob.value() == 0 && m.sway.value() == 0 {
 		t.Fatal("test is not exercising anything: the springs never moved")
@@ -72,7 +72,7 @@ func TestHeroRowsAlignAtEveryOffset(t *testing.T) {
 
 	checked := 0
 	for i := 0; i < 900; i++ {
-		m.step()
+		m.step(msgNow())
 		rows := strings.Split(stripANSI(m.hero(nowForTest(), mascotFaceStyles)), "\n")
 		base := lipgloss.Width(rows[len(rows)-1])
 		for r, row := range rows {
