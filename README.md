@@ -43,6 +43,17 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 
+### v0.6.1 Fixes
+
+Corrections to v0.6.0, found by independent review and by measuring rendered output rather than reading it.
+
+- **`gocode mcp add` Rejected Every Server Command That Takes a Flag** — `gocode mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .`, the example in this README, failed outright with `unknown shorthand flag: 'y'`. Cobra parsed the *server's* flag as GoCode's and exited before the server was configured, so no MCP server whose command takes a flag could be added at all. Cobra's `--` escape hatch does not help here: with `Args` consuming positionals, `--` only ends flag parsing *before* the first positional, which for this command is the server name, so it never reaches `-y`. The rule is now positional — GoCode's flags come before the first non-flag token, everything after belongs to the server, and `--` anywhere ends GoCode's section. See [MCP](#model-context-protocol-mcp).
+- **The Mascot Did Not Actually Move** — `rate()` drove the animation oscillator at 0.22 cycles/frame, which at 20fps is 4.4Hz — faster than the 5.2 rad/s spring could follow. The spring attenuated the drive to about 0.06 cells, which rounded to zero on every frame, and the hero's row-shift branch was unreachable: the antenna could never lift. Every test still passed, because nothing had measured whether the mascot moved at all. The rate is now 0.03 cycles/frame, where the spring tracks at 89% of the requested amplitude.
+- **A Comment Described Behaviour That Did Not Exist** — `waveAt`'s doc claimed the triangle was "smoothed at the turning points" and "holds briefly at each end". Measured over a full cycle there is no dwell and the slope is flat: it is a hard triangle. The code was right and the comment wrong — the corner is deliberate, since a stiff signal into an under-damped spring is what produces the ease-out.
+- **Frame Ticker Chains Compounded Across Turns** — the animation ticker was gated only by a boolean, so a tick in flight when a turn ended re-armed once the next turn started, and every later turn added another. Each frame now carries the turn it belongs to.
+- **Portrait Row Width Was Only Checked at Rest** — `hero()` padded a negative bob with a hardcoded 7-space row while every other row was 9 cells. The row is fixed, and the test now sweeps the whole animation instead of only the pinned pose. The old assertion passed while the defect it was meant to prevent was live.
+- **Dead Fields Removed** — `mascot.since` was written but never read, and its comment described a relax-to-idle that no code performed.
+
 ### v0.6.0 Additions
 
 - **A Mascot** — GoCode now has a character. It sits in the status bar as a fixed-width sprite and appears in the startup banner as a full portrait, with an antenna, a face, and five expressions tied to what the agent is actually doing: `idle`, `thinking` (prompt sent, no tokens yet), `working` (streaming), `done`, and `error`. A cancelled turn relaxes to idle rather than showing a failure face, because interrupting is a user action, not a failure.
