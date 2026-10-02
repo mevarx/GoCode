@@ -82,6 +82,12 @@ func main() {
 		Short: "Add or update an MCP server configuration",
 		Args:  cobra.MinimumNArgs(2),
 		RunE:  runMCPAdd,
+		// MCP server commands routinely take their own flags —
+		// `npx -y @scope/server` is the common case — and cobra would parse
+		// those as GoCode's, so the documented command failed outright. With
+		// this set, a `--` separator is still honoured for GoCode's own
+		// flags such as --config.
+		DisableFlagParsing: true,
 	}
 
 	mcpListCmd := &cobra.Command{
@@ -429,6 +435,14 @@ func openSessionStore(persist bool, dbPath string) (*session.SessionStore, error
 }
 
 func runMCPAdd(cmd *cobra.Command, args []string) error {
+	// Flag parsing is off for this command, so pull GoCode's own flags out of
+	// the raw arguments by hand.
+	rest, configPath := splitMCPAddArgs(args)
+	if configPath != "" {
+		flagConfig = configPath
+	}
+	args = rest
+
 	cfg, err := loadCLIConfig()
 	if err != nil {
 		return err
@@ -453,6 +467,110 @@ func runMCPAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("✓ Added MCP server %q: %s %s\n", name, command, strings.Join(mcpArgs, " "))
 	return nil
+}
+
+// splitMCPAddArgs separates GoCode's own flags from the server command.
+//
+// MCP server commands routinely take their own flags — `npx -y @scope/server`
+// is the common case — and cobra would have parsed those as GoCode's, so the
+// documented command failed outright. The rule here is positional rather than
+// clever: GoCode's flags come before the server name, and everything from the
+// first non-flag token onward belongs to the server, flags included. A literal
+// `--` ends GoCode's section early and is not itself passed to the server.
+//
+//	--config <path> add <name> <command> [args...]
+//	add <name> <command> [args...] -- --config <path>
+func splitMCPAddArgs(args []string) (serverArgs []string, configPath string) {
+	// Split off the section after `--` first. Cobra passes the separator
+	// through verbatim, and it can appear anywhere, so it cannot be found by
+	// walking forward from the start.
+	head := args
+	var tail []string
+	if i := indexOfString(args, "--"); i >= 0 {
+		head, tail = args[:i], args[i+1:]
+	}
+
+	serverStart := -1
+	for i := 0; i < len(head); i++ {
+		arg := head[i]
+		switch {
+		case arg == "--config" || arg == "-config":
+			if i+1 < len(head) {
+				configPath = head[i+1]
+				i++
+				continue
+			}
+		case strings.HasPrefix(arg, "--config="):
+			configPath = strings.TrimPrefix(arg, "--config=")
+		case arg == "--verbose" || arg == "-verbose" || arg == "-v":
+			flagVerbose = true
+		default:
+			// First positional: the server name. Everything from here is the
+			// server's, so --config here would belong to the server.
+			serverStart = i
+		}
+		if serverStart >= 0 {
+			break
+		}
+	}
+
+	if serverStart < 0 {
+		serverStart = len(head)
+	}
+
+	// A --config in the post-separator tail is unambiguously ours, in either
+	// spelling, because the separator already ended the server command. Only
+	// the tail is scanned: a --config appearing in the server's own arguments
+	// belongs to the server.
+	tailArgs, tailConfig := splitTailConfig(tail)
+	if tailConfig != "" {
+		configPath = tailConfig
+	}
+
+	serverArgs = append(append([]string{}, head[serverStart:]...), tailArgs...)
+	if len(serverArgs) == 0 {
+		serverArgs = nil
+	}
+	return serverArgs, configPath
+}
+
+// splitTailConfig pulls a trailing --config out of the post-separator tail.
+func splitTailConfig(tail []string) (rest []string, configPath string) {
+	for i := 0; i < len(tail); i++ {
+		a := tail[i]
+		switch {
+		case strings.HasPrefix(a, "--config="):
+			configPath = strings.TrimPrefix(a, "--config=")
+			rest = append(rest, removeAt(tail, i)...)
+			return rest, configPath
+		case (a == "--config" || a == "-config") && i+1 < len(tail):
+			configPath = tail[i+1]
+			rest = append(rest, removeSlice(tail, i, i+2)...)
+			return rest, configPath
+		}
+	}
+	return tail, ""
+}
+
+func indexOfString(haystack []string, needle string) int {
+	for i, s := range haystack {
+		if s == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+// removeAt deletes one index.
+func removeAt(args []string, i int) []string {
+	return append(args[:i:i], args[i+1:]...)
+}
+
+// removeSlice deletes the [from, to) range.
+func removeSlice(args []string, from, to int) []string {
+	out := make([]string, 0, len(args)-(to-from))
+	out = append(out, args[:from]...)
+	return append(out, args[to:]...)
 }
 
 func runMCPList(cmd *cobra.Command, args []string) error {

@@ -214,6 +214,23 @@ gocode mcp remove filesystem
 
 MCP tools are automatically registered into the agent's tool catalog upon startup.
 
+Server commands routinely take their own flags, so everything from the first
+non-flag token onward belongs to the server. Put GoCode's own flags before the
+server name:
+
+```bash
+gocode --config /path/to/config.toml mcp add filesystem npx -y @scope/server .
+```
+
+If you need `--config` after the command, separate the sections with `--`:
+
+```bash
+gocode mcp add filesystem npx -y @scope/server . -- --config /path/to/config.toml
+```
+
+A `--config` that appears after the server command without a `--` separator is
+treated as the server's own flag.
+
 ---
 
 ## Project & Global Context
