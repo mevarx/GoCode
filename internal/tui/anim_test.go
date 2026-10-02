@@ -735,7 +735,7 @@ func TestStripANSIRemovesEscapeSequences(t *testing.T) {
 // --- frames ---------------------------------------------------------------
 
 func TestTickUntilEmitsFrameMsg(t *testing.T) {
-	cmd := tickUntil(time.Millisecond)
+	cmd := tickUntil(time.Millisecond, 3)
 	if cmd == nil {
 		t.Fatal("tickUntil returned a nil command")
 	}
@@ -743,6 +743,10 @@ func TestTickUntilEmitsFrameMsg(t *testing.T) {
 	fm, ok := msg.(frameMsg)
 	if !ok {
 		t.Fatalf("tickUntil produced %T, want frameMsg", msg)
+	}
+	if fm.epoch != 3 {
+		t.Errorf("frameMsg.epoch = %d, want 3: a frame that loses its turn tag can "+
+			"re-arm a finished turn's ticker", fm.epoch)
 	}
 	if fm.at.IsZero() {
 		t.Error("frameMsg carries a zero timestamp")

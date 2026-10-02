@@ -17,7 +17,14 @@ const (
 )
 
 // frameMsg advances every animation in the UI by one frame.
-type frameMsg struct{ at time.Time }
+//
+// epoch identifies the turn the frame belongs to. Without it a tick still in
+// flight when a turn ends can re-arm after the next turn starts, leaving two
+// ticking chains alive; they compound for the rest of the session.
+type frameMsg struct {
+	at    time.Time
+	epoch int
+}
 
 // msgNow reads the clock. Indirected through a variable so tests can freeze
 // time and make blink and animation behaviour deterministic.
@@ -31,9 +38,10 @@ func stripANSI(s string) string {
 	return ansiEscape.ReplaceAllString(s, "")
 }
 
-// tickUntil returns a command that emits frameMsg after d.
-func tickUntil(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg { return frameMsg{at: t} })
+// tickUntil returns a command that emits frameMsg after d, tagged with the turn
+// it belongs to.
+func tickUntil(d time.Duration, epoch int) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return frameMsg{at: t, epoch: epoch} })
 }
 
 // spring is a damped harmonic oscillator driving one animated property.

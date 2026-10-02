@@ -68,6 +68,9 @@ type Model struct {
 	// animating gates the frame ticker. An idle session stops redrawing
 	// entirely rather than burning a core on a mascot nobody is watching.
 	animating bool
+	// animEpoch increments per turn. A frame from an earlier turn is dropped
+	// rather than re-armed, so two ticking chains can never overlap.
+	animEpoch int
 
 	modelPickerActive bool
 	modelPicker       list.Model
@@ -116,7 +119,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
-		tickUntil(cadence(mascotIdle)),
+		tickUntil(cadence(mascotIdle), m.animEpoch),
 		pollApproval(m.bridge),
 		m.listenOutput(),
 	)
@@ -237,9 +240,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// waits rather than claiming to be streaming.
 			m.mascot.setState(mascotThinking, msgNow())
 			m.animating = true
+			m.animEpoch++
 			inputCh := m.inputCh
 			go func() { inputCh <- input }()
-			cmds = append(cmds, m.listenOutput(), tickUntil(cadence(mascotThinking)))
+			cmds = append(cmds, m.listenOutput(), tickUntil(cadence(mascotThinking), m.animEpoch))
 
 		case tea.KeyUp:
 			if !m.textarea.Focused() {
@@ -322,8 +326,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case frameMsg:
 		m.mascot.step()
-		if m.animating {
-			cmds = append(cmds, tickUntil(cadence(m.mascot.state)))
+		// Re-arm only for the current turn, so a late frame from a finished
+		// turn cannot keep a chain ticking behind the live one.
+		if m.animating && msg.epoch == m.animEpoch {
+			cmds = append(cmds, tickUntil(cadence(m.mascot.state), m.animEpoch))
 		}
 	}
 
