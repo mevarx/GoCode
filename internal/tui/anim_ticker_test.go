@@ -8,12 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// A frame belonging to a finished turn must not re-arm the ticker.
-//
-// The ticker was gated only by m.animating, so a tick still in flight when a
-// turn ended would re-arm once the next turn set animating back to true. Two
-// ticking chains then ran for the rest of the session, and every subsequent
-// turn added another.
+// A frame belonging to a finished turn must not re-arm the ticker. Gating only
+// on m.animating let a tick in flight at a turn boundary re-arm under the next
+// turn, and every turn after that added another live chain.
 func TestStaleFrameDoesNotRearmTicker(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 

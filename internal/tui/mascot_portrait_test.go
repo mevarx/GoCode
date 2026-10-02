@@ -12,11 +12,8 @@ import (
 // depend on when the suite happened to run.
 func nowForTest() time.Time { return time.Unix(1_700_000_000, 0) }
 
-// The banner draws a static portrait. hero() trims rows when the mascot's bob
-// is positive, so a portrait built from a mascot whose springs were still in
-// flight lost its antenna — the drawing silently changed shape at startup.
-//
-// This asserts the portrait is the full figure, every time.
+// The banner draws a static portrait, and hero() trims rows when the bob is
+// positive, so a portrait built from springs still in flight loses its antenna.
 func TestRestPortraitIsStableAndComplete(t *testing.T) {
 	wantRows := strings.Split(stripANSI(newMascot().rest().hero(nowForTest(), mascotFaceStyles)), "\n")
 	if len(wantRows) < 6 {
@@ -67,11 +64,8 @@ func TestRestClearsSpringMotion(t *testing.T) {
 	}
 }
 
-// Row width must hold at every bob offset, not only at rest.
-//
-// An earlier version padded a negative offset with a hardcoded 7-space row
-// while every other row was 9 cells. The rest() assertion could not catch it
-// because rest() pins the offset to 0, so this sweeps the whole animation.
+// Row width must hold at every bob offset, not only at rest: rest() pins the
+// offset to 0, so an assertion using it cannot see the animated paths at all.
 func TestHeroRowsAlignAtEveryOffset(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())

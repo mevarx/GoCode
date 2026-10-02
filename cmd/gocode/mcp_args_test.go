@@ -2,14 +2,9 @@ package main
 
 import "testing"
 
-// `gocode mcp add demo npx -y @scope/server .` — the command in the README —
-// failed outright: cobra parsed `-y` as a GoCode flag and exited before the
-// server was ever configured. Any MCP server whose command takes a flag could
-// not be added.
-//
-// The fix makes the rule positional: GoCode's flags come before the server
-// name, everything after the first positional belongs to the server, and `--`
-// ends GoCode's section.
+// Server commands routinely take their own flags (`npx -y ...`), so cobra must
+// not parse them. GoCode's flags go before the server name; everything after
+// the first positional belongs to the server.
 func TestSplitMCPAddArgs(t *testing.T) {
 	cases := []struct {
 		name       string

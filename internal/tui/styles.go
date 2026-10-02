@@ -1,32 +1,19 @@
-// Package tui style tokens.
+// Package tui style tokens: the single source of truth for the TUI's visual
+// language. Colour lives here and nowhere else, so call sites never write hex,
+// every colour is a role rather than a pigment, and all of it is AdaptiveColor
+// because a TUI is not assumed to run on a dark terminal.
 //
-// This file is the single source of truth for the TUI's visual language. The
-// rules it enforces:
-//
-//   - Colour lives here and nowhere else. If a hue is needed twice it gets a
-//     name; call sites never write hex. That is what stops the palette drifting
-//     into a dozen near-identical blues as the UI grows.
-//   - Colour is AdaptiveColor everywhere, because a TUI is not assumed to run on
-//     a dark terminal. Light values are darkened, not merely lightened, so that
-//     text keeps contrast against a white background instead of glowing.
-//   - Every colour is a role, not a pigment. Asking "what job does this do?" is
-//     what keeps the ramp small enough to reason about.
-//
-// Direction: cool chrome, warm content. Surfaces, borders and interactive
-// elements are azure/slate; anything the agent *did* (tool output, approvals,
-// errors) is amber/red. That way a glance at colour alone tells you whether
-// you are looking at UI or at output.
+// Direction: cool chrome, warm content — anything the agent did is amber or red,
+// so colour alone tells you whether you are looking at UI or at output.
 package tui
 
 import "github.com/charmbracelet/lipgloss"
 
 // Layout constants.
 //
-// The gutter is fixed at 2 cells to match the marker glyphs the message
-// renderer writes into its own label strings (">", "~", "x"). Styles that draw
-// message *content* indent by indentGutter; styles that draw labels must not,
-// because the label already carries the gutter in its text and adding a margin
-// would indent it twice relative to its own body.
+// The gutter is fixed at 2 cells to match the marker glyphs the renderer writes
+// into its own label strings. Styles drawing message *content* indent by
+// indentGutter; styles drawing labels must not, or they indent twice.
 const (
 	// indentGutter is the left gutter for message content.
 	indentGutter = 2
@@ -85,9 +72,8 @@ var (
 
 // Status bar.
 //
-// Padding here is load-bearing: renderStatusBar pads its right-hand segment to
-// contentWidth and relies on the one cell of padding on each side to land the
-// bar at exactly the terminal width. Changing it desynchronises the right edge.
+// The one cell of padding on each side is load-bearing: renderStatusBar pads its
+// right segment to contentWidth and relies on it to land at the terminal width.
 var (
 	statusBarStyle = lipgloss.NewStyle().
 			Background(lipgloss.AdaptiveColor{Light: "#eaeef2", Dark: "#161b22"}).
@@ -249,10 +235,8 @@ var (
 
 // Mascot palette.
 //
-// The mascot is drawn in the same chrome colours as the rest of the UI so it
-// reads as part of the application rather than a picture pasted into it. Only
-// the eye and antenna-tip are saturated: those are the two things that should
-// catch the eye when someone glances at an idle screen.
+// The mascot uses the same chrome colours as the rest of the UI so it reads as
+// part of the application. Only the eye and antenna tip are saturated.
 var (
 	colorMascotBody  = lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#7d8590"}
 	colorMascotEye   = lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#58a6ff"}

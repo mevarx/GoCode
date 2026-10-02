@@ -10,14 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// These tests protect the two things the mascot animation can silently break:
-// the physical layout (inline() must occupy the same number of cells in every
-// state, blink phase and colour scheme, and a bob that overshoots must never
-// push cellOffset outside -1..1) and the simulation contract (springs converge
-// and genuinely wobble, blinks are rare and short, and each state's
-// cadence/amplitude ordering is what makes "busy" read as busy). A layout
-// regression is invisible in a unit test until the status bar tears, so every
-// width below is measured from real rendered output rather than assumed.
+// Layout regressions are invisible in a unit test until the status bar tears,
+// so every width below is measured from real rendered output, never assumed.
 
 var animANSISeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
@@ -331,10 +325,9 @@ func TestMascotAmplitudeOrdering(t *testing.T) {
 	}
 }
 
-// Every state shares one oscillator rate. The rate is a property of the
-// spring, not of the state: what distinguishes a working mascot from an idle
-// one is amplitude, and the rate exists only to stay inside the spring's
-// tracking band.
+// Every state shares one oscillator rate: what distinguishes a working mascot
+// from an idle one is amplitude. The rate exists only to stay inside the
+// spring's tracking band.
 func TestMascotRateStaysInTheTrackingBand(t *testing.T) {
 	m := newMascot()
 	rate := m.rate()
@@ -541,11 +534,9 @@ func TestMascotDoesNotBlinkWhileWorking(t *testing.T) {
 
 // --- layout ---------------------------------------------------------------
 
-// animInlineWidth is the visible cell width of inline(). The render is "(", the
-// left eye, a space, the right eye, ")" and the mouth: six glyphs, but the mouth
-// is a presentation-form paren that both terminals and lipgloss measure as two
-// cells, so the rendered width is 7. Pinned as a constant so a future glyph swap
-// has to update this test deliberately rather than silently reflow the bar.
+// animInlineWidth is the visible cell width of inline(). Pinned as a constant so
+// a future glyph swap has to update this test deliberately rather than silently
+// reflow the status bar.
 const animInlineWidth = 7
 
 // The status bar must not reflow mid-animation: inline() occupies a fixed cell
@@ -662,9 +653,8 @@ func TestPadToCentresWithinWidth(t *testing.T) {
 	}
 
 	t.Run("oversized input is returned unchanged", func(t *testing.T) {
-		// The helper's comment says a too-long value is truncated; the code
-		// returns it verbatim instead. Harmless for the only caller (hero
-		// always passes a 5-cell face interior) but the comment overstates it.
+		// padTo documents that oversized input is returned unchanged rather
+		// than truncated, so this pins the documented behaviour.
 		if got := padTo("abcdefgh", 5); got != "abcdefgh" {
 			t.Errorf("padTo(%q, 5) = %q, want it unchanged", "abcdefgh", got)
 		}

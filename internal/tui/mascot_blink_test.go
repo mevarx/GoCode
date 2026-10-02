@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// A mascot that never blinks reads as a dead drawing. The blink was armed only
-// by setState, which no-ops when the state is unchanged, so a session that
-// stayed idle from startup to shutdown never blinked once.
+// A mascot that never blinks reads as a dead drawing. setState no-ops when the
+// state is unchanged, so a session idle from startup to shutdown never blinked.
 func TestMascotEventuallyBlinksWithoutAnyStateChange(t *testing.T) {
 	start := nowForTest()
 	realNow := msgNow

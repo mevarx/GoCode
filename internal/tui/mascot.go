@@ -45,14 +45,9 @@ type face struct {
 	left, right, mouth string
 }
 
-// faces holds the expression for each state.
-//
-// Every glyph is single-cell so the silhouette never changes width between
-// states; a status bar that reflows mid-animation is unreadable.
-//
-// The glyphs are East Asian Ambiguous width, so they rely on the terminal
-// treating them as narrow — the same assumption every lipgloss layout makes.
-// padTo measures with lipgloss.Width, not rune count, for the same reason.
+// faces holds the expression for each state. Every glyph is single-cell so the
+// silhouette never changes width between states; a status bar that reflows
+// mid-animation is unreadable.
 var faces = map[mascotState]face{
 	mascotIdle:     {left: "•", right: "•", mouth: "︶"},
 	mascotThinking: {left: "◐", right: "◑", mouth: "︵"},
@@ -61,9 +56,8 @@ var faces = map[mascotState]face{
 	mascotError:    {left: "×", right: "×", mouth: "︷"},
 }
 
-// mascot is GoCode's character, drawn from box-drawing runes so it scales in a
-// terminal. Spring-driven rather than frame-indexed, so it decelerates instead
-// of snapping between poses.
+// mascot is GoCode's character, drawn from box-drawing runes. Spring-driven
+// rather than frame-indexed, so it decelerates instead of snapping between poses.
 type mascot struct {
 	state mascotState
 
@@ -140,8 +134,7 @@ func (m *mascot) setState(s mascotState, now time.Time) {
 //
 // The banner draws a static portrait, so it must not inherit a mid-flight
 // spring: hero() trims rows when the bob is positive, and a portrait that
-// randomly loses its antenna looks broken. Phase 0.25 sits at the zero
-// crossing of the wave, so the springs have nothing to chase.
+// randomly loses its antenna looks broken.
 func (m mascot) rest() mascot {
 	m.bob.pos, m.bob.vel = 0, 0
 	m.sway.pos, m.sway.vel = 0, 0
@@ -152,10 +145,8 @@ func (m mascot) rest() mascot {
 
 // step advances the animation by one frame.
 func (m *mascot) step() {
-	// Arm the blink on the first frame. Seeding it in newMascot would need a
-	// clock there, and setState cannot do it because it is a no-op when the
-	// state is unchanged — so a session that never changed state would sit
-	// open-eyed forever.
+	// Arm the blink on the first frame: setState cannot do it because it
+	// no-ops when the state is unchanged.
 	if m.eyes.at.IsZero() {
 		m.eyes.at = msgNow()
 	}
@@ -181,25 +172,15 @@ func (m *mascot) step() {
 // approaches its target. Lower is gentler.
 const amplitudeEaseRate = 0.12
 
-// rate is the oscillator speed in cycles per frame.
-//
-// Measured against the bob spring, tracking falls off sharply once the drive
-// climbs: 0.03/frame reaches 89% of the intended amplitude, 0.05 gets 57%, and
-// 0.08 collapses to 30% — which quantises to zero cells and a motionless
-// mascot. The states stay in the tracking band; only their amplitude differs.
+// rate is the oscillator speed in cycles per frame. Above 0.03 the bob spring
+// stops tracking, quantize() rounds the result to zero, and the mascot freezes
+// while still reporting itself as animating.
 func (m *mascot) rate() float64 {
 	return 0.03
 }
 
-// waveAt maps a 0..1 phase onto a -1..1 triangle.
-//
-// It is a hard triangle: constant slope, sign flip at the turning points, no
-// dwell at the extremes. An earlier version of this comment claimed the corners
-// were smoothed and that it held briefly at each end; neither was true, and
-// measurement over a full cycle showed zero repeated samples at the turning
-// points. The corner is fine because the spring does the smoothing — driving a
-// stiff signal into an under-damped oscillator is exactly what produces the
-// ease-out, so pre-smoothing here would only soften the result twice.
+// waveAt maps a 0..1 phase onto a -1..1 triangle: constant slope, sharp sign
+// flip at the corners, no dwell at the extremes. The spring does the smoothing.
 func waveAt(phase float64) float64 {
 	t := phase * 2
 	var v float64
@@ -235,18 +216,13 @@ func (m *mascot) faceFor(now time.Time) face {
 
 // inline renders the mascot as a single line, for the status bar.
 //
-// Width is fixed at 7 cells regardless of state, so the status bar never
-// reflows mid-animation. Six glyphs, but the mouth (︶︵︷) is a
-// presentation-form character that both lipgloss and go-runewidth count as two
-// cells.
+// Width is fixed at 7 cells in every state so the status bar never reflows:
+// six glyphs, but the mouth (︶︵︷) is presentation-form and measures two cells.
 func (m mascot) inline(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 
-	// The trailing pad reserves the sway spring's sideways shift inside a
-	// fixed-width field. At rest the sprite fills it, so the field's width is
-	// constant and the status bar never shuffles. The pad is normally empty
-	// because sway peaks below a cell; it exists so the field is provably
-	// width-stable rather than stable by accident.
+	// The trailing pad reserves the sway spring's sideways shift, keeping the
+	// field width provably constant. Normally empty: sway peaks below a cell.
 	const cellWidth = 7
 	// spriteCells is the unpadded width: "(", two eyes, a space, ")" and the
 	// mouth, whose glyph is two cells wide.
@@ -263,11 +239,9 @@ func (m mascot) inline(now time.Time, st mascotStyles) string {
 	return b.String()
 }
 
-// hero renders the mascot as a multi-line figure for the startup banner.
-//
-// The antenna tip is the only part that moves vertically, and it uses the same
-// bob value as the inline sprite, so the character feels like one creature
-// rather than two drawings.
+// hero renders the mascot as a multi-line figure for the startup banner. The
+// antenna tip uses the same bob value as the inline sprite, so the two read as
+// one creature rather than two drawings.
 func (m mascot) hero(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 	tip := "●"
@@ -307,8 +281,7 @@ func (m mascot) hero(now time.Time, st mascotStyles) string {
 
 // padTo centres s within width cells. Input wider than width is returned
 // unchanged rather than truncated: the only caller passes single glyphs into a
-// five-cell interior, so silently dropping characters would be worse than a
-// row that is visibly too wide.
+// five-cell interior, so silently dropping characters would be worse.
 func padTo(s string, width int) string {
 	n := lipgloss.Width(s)
 	if n >= width {

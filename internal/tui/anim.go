@@ -18,9 +18,8 @@ const (
 
 // frameMsg advances every animation in the UI by one frame.
 //
-// epoch identifies the turn the frame belongs to. Without it a tick still in
-// flight when a turn ends can re-arm after the next turn starts, leaving two
-// ticking chains alive; they compound for the rest of the session.
+// epoch identifies the turn the frame belongs to, so a tick still in flight at
+// a turn boundary cannot re-arm under the next turn and compound the chain.
 type frameMsg struct {
 	at    time.Time
 	epoch int
@@ -44,10 +43,9 @@ func tickUntil(d time.Duration, epoch int) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return frameMsg{at: t, epoch: epoch} })
 }
 
-// spring is a damped harmonic oscillator driving one animated property.
-//
-// A spring accelerates and decelerates on its own, so retargeting mid-flight
-// gives natural motion with no easing curve to tune.
+// spring is a damped harmonic oscillator driving one animated property. It
+// accelerates and decelerates on its own, so retargeting mid-flight needs no
+// easing curve to tune.
 type spring struct {
 	oscillator harmonica.Spring
 	pos        float64

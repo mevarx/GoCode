@@ -6,16 +6,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// A mascot that does not move is not an animation.
-//
-// The drive oscillator originally ran at 0.22 cycles/frame, which at 20fps is
-// 4.4Hz — faster than the 5.2 rad/s bob spring could track. The spring
-// attenuated the signal to about 0.06 cells, quantize() rounded that to zero on
-// every frame, and the mascot sat perfectly still while the code claimed it was
-// animating. Every test still passed: the springs were finite, the faces were
-// correct, and nothing crashed.
-//
-// These assertions measure the rendered motion instead.
+// A mascot that does not move is not an animation. Springs can stay finite,
+// faces correct and tests green while every frame renders identically, so these
+// assertions measure the rendered motion instead.
 func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 	for _, state := range []mascotState{mascotIdle, mascotThinking, mascotWorking} {
 		t.Run(state.String(), func(t *testing.T) {

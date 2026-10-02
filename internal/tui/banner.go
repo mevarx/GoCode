@@ -9,9 +9,8 @@ import (
 )
 
 // renderBanner draws the startup hero: mascot, name, tagline and session chips.
-//
-// The mascot leads instead of a wordmark because it is what animates all
-// session — the user learns to read it before needing the name.
+// The mascot leads because it is what animates all session, so the user learns
+// to read it before needing the name.
 func renderBanner(providerName, modelName, version string, termWidth int) string {
 	if termWidth > 0 && termWidth < mascotHeroWidth+4 {
 		return renderCompactBanner(providerName, modelName, version, termWidth)

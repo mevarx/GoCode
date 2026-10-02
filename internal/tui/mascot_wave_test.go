@@ -5,21 +5,15 @@ import (
 	"testing"
 )
 
-// waveAt's comment describes its shape precisely: a hard triangle with no
-// dwell at the extremes. An earlier version claimed the corners were smoothed
-// and that it "held briefly at each end"; neither was true, and nothing
-// measured it. These assertions pin the shape the comment now documents, so a
-// future edit to one has to change the other deliberately.
+// waveAt's comment documents its shape precisely, so these assertions pin that
+// shape: editing either one should have to change the other deliberately.
 func TestWaveAtIsAnUnsmoothedTriangle(t *testing.T) {
 	const samples = 10000
 	step := 1.0 / samples
 
-	// No dwell at the extremes: the wave must move on every step away from
-	// the turning points. A version that "held briefly at each end" would
-	// repeat values there.
-	//
-	// A step straddling a turning point can legitimately repeat — that is the
-	// corner, not a plateau — so those two steps are excluded.
+	// No dwell at the extremes: the wave moves on every step away from the
+	// turning points. A step straddling a corner can legitimately repeat, so
+	// those are excluded.
 	repeatsAwayFromCorners := 0
 	const cornerPhase = 0.5
 	for i := 1; i <= samples; i++ {
@@ -36,10 +30,8 @@ func TestWaveAtIsAnUnsmoothedTriangle(t *testing.T) {
 			repeatsAwayFromCorners)
 	}
 
-	// Constant slope. Comparing raw deltas across 10000 samples runs into
-	// float64 resolution: a slope-4 triangle moves 4e-5 per step, and the
-	// values themselves are order 1, so some steps measure as exactly zero.
-	// Dividing through by the step makes the comparison scale-free.
+	// Constant slope. Raw deltas run into float64 resolution here — the wave
+	// moves 4e-5 per step against order-1 values — so divide by the step first.
 	var lo, hi = math.Inf(1), 0.0
 	prev := waveAt(0)
 	for i := 1; i <= samples; i++ {

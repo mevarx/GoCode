@@ -16,10 +16,9 @@ func (i ModelItem) Title() string       { return i.Model }
 func (i ModelItem) Description() string { return "Provider: " + i.Provider }
 func (i ModelItem) FilterValue() string { return i.Provider + " " + i.Model }
 
-// Picker delegate geometry. The left padding is repeated by every delegate
-// style because the list measures its text column from NormalTitle's padding;
-// unselected rows are indented by that padding and the selected row by its
-// border, so the two must stay in lockstep or the cursor jumps between lines.
+// Picker delegate geometry. The list measures its text column from
+// NormalTitle's padding, and the selected row is indented by its border instead,
+// so the two must stay in lockstep or the cursor jumps between lines.
 const (
 	// pickerRowPad is the indent of unselected row text.
 	pickerRowPad = 2
@@ -98,10 +97,8 @@ func pickerDelegate() list.DefaultDelegate {
 	return delegate
 }
 
-// NewModelPicker creates and configures the bubbles/list model picker.
-//
-// The picker is framed by modalOverlayStyle by its caller, so it draws no
-// border of its own and stays quiet until the cursor moves onto a row.
+// NewModelPicker creates and configures the bubbles/list model picker. Its
+// caller frames it with modalOverlayStyle, so it draws no border of its own.
 func NewModelPicker(items []list.Item, width, height int) list.Model {
 	// The caller re-sizes the picker on every window resize, so these clamps are
 	// only the initial bounds: wide enough for a provider name plus model id,
