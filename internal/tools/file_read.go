@@ -63,7 +63,7 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 	}
 
 	// Workspace confinement.
-	path := a.Path
+	var path string
 	if f.WorkspaceRoot != "" {
 		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
 		if err != nil {

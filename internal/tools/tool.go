@@ -45,7 +45,7 @@ func (p Preview) String() string {
 	if len(parts) == 0 {
 		return "(no preview available)"
 	}
-	return fmt.Sprintf("%s", joinParts(parts))
+	return joinParts(parts)
 }
 
 type Result struct {

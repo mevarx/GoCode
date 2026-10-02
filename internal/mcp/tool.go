@@ -20,11 +20,6 @@ type MCPTool struct {
 
 // NewMCPTool creates a tools.Tool adapter for an MCP tool.
 func NewMCPTool(serverName string, info ToolInfo, client *Client) *MCPTool {
-	name := info.Name
-	if serverName != "" && !strings.HasPrefix(name, serverName+"_") {
-		name = fmt.Sprintf("%s_%s", serverName, info.Name)
-	}
-
 	return &MCPTool{
 		serverName:  serverName,
 		toolName:    info.Name,
@@ -35,8 +30,10 @@ func NewMCPTool(serverName string, info ToolInfo, client *Client) *MCPTool {
 }
 
 func (m *MCPTool) Spec() tools.ToolSpec {
+	// Guard the prefix, or a server that already namespaces its tools
+	// yields "srv_srv_foo".
 	name := m.toolName
-	if m.serverName != "" {
+	if m.serverName != "" && !strings.HasPrefix(name, m.serverName+"_") {
 		name = fmt.Sprintf("%s_%s", m.serverName, m.toolName)
 	}
 	return tools.ToolSpec{

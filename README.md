@@ -43,6 +43,21 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 
+### v0.6.0 Additions
+
+- **A Mascot** — GoCode now has a character. It sits in the status bar as a fixed-width sprite and appears in the startup banner as a full portrait, with an antenna, a face, and five expressions tied to what the agent is actually doing: `idle`, `thinking` (prompt sent, no tokens yet), `working` (streaming), `done`, and `error`. A cancelled turn relaxes to idle rather than showing a failure face, because interrupting is a user action, not a failure.
+- **Spring Physics, Not Keyframes** — Motion is driven by `charmbracelet/harmonica` damped springs chasing a shaped oscillator. A spring accelerates and decelerates on its own, so retargeting mid-flight produces natural movement with no easing curve to tune. The bob spring is deliberately under-damped (0.55) so it overshoots once and settles — at critical damping it reads as a machine.
+- **Animations That Cost Nothing When Idle** — The frame ticker runs at 20fps while a turn is active and 5fps when idle, and stops entirely when no turn is running. A parked session redraws zero frames rather than burning a core animating a mascot nobody is watching.
+- **Blinks** — The mascot blinks on a 4s cycle. This was a real bug caught during the rework: the blink was armed only by a state transition, which no-ops when the state is unchanged, so a session that stayed idle from startup never blinked once.
+- **Design Tokens in One Place** — `internal/tui/styles.go` is now the single source of truth for the visual language: no call site writes a hex value. Colour is `AdaptiveColor` throughout, so light terminals get darkened light values rather than merely lightened ones. The direction is **cool chrome, warm content** — surfaces and interactive elements are azure/slate, anything the agent *did* is amber/red, so a glance at colour alone tells you whether you are reading UI or reading output.
+- **Context-Aware Help Line** — The hint under the input box now lists the keys that work *right now*. Mid-turn it says interrupting is the only useful action instead of listing keys that currently do nothing, and it collapses progressively on narrow terminals.
+- **Startup Banner Reworked** — The `GOCODE` wordmark is replaced by the mascot, with the session's provider and model shown as chips. Below roughly 40 columns it falls back to a text-only layout, because a creature squeezed into 30 columns is noise rather than character.
+
+### Bug Fixes Found During the Rework
+
+- **MCP tool names were double-prefixed** — `NewMCPTool` computed a correctly guarded `server_tool` name and then threw it away; `Spec()` re-derived the name with no prefix guard, so a server that already namespaces its tools produced `srv_srv_foo`. The dead computation is gone and the guard now lives in the one place that uses it.
+- **Dead assignments in three file tools** — `file_read`, `file_write` and `file_patch` each assigned `path := a.Path` before immediately overwriting it in both branches of the following conditional.
+
 ### v0.5.2 Additions
 
 - **Eleven New Provider Endpoints** — GitHub Copilot, xAI (SpaceXAI), Mistral, MiniMax, DeepSeek, Together, Fireworks, Cerebras, Zhipu (GLM), NVIDIA NIM, and a Hermes Agent bridge (`127.0.0.1:8642`). Every base URL was taken from the vendor's own documentation rather than guessed.

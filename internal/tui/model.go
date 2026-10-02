@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -62,7 +61,13 @@ type Model struct {
 	version       string
 	workspaceRoot string
 	streaming     bool
-	spinner       spinner.Model
+
+	// mascot lives in the model rather than a package global because Bubble
+	// Tea copies the model by value on every Update.
+	mascot mascot
+	// animating gates the frame ticker. An idle session stops redrawing
+	// entirely rather than burning a core on a mascot nobody is watching.
+	animating bool
 
 	modelPickerActive bool
 	modelPicker       list.Model
@@ -89,16 +94,12 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
 
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(colorWarning)
-
 	picker := NewModelPicker(pickerItems, 80, 24)
 
 	return Model{
 		streamBuf:     &strings.Builder{},
 		textarea:      ta,
-		spinner:       sp,
+		mascot:        newMascot(),
 		providerName:  providerName,
 		modelName:     modelName,
 		version:       version,
@@ -115,7 +116,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
-		m.spinner.Tick,
+		tickUntil(cadence(mascotIdle)),
 		pollApproval(m.bridge),
 		m.listenOutput(),
 	)
@@ -232,9 +233,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.streaming = true
 			m.streamBuf.Reset()
+			// The model is working but has produced nothing yet, so the mascot
+			// waits rather than claiming to be streaming.
+			m.mascot.setState(mascotThinking, msgNow())
+			m.animating = true
 			inputCh := m.inputCh
 			go func() { inputCh <- input }()
-			cmds = append(cmds, m.listenOutput())
+			cmds = append(cmds, m.listenOutput(), tickUntil(cadence(mascotThinking)))
 
 		case tea.KeyUp:
 			if !m.textarea.Focused() {
@@ -251,6 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case agentChunkMsg:
+		m.mascot.setState(mascotWorking, msgNow())
 		m.streamBuf.WriteString(msg.delta)
 		m.setStreamingMessage(m.streamBuf.String())
 		if m.viewport.AtBottom() {
@@ -262,6 +268,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.cancelRequested = false
 		m.streamBuf.Reset()
+		// A cancelled turn is a user action, not a failure, so it relaxes to
+		// idle rather than showing the mascot an error face.
+		switch {
+		case msg.err != nil && !errors.Is(msg.err, context.Canceled):
+			m.mascot.setState(mascotError, msgNow())
+		case msg.err == nil:
+			m.mascot.setState(mascotSuccess, msgNow())
+		default:
+			m.mascot.setState(mascotIdle, msgNow())
+		}
+		m.animating = false
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				m.addMessage(ChatMessage{Role: RoleSystem, Label: "⏹ Stopped", Content: "generation canceled — enter a new message to continue"})
@@ -273,6 +290,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenOutput())
 
 	case agentToolMsg:
+		if m.streaming {
+			m.mascot.setState(mascotWorking, msgNow())
+		}
 		label := "🔧 " + msg.name
 		role := RoleTool
 		if msg.isError {
@@ -300,10 +320,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalFocus = 0
 		return m, pollApproval(m.bridge)
 
-	case spinner.TickMsg:
-		var spinCmd tea.Cmd
-		m.spinner, spinCmd = m.spinner.Update(msg)
-		cmds = append(cmds, spinCmd)
+	case frameMsg:
+		m.mascot.step()
+		if m.animating {
+			cmds = append(cmds, tickUntil(cadence(m.mascot.state)))
+		}
 	}
 
 	if !m.approvalActive {
@@ -388,9 +409,13 @@ func (m Model) View() string {
 }
 
 func (m *Model) renderStatusBar() string {
-	left := statusProviderStyle.Render("GoCode") + statusSeparator + statusProviderStyle.Render(m.providerName) + statusSeparator + statusModelStyle.Render(m.modelName)
+	left := m.mascot.inline(msgNow(), mascotFaceStyles) +
+		statusSeparator +
+		statusProviderStyle.Render(m.providerName) +
+		statusSeparator +
+		statusModelStyle.Render(m.modelName)
 	if m.streaming {
-		left = left + statusSeparator + statusStreamingStyle.Render(m.spinner.View()+" generating…")
+		left = left + statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
 	}
 
 	contentWidth := max(1, m.width-2)
@@ -402,7 +427,7 @@ func (m *Model) renderStatusBar() string {
 	if lipgloss.Width(left)+lipgloss.Width(right) > contentWidth {
 		leftText := "GoCode │ " + m.providerName + " │ " + m.modelName
 		if m.streaming {
-			leftText += " │ generating…"
+			leftText += " │ " + m.mascot.state.String()
 		}
 		return statusBarStyle.Width(contentWidth).Render(truncateToWidth(leftText, contentWidth))
 	}
@@ -416,24 +441,32 @@ func (m *Model) renderStatusBar() string {
 
 func (m *Model) renderInputArea() string {
 	style := inputBoxStyle
-	if !m.focused {
+	// A blurred box while a turn runs, and while the user has not focused the
+	// input. Prompt-looking focus during a stream would invite typing that is
+	// silently dropped.
+	if !m.focused || m.streaming {
 		style = inputBoxBlurStyle
 	}
 	return style.Width(max(1, m.width-2)).Render(m.textarea.View())
 }
 
+// renderHelpLine lists the keys that work right now, not every binding.
+// Mid-turn the only useful action is interrupting, so the hint says that
+// instead of listing keys that currently do nothing.
 func (m *Model) renderHelpLine() string {
-	text := "Enter send · Shift+Enter newline · Ctrl+L models · Esc clear · Ctrl+C quit · PgUp/PgDn scroll"
-	if m.streaming {
-		text = "Generating… · Ctrl+C stop; press again to quit"
-		if m.width < 48 {
-			text = "Generating… · Ctrl+C stop"
+	var text string
+	switch {
+	case m.streaming:
+		text = "Ctrl+C stop · press again to quit · PgUp/PgDn scroll"
+		if m.cancelRequested {
+			text = "Ctrl+C again to quit"
 		}
-	} else if m.width < 72 {
-		text = "Enter send · Shift+Enter newline · Esc clear · Ctrl+C quit"
-	}
-	if !m.streaming && m.width < 48 {
+	case m.width < 48:
 		text = "Enter send · Esc clear · Ctrl+C quit"
+	case m.width < 72:
+		text = "Enter send · Shift+Enter newline · Esc clear · Ctrl+C quit"
+	default:
+		text = "Enter send · Shift+Enter newline · Ctrl+L models · Esc clear · Ctrl+C quit · PgUp/PgDn scroll"
 	}
 	return inputHintStyle.Render(truncateToWidth(text, m.width))
 }
@@ -544,7 +577,7 @@ func placeModal(base, modal string, totalW, totalH int) string {
 	return lipgloss.Place(totalW, totalH, lipgloss.Center, lipgloss.Center,
 		modal,
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceBackground(lipgloss.AdaptiveColor{Light: "#f5f5f5", Dark: "#0d1117"}),
+		lipgloss.WithWhitespaceBackground(colorBg),
 	)
 }
 

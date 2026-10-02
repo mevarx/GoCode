@@ -128,11 +128,10 @@ type openAIToolSpec struct {
 	Function openAIToolFunction `json:"function"`
 }
 
-type openAIToolFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
+// openAIToolFunction is the wire shape of a tool. ToolSpec already has exactly
+// these fields, so this is a conversion: a parallel struct would have to be
+// kept in sync by hand.
+type openAIToolFunction ToolSpec
 
 type openAIStreamChunk struct {
 	Choices []struct {

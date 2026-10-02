@@ -461,12 +461,8 @@ func buildOpenAITools(tools []ToolSpec) []openAIToolSpec {
 	toolSpecs := make([]openAIToolSpec, 0, len(tools))
 	for _, ts := range tools {
 		toolSpecs = append(toolSpecs, openAIToolSpec{
-			Type: "function",
-			Function: openAIToolFunction{
-				Name:        ts.Name,
-				Description: ts.Description,
-				Parameters:  ts.Parameters,
-			},
+			Type:     "function",
+			Function: openAIToolFunction(ts),
 		})
 	}
 	return toolSpecs

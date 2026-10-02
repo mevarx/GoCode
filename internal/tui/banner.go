@@ -3,159 +3,88 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
-var asciiLines = []string{
-	` ██████╗  ██████╗  ██████╗ ██████╗ ██████╗ ███████╗`,
-	`██╔════╝ ██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝`,
-	`██║  ███╗██║   ██║██║     ██║   ██║██║  ██║█████╗  `,
-	`██║   ██║██║   ██║██║     ██║   ██║██║  ██║██╔══╝  `,
-	`╚██████╔╝╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗`,
-	` ╚═════╝  ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝`,
-}
-
-var gradientColors = []string{
-	"#00d4ff",
-	"#00b4ff",
-	"#0090ff",
-	"#5f7fff",
-	"#8f5fff",
-	"#bf4fff",
-}
-
+// renderBanner draws the startup hero: mascot, name, tagline and session chips.
+//
+// The mascot leads instead of a wordmark because it is what animates all
+// session — the user learns to read it before needing the name.
 func renderBanner(providerName, modelName, version string, termWidth int) string {
-	logoWidth := lipgloss.Width(asciiLines[0])
-	if termWidth > 0 && termWidth < logoWidth {
+	if termWidth > 0 && termWidth < mascotHeroWidth+4 {
 		return renderCompactBanner(providerName, modelName, version, termWidth)
 	}
 
-	var renderedLines []string
-	for _, line := range asciiLines {
-		renderedLines = append(renderedLines, colorizeASCIILine(line, gradientColors))
-	}
-	logo := strings.Join(renderedLines, "\n")
+	hero := newMascot().rest().hero(time.Now(), mascotFaceStyles)
 
-	tagline := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6e7681")).
-		Italic(true).
-		Render("  Terminal coding agent — local-first, provider-agnostic")
+	title := bannerTitleStyle.Render("GoCode")
+	tagline := bannerTaglineStyle.Render("terminal coding agent")
 
-	versionChip := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#0d1117")).
-		Background(lipgloss.Color("#58a6ff")).
-		Bold(true).
-		Padding(0, 1).
-		Render("v" + version)
-
-	providerPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#0d1117")).
-		Background(lipgloss.Color("#3fb950")).
-		Bold(true).
-		Padding(0, 1).
-		Render(providerName)
-
-	modelPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#0d1117")).
-		Background(lipgloss.Color("#e3b341")).
-		Bold(true).
-		Padding(0, 1).
-		Render(modelName)
-
-	infoLine := fmt.Sprintf("  %s  %s  %s", versionChip, providerPill, modelPill)
-
-	hintStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#484f58")).
-		Italic(true)
-	hints := hintStyle.Render("  /clear · /provider · /model · exit")
-
-	divW := logoWidth
-	if termWidth > 0 && termWidth < divW {
-		divW = termWidth
-	}
-	divider := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#21262d")).
-		Render(strings.Repeat("─", divW))
-
-	block := lipgloss.JoinVertical(lipgloss.Left,
-		"",
-		logo,
-		tagline,
-		"",
-		infoLine,
-		"",
-		hints,
-		divider,
-		"",
+	// Name and tagline align with the mascot's face, not its antenna, so the
+	// pair reads as one unit rather than as text floating above a creature.
+	meta := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Width(mascotHeroWidth+2).Render(hero),
+		lipgloss.JoinVertical(lipgloss.Left, "", "", title, tagline),
 	)
 
-	if termWidth > logoWidth {
+	block := lipgloss.JoinVertical(
+		lipgloss.Left,
+		"",
+		meta,
+		"",
+		renderSessionChips(providerName, modelName, version),
+		"",
+		renderBannerHints(),
+	)
+
+	if termWidth > mascotHeroWidth {
 		block = lipgloss.NewStyle().
 			Width(termWidth).
 			Align(lipgloss.Center).
 			Render(block)
 	}
-
 	return block
 }
 
-func renderCompactBanner(providerName, modelName, version string, termWidth int) string {
-	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#58a6ff")).
-		Bold(true).
-		Align(lipgloss.Center).
-		Width(termWidth).
-		Render("GoCode")
-	tagline := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6e7681")).
-		Align(lipgloss.Center).
-		Width(termWidth).
-		Render("Terminal coding agent")
-	meta := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#8b949e")).
-		Align(lipgloss.Center).
-		Width(termWidth).
-		Render(providerName + " · " + modelName + " · v" + version)
-	hints := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#8b949e")).
-		Align(lipgloss.Center).
-		Width(termWidth)
-	return strings.Join([]string{
-		title,
-		tagline,
-		meta,
-		"",
-		hints.Render("Enter to send · /help for commands"),
-		hints.Render("Ctrl+L to switch models"),
-	}, "\n")
+// mascotHeroWidth is the mascot's rendered width, including its indent.
+var mascotHeroWidth = lipgloss.Width(stripANSI(mascotFaceStyles.body.Render("  ╭─────╮")))
+
+// renderSessionChips shows the active provider and model. Naming the endpoint
+// here is cheaper than having the user discover the wrong one mid-task.
+func renderSessionChips(providerName, modelName, version string) string {
+	chip := func(style lipgloss.Style, label, value string) string {
+		if value == "" {
+			return ""
+		}
+		return style.Render(label + value)
+	}
+
+	return "  " + strings.Join([]string{
+		chip(chipVersionStyle, "v", version),
+		chip(chipProviderStyle, "", providerName),
+		chip(chipModelStyle, "", modelName),
+	}, " ")
 }
 
-func colorizeASCIILine(line string, colors []string) string {
-	runes := []rune(line)
-	total := len(runes)
-	if total == 0 {
-		return ""
-	}
-	n := len(colors)
-	segSize := total / n
-	if segSize < 1 {
-		segSize = 1
-	}
+// renderBannerHints lists the first things worth knowing. Kept to one line so
+// it cannot wrap into the viewport and push the input box off screen.
+func renderBannerHints() string {
+	return bannerHintStyle.Render("  /help commands · Ctrl+L switch model · Ctrl+C quit")
+}
 
-	var sb strings.Builder
-	for i, c := range colors {
-		start := i * segSize
-		end := start + segSize
-		if i == n-1 {
-			end = total
-		}
-		if start >= total {
-			break
-		}
-		seg := string(runes[start:end])
-		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render(seg)
-		sb.WriteString(styled)
-	}
-	return sb.String()
+// renderCompactBanner is the narrow-terminal fallback: no mascot, since a
+// creature squeezed into 30 columns is noise rather than character.
+func renderCompactBanner(providerName, modelName, version string, termWidth int) string {
+	center := lipgloss.NewStyle().Align(lipgloss.Center).Width(termWidth)
+
+	return strings.Join([]string{
+		compactTitleStyle.Render(center.Render("GoCode")),
+		compactMutedStyle.Render(center.Render("terminal coding agent")),
+		compactFaintStyle.Render(center.Render(fmt.Sprintf("%s · %s · v%s", providerName, modelName, version))),
+		"",
+		compactFaintStyle.Render(center.Render("/help for commands")),
+	}, "\n")
 }

@@ -170,12 +170,6 @@ func (f *fakeProvider) Stream(context.Context, string, []provider.Message, []pro
 	return nil, errors.New("stream not supported in tests")
 }
 
-func newTestRegistry(models []string) *provider.Registry {
-	r := provider.NewRegistry()
-	r.Register(&fakeProvider{name: "ollama", models: models})
-	return r
-}
-
 // toTeaMsg must map every event kind the engine can emit, so the TUI never
 // silently drops engine output.
 func TestToTeaMsgCoversEveryEventKind(t *testing.T) {
