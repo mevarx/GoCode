@@ -66,3 +66,31 @@ func TestRestClearsSpringMotion(t *testing.T) {
 		t.Errorf("rest cellOffset = %d, want 0", got)
 	}
 }
+
+// Row width must hold at every bob offset, not only at rest.
+//
+// An earlier version padded a negative offset with a hardcoded 7-space row
+// while every other row was 9 cells. The rest() assertion could not catch it
+// because rest() pins the offset to 0, so this sweeps the whole animation.
+func TestHeroRowsAlignAtEveryOffset(t *testing.T) {
+	m := newMascot()
+	m.setState(mascotWorking, nowForTest())
+
+	checked := 0
+	for i := 0; i < 900; i++ {
+		m.step()
+		rows := strings.Split(stripANSI(m.hero(nowForTest(), mascotFaceStyles)), "\n")
+		base := lipgloss.Width(rows[len(rows)-1])
+		for r, row := range rows {
+			if w := lipgloss.Width(row); w != base {
+				t.Fatalf("frame %d row %d is %d cells, want %d: %q",
+					i, r, w, base, row)
+			}
+		}
+		checked++
+	}
+
+	if checked == 0 {
+		t.Fatal("swept no frames")
+	}
+}
