@@ -238,9 +238,11 @@ func (m *mascot) faceFor(now time.Time) face {
 func (m mascot) inline(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 
-	// A one-line sprite has no room to bob, so the sway spring shifts the face
-	// sideways inside a fixed-width field. Without the trailing pad the whole
-	// status bar would visibly shuffle on every frame.
+	// The trailing pad reserves the sway spring's sideways shift inside a
+	// fixed-width field. At rest the sprite fills it, so the field's width is
+	// constant and the status bar never shuffles. The pad is normally empty
+	// because sway peaks below a cell; it exists so the field is provably
+	// width-stable rather than stable by accident.
 	const cellWidth = 7
 	// spriteCells is the unpadded width: "(", two eyes, a space, ")" and the
 	// mouth, whose glyph is two cells wide.
