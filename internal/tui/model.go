@@ -414,35 +414,50 @@ func (m Model) View() string {
 	return base
 }
 
+// minModelWidth is how many cells the model id needs to be worth showing at
+// all. Below this the bar drops the model rather than truncating it to a
+// meaningless stub like "hf.co/de…".
+const minModelWidth = 12
+
 func (m *Model) renderStatusBar() string {
-	left := m.mascot.inline(msgNow(), mascotFaceStyles) +
-		statusSeparator +
-		statusProviderStyle.Render(m.providerName) +
-		statusSeparator +
-		statusModelStyle.Render(m.modelName)
+	contentWidth := max(1, m.width-2)
+
+	// The mascot leads unconditionally. It is the only element on the bar with
+	// no textual fallback, so it is the last thing that may be dropped and
+	// never the first: when the bar is too narrow, the model id truncates.
+	head := m.mascot.inline(msgNow(), mascotFaceStyles) +
+		statusSeparator + statusProviderStyle.Render(m.providerName)
+
+	var suffix string
 	if m.streaming {
-		left = left + statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
+		suffix = statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
 	}
 
-	contentWidth := max(1, m.width-2)
-	path := workspaceShortName(m.workspaceRoot)
-	right := ""
-	if path != "" && contentWidth >= 38 {
-		right = statusPathStyle.Render(path)
-	}
-	if lipgloss.Width(left)+lipgloss.Width(right) > contentWidth {
-		leftText := "GoCode │ " + m.providerName + " │ " + m.modelName
-		if m.streaming {
-			leftText += " │ " + m.mascot.state.String()
+	// The workspace path is the first casualty when the bar is tight, the model
+	// id the second.
+	var right string
+	if path := workspaceShortName(m.workspaceRoot); path != "" {
+		needed := lipgloss.Width(path) + lipgloss.Width(statusSeparator)
+		fixed := lipgloss.Width(head) + lipgloss.Width(suffix)
+		if fixed+needed+minModelWidth+lipgloss.Width(statusSeparator) <= contentWidth {
+			right = statusPathStyle.Render(path)
 		}
-		return statusBarStyle.Width(contentWidth).Render(truncateToWidth(leftText, contentWidth))
 	}
-	if right != "" {
-		left += statusBarStyle.Render(strings.Repeat(" ", contentWidth-lipgloss.Width(left)-lipgloss.Width(right))) + right
-	} else if pad := contentWidth - lipgloss.Width(left); pad > 0 {
-		left += statusBarStyle.Render(strings.Repeat(" ", pad))
+
+	// Whatever the head, suffix and path leave behind goes to the model id.
+	left := head
+	room := contentWidth - lipgloss.Width(head) - lipgloss.Width(suffix) -
+		lipgloss.Width(right) - lipgloss.Width(statusSeparator)
+	if room >= minModelWidth {
+		left += statusSeparator + statusModelStyle.Render(truncateToWidth(m.modelName, room))
 	}
-	return left
+	left += suffix
+
+	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap > 0 {
+		left += statusBarStyle.Render(strings.Repeat(" ", gap))
+	}
+	return left + right
 }
 
 func (m *Model) renderInputArea() string {
