@@ -191,12 +191,16 @@ func (m *mascot) rate() float64 {
 	return 0.03
 }
 
-// waveAt maps a 0..1 phase onto a smooth -1..1 oscillation.
+// waveAt maps a 0..1 phase onto a -1..1 triangle.
 //
-// A sine lingers at the extremes; this holds briefly at each end and moves
-// fastest through the middle, which is what reads as momentum.
+// It is a hard triangle: constant slope, sign flip at the turning points, no
+// dwell at the extremes. An earlier version of this comment claimed the corners
+// were smoothed and that it held briefly at each end; neither was true, and
+// measurement over a full cycle showed zero repeated samples at the turning
+// points. The corner is fine because the spring does the smoothing — driving a
+// stiff signal into an under-damped oscillator is exactly what produces the
+// ease-out, so pre-smoothing here would only soften the result twice.
 func waveAt(phase float64) float64 {
-	// Triangle, smoothed at the turning points to remove the corner.
 	t := phase * 2
 	var v float64
 	if t < 1 {
