@@ -43,6 +43,16 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 
+### v0.6.2 Fixes
+
+The mascot had shipped looking finished and moving like a still image. Both defects were only visible by driving a real turn and rendering the screen, because every test up to that point checked the mascot in isolation.
+
+- **The Status Bar Mascot Never Moved** — the bob spring feeds only the hero portrait, which the startup banner shows once and never again, and the sway spring was driven at half amplitude. It peaked at 0.73 cells, so `quantize` rounded it to zero on every frame. In the one place the mascot is visible for a whole session it was frozen: 400 frames of working produced exactly one distinct sprite. Sway now runs at full amplitude, and the sprite has one cell of travel inside a field one cell wider, so the pad moves from the right of the mascot to its left while the field stays exactly 8 cells in every state.
+- **The Antenna Sits One Cell Left of the Lid** — `padTo` centres a glyph within the whole portrait width, which includes the two-space indent, so the stalk did not meet the `┴` it sprouts from. It is now placed on the joint's column.
+- **`frameMsg.at` Was Dead** — every frame carried a timestamp that nothing read; the handler stepped the mascot against the wall clock instead. A frame now advances by when it was scheduled rather than when it was processed, which is more correct when frames batch and is what makes the animation deterministic under test.
+
+Two tests now walk a whole turn and assert the rendered status bar and the sprite both change across 400 frames of working. The mascot does not blink while working, so blinking cannot make them pass; both fail on the previous code with `1 distinct`.
+
 ### v0.6.1 Fixes
 
 Corrections to v0.6.0, found by independent review and by measuring rendered output rather than reading it.
