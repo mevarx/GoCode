@@ -331,19 +331,20 @@ func TestMascotAmplitudeOrdering(t *testing.T) {
 	}
 }
 
-func TestMascotRateOrdering(t *testing.T) {
+// Every state shares one oscillator rate. The rate is a property of the
+// spring, not of the state: what distinguishes a working mascot from an idle
+// one is amplitude, and the rate exists only to stay inside the spring's
+// tracking band.
+func TestMascotRateStaysInTheTrackingBand(t *testing.T) {
 	m := newMascot()
-	rates := map[mascotState]float64{}
-	for _, s := range animAllStates() {
-		m.state = s
-		rates[s] = m.rate()
-		if rates[s] <= 0 || rates[s] >= 1 {
-			t.Errorf("rate() for %v = %v, want a fraction of a cycle per frame", s, rates[s])
-		}
+	rate := m.rate()
+	if rate <= 0 {
+		t.Fatal("rate must be positive or the mascot never animates")
 	}
-	if !(rates[mascotWorking] > rates[mascotThinking] && rates[mascotThinking] > rates[mascotIdle]) {
-		t.Errorf("expected working(%v) > thinking(%v) > idle(%v)",
-			rates[mascotWorking], rates[mascotThinking], rates[mascotIdle])
+	// Above ~0.05 the bob spring attenuates below one cell and the mascot
+	// quantises to a standstill.
+	if rate > 0.05 {
+		t.Errorf("rate %.3f drives the spring too fast; the mascot stops moving", rate)
 	}
 }
 
@@ -438,9 +439,9 @@ func TestMascotStateTransitionsDoNotPanic(t *testing.T) {
 				t.Errorf("setState(%v) left the mascot in %v", to, m.state)
 			}
 			// setState is a documented no-op when the state is unchanged, so
-			// only a real transition is expected to move `since`.
-			if from != to && !m.since.Equal(base.Add(100*time.Millisecond)) {
-				t.Errorf("%v→%v did not record the transition time, since=%v", from, to, m.since)
+			// only a real transition is expected to re-arm the blink.
+			if from != to && !m.eyes.at.Equal(base.Add(100*time.Millisecond)) {
+				t.Errorf("%v→%v did not re-arm the blink, eyes.at=%v", from, to, m.eyes.at)
 			}
 			for i := 0; i < 120; i++ {
 				now := base.Add(time.Duration(i) * cadence(to))
@@ -461,8 +462,8 @@ func TestMascotRepeatedSetStateIsANoOp(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, base)
 	m.setState(mascotWorking, base.Add(time.Second))
-	if !m.since.Equal(base) {
-		t.Errorf("re-entering the same state reset the transition time: since=%v, want %v", m.since, base)
+	if !m.eyes.at.Equal(base) {
+		t.Errorf("re-entering the same state re-armed the blink: eyes.at=%v, want %v", m.eyes.at, base)
 	}
 }
 

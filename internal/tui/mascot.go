@@ -82,10 +82,6 @@ type mascot struct {
 	amp float64
 
 	eyes blink
-
-	// since is when the current state was entered, used to hold a
-	// success/error face briefly before relaxing back to idle.
-	since time.Time
 }
 
 // newMascot builds the mascot at rest.
@@ -137,7 +133,6 @@ func (m *mascot) setState(s mascotState, now time.Time) {
 		return
 	}
 	m.state = s
-	m.since = now
 	m.eyes.at = now
 }
 
@@ -187,15 +182,13 @@ func (m *mascot) step() {
 const amplitudeEaseRate = 0.12
 
 // rate is the oscillator speed in cycles per frame.
+//
+// Measured against the bob spring, tracking falls off sharply once the drive
+// climbs: 0.03/frame reaches 89% of the intended amplitude, 0.05 gets 57%, and
+// 0.08 collapses to 30% — which quantises to zero cells and a motionless
+// mascot. The states stay in the tracking band; only their amplitude differs.
 func (m *mascot) rate() float64 {
-	switch m.state {
-	case mascotWorking:
-		return 0.22
-	case mascotThinking:
-		return 0.16
-	default:
-		return 0.10
-	}
+	return 0.03
 }
 
 // waveAt maps a 0..1 phase onto a smooth -1..1 oscillation.
@@ -238,17 +231,29 @@ func (m *mascot) faceFor(now time.Time) face {
 
 // inline renders the mascot as a single line, for the status bar.
 //
-// Width is fixed at 6 cells — "(", two eyes, a space, ")" and the mouth —
-// regardless of state, so the status bar never reflows mid-animation.
+// Width is fixed at 7 cells regardless of state, so the status bar never
+// reflows mid-animation. Six glyphs, but the mouth (︶︵︷) is a
+// presentation-form character that both lipgloss and go-runewidth count as two
+// cells.
 func (m mascot) inline(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
-	faceRun := f.left + " " + f.right
+
+	// A one-line sprite has no room to bob, so the sway spring shifts the face
+	// sideways inside a fixed-width field. Without the trailing pad the whole
+	// status bar would visibly shuffle on every frame.
+	const cellWidth = 7
+	// spriteCells is the unpadded width: "(", two eyes, a space, ")" and the
+	// mouth, whose glyph is two cells wide.
+	const spriteCells = 7
+	shift := quantize(m.sway.value(), 0, 1)
+	pad := strings.Repeat(" ", cellWidth-spriteCells+shift)
 
 	var b strings.Builder
 	b.WriteString(st.body.Render("("))
-	b.WriteString(st.eye.Render(faceRun))
+	b.WriteString(st.eye.Render(f.left + " " + f.right))
 	b.WriteString(st.body.Render(")"))
 	b.WriteString(st.mouth.Render(f.mouth))
+	b.WriteString(st.body.Render(pad))
 	return b.String()
 }
 
@@ -281,15 +286,15 @@ func (m mascot) hero(now time.Time, st mascotStyles) string {
 		st.body.Render("  ╰" + strings.Repeat("─", faceWidth) + "╯"),
 	}
 
-	// Drop the top rows while the bob is negative so a hop reads as the whole
-	// mascot rising rather than one antenna stretching.
+	// A rising bob adds a blank row above so the whole figure moves up; a
+	// falling one adds one below, keeping the antenna joint intact either way.
 	offset := m.cellOffset()
-	if offset > 0 {
-		rows = append(rows[:0], rows[offset:]...)
-	} else if offset < 0 {
-		for i := 0; i < -offset; i++ {
-			rows = append([]string{st.body.Render("       ")}, rows...)
-		}
+	blank := padTo("", total)
+	for ; offset > 0; offset-- {
+		rows = append([]string{blank}, rows...)
+	}
+	for ; offset < 0; offset++ {
+		rows = append(rows, blank)
 	}
 	return strings.Join(rows, "\n")
 }
