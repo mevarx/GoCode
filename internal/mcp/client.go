@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // JSONRPCRequest represents a standard JSON-RPC 2.0 request.
@@ -75,18 +76,23 @@ type Client struct {
 	seq     uint64
 	pending map[uint64]chan *JSONRPCResponse
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	closed  bool
 	doneCh  chan struct{}
+
+	// requestTimeout bounds a single Call; tests can shrink it.
+	requestTimeout time.Duration
 }
 
 // NewClient creates a new MCP client.
 func NewClient(command string, args []string, env map[string]string) *Client {
 	return &Client{
-		command: command,
-		args:    args,
-		env:     env,
-		pending: make(map[uint64]chan *JSONRPCResponse),
-		doneCh:  make(chan struct{}),
+		command:        command,
+		args:           args,
+		env:            env,
+		pending:        make(map[uint64]chan *JSONRPCResponse),
+		doneCh:         make(chan struct{}),
+		requestTimeout: 60 * time.Second,
 	}
 }
 
@@ -125,6 +131,10 @@ func (c *Client) Start() error {
 	return nil
 }
 
+// maxMessageSize ceilings a single JSON-RPC payload; a hostile or broken
+// server advertising a huge Content-Length must not trigger a huge alloc.
+const maxMessageSize = 16 * 1024 * 1024
+
 func (c *Client) readLoop() {
 	reader := bufio.NewReaderSize(c.stdout, 10*1024*1024)
 
@@ -134,7 +144,6 @@ func (c *Client) readLoop() {
 			break
 		}
 
-		// Check for Content-Length header framing
 		if b[0] == 'C' || b[0] == 'c' {
 			header, err := reader.ReadString('\n')
 			if err != nil {
@@ -144,15 +153,17 @@ func (c *Client) readLoop() {
 			if strings.HasPrefix(strings.ToLower(trimmedHeader), "content-length:") {
 				lenStr := strings.TrimSpace(trimmedHeader[15:])
 				contentLen, parseErr := strconv.Atoi(lenStr)
+				if parseErr == nil && contentLen > maxMessageSize {
+					slog.Error("mcp client: Content-Length exceeds ceiling, dropping connection", "content_length", contentLen, "max", maxMessageSize)
+					break
+				}
 				if parseErr == nil && contentLen > 0 {
-					// Read header separator (empty line)
 					for {
 						sep, err := reader.ReadString('\n')
 						if err != nil || strings.TrimSpace(sep) == "" {
 							break
 						}
 					}
-					// Read payload bytes
 					payload := make([]byte, contentLen)
 					_, readErr := io.ReadFull(reader, payload)
 					if readErr != nil {
@@ -164,7 +175,6 @@ func (c *Client) readLoop() {
 			}
 		}
 
-		// Otherwise, read as newline-delimited JSON
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			line = bytes.TrimSpace(line)
@@ -244,8 +254,11 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 		return nil, fmt.Errorf("mcp client is closed")
 	}
 	c.pending[id] = ch
-	_, writeErr := c.stdin.Write(reqBytes)
 	c.mu.Unlock()
+
+	c.writeMu.Lock()
+	_, writeErr := c.stdin.Write(reqBytes)
+	c.writeMu.Unlock()
 
 	if writeErr != nil {
 		c.mu.Lock()
@@ -253,6 +266,9 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to write to mcp stdin: %w", writeErr)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
 
 	select {
 	case <-ctx.Done():
@@ -297,10 +313,20 @@ func (c *Client) Notify(method string, params interface{}) error {
 	reqBytes = append(reqBytes, '\n')
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return fmt.Errorf("mcp client is closed")
 	}
+	c.mu.Unlock()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return fmt.Errorf("mcp client is closed")
+	}
+	c.mu.Unlock()
 
 	_, err = c.stdin.Write(reqBytes)
 	return err
@@ -373,17 +399,20 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 // Close gracefully terminates the child process.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
 	c.closed = true
 	close(c.doneCh)
+	c.mu.Unlock()
 
+	c.writeMu.Lock()
 	if c.stdin != nil {
 		_ = c.stdin.Close()
 	}
+	c.writeMu.Unlock()
+
 	if c.stdout != nil {
 		_ = c.stdout.Close()
 	}

@@ -87,17 +87,34 @@ func TestModelSwitchValidatesAgainstProvider(t *testing.T) {
 	}
 }
 
-func TestModelSwitchSkipsValidationWhenListUnavailable(t *testing.T) {
+func TestModelSwitchFailsClosedWhenListUnavailable(t *testing.T) {
 	sess := NewSession("llama3")
 	loop, events := cmdEngine(nil, errors.New("offline"), sess)
 
 	_ = loop.RunTurn(context.Background(), "/model llama3.1")
 	ev, _ := lastNotice(t, *events)
-	if ev.Kind == EventError {
-		t.Fatalf("validation must be skipped when model list fails, got %q", ev.Text)
+	if ev.Kind != EventError {
+		t.Fatalf("model switch must fail closed when the model list is unavailable, got kind %v (%q)", ev.Kind, ev.Text)
 	}
-	if sess.Model() != "llama3.1" {
-		t.Errorf("expected model llama3.1, got %q", sess.Model())
+	if !strings.Contains(ev.Text, "model list unavailable") {
+		t.Errorf("error should explain the list was unavailable, got %q", ev.Text)
+	}
+	if sess.Model() != "llama3" {
+		t.Errorf("model must stay llama3 on validation failure, got %q", sess.Model())
+	}
+}
+
+func TestModelSwitchFailsClosedOnEmptyList(t *testing.T) {
+	sess := NewSession("llama3")
+	loop, events := cmdEngine([]string{}, nil, sess)
+
+	_ = loop.RunTurn(context.Background(), "/model llama3.1")
+	ev, _ := lastNotice(t, *events)
+	if ev.Kind != EventError {
+		t.Fatalf("model switch must fail closed on an empty model list, got kind %v (%q)", ev.Kind, ev.Text)
+	}
+	if sess.Model() != "llama3" {
+		t.Errorf("model must stay llama3 on validation failure, got %q", sess.Model())
 	}
 }
 

@@ -40,9 +40,7 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 
 	lower := strings.ToLower(trimmed)
 
-	// Check exit / quit, with or without a leading slash. The documented
-	// commands are /exit and /quit, but bare "exit" has always worked, so
-	// both spellings are accepted.
+	// Accept bare exit/quit for compatibility; documented commands are /exit and /quit.
 	if lower == "exit" || lower == "quit" || lower == "/exit" || lower == "/quit" {
 		return CommandResult{Handled: true, Exit: true, Output: "Goodbye!"}
 	}
@@ -207,23 +205,34 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 			}
 			return CommandResult{Handled: true, Output: out}
 		}
-		if cmdCtx.Registry != nil {
-			if activeProv, err := cmdCtx.Registry.Active(); err == nil && activeProv != nil {
-				if models, err := activeProv.Models(ctx); err == nil && len(models) > 0 {
-					found := false
-					for _, m := range models {
-						if m == arg {
-							found = true
-							break
-						}
-					}
-					if !found {
-						return CommandResult{
-							Handled: true,
-							Error:   fmt.Errorf("model %q is not available on %s — available: %s", arg, cmdCtx.Registry.ActiveName(), strings.Join(models, ", ")),
-						}
-					}
-				}
+		if cmdCtx.Registry == nil {
+			return CommandResult{Handled: true, Error: fmt.Errorf("no provider registry configured")}
+		}
+		activeProv, err := cmdCtx.Registry.Active()
+		if err != nil {
+			return CommandResult{Handled: true, Error: fmt.Errorf("cannot validate model: active provider unavailable: %w", err)}
+		}
+		if activeProv == nil {
+			return CommandResult{Handled: true, Error: fmt.Errorf("cannot validate model: no active provider")}
+		}
+		models, err := activeProv.Models(ctx)
+		if err != nil {
+			return CommandResult{Handled: true, Error: fmt.Errorf("cannot validate model %q: model list unavailable: %w", arg, err)}
+		}
+		if len(models) == 0 {
+			return CommandResult{Handled: true, Error: fmt.Errorf("cannot validate model %q: provider returned an empty model list", arg)}
+		}
+		found := false
+		for _, m := range models {
+			if m == arg {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return CommandResult{
+				Handled: true,
+				Error:   fmt.Errorf("model %q is not available on %s — available: %s", arg, cmdCtx.Registry.ActiveName(), strings.Join(models, ", ")),
 			}
 		}
 		cmdCtx.Session.SetModel(arg)
@@ -256,6 +265,19 @@ func resumeSession(cmdCtx CommandContext, sessionID string) CommandResult {
 	}
 }
 
+// gitAddArgs builds the argument vector for staging a single path safely:
+// the "--" separator stops a path like "-n" being read as a flag.
+func gitAddArgs(relPath string) []string {
+	return []string{"add", "--", relPath}
+}
+
+// gitCommitArgs limits the commit to exactly the session's files. Without a
+// pathspec, `git commit` would sweep in unrelated staged changes.
+func gitCommitArgs(msg string, relPaths []string) []string {
+	args := []string{"commit", "-m", msg, "--"}
+	return append(args, relPaths...)
+}
+
 func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 	files := cmdCtx.Session.ModifiedFiles()
 	if len(files) == 0 {
@@ -271,6 +293,7 @@ func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 	if msg == "" {
 		msg = "Changes assisted by GoCode"
 	}
+	var relPaths []string
 	trailer := fmt.Sprintf("Assisted-by: GoCode:%s", cmdCtx.Session.Model())
 	fullCommitMsg := fmt.Sprintf("%s\n\n%s", msg, trailer)
 
@@ -288,7 +311,6 @@ func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 		}
 	}
 
-	// Run git add for each modified file
 	for _, file := range files {
 		relPath := file
 		if filepath.IsAbs(file) {
@@ -296,7 +318,8 @@ func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 				relPath = rel
 			}
 		}
-		addCmd := exec.Command("git", "add", relPath)
+		relPaths = append(relPaths, relPath)
+		addCmd := exec.Command("git", gitAddArgs(relPath)...)
 		addCmd.Dir = workDir
 		if out, err := addCmd.CombinedOutput(); err != nil {
 			return CommandResult{
@@ -306,8 +329,7 @@ func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 		}
 	}
 
-	// Run git commit
-	commitCmd := exec.Command("git", "commit", "-m", fullCommitMsg)
+	commitCmd := exec.Command("git", gitCommitArgs(fullCommitMsg, relPaths)...)
 	commitCmd.Dir = workDir
 	var stdout, stderr bytes.Buffer
 	commitCmd.Stdout = &stdout

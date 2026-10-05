@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,8 +14,7 @@ type ShellExecTool struct {
 	Timeout        time.Duration
 	WorkspaceRoot  string
 	MaxOutputBytes int
-	// Guard applies secret redaction to output and surfaces advisory
-	// sensitive-path warnings in the approval preview. May be nil.
+	// Guard redacts secrets and warns about sensitive paths in previews. May be nil.
 	Guard *ShellGuard
 }
 
@@ -92,23 +90,32 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", a.Command)
 	}
 
-	// Set working directory to workspace root.
 	if s.WorkspaceRoot != "" {
 		cmd.Dir = s.WorkspaceRoot
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// SECURITY: WaitDelay bounds Wait() so a backgrounded grandchild inheriting the pipe cannot hang Execute.
+	cmd.WaitDelay = waitDelayGrace
+
+	// SECURITY: cap capture during execution so a command emitting gigabytes is never fully buffered.
+	maxOutput := s.maxOutput()
+	stdoutBuf := &cappedWriter{max: maxOutput}
+	stderrBuf := &cappedWriter{max: maxOutput}
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
 
 	err := cmd.Run()
 
-	maxOutput := s.maxOutput()
-	stdoutStr := truncateOutput(stdout.String(), maxOutput)
-	stderrStr := truncateOutput(stderr.String(), maxOutput)
+	stdoutStr := stdoutBuf.String()
+	if stdoutBuf.capped {
+		stdoutStr += "\n... (output truncated)"
+	}
+	stderrStr := stderrBuf.String()
+	if stderrBuf.capped {
+		stderrStr += "\n... (output truncated)"
+	}
 
-	// Redact credential-shaped values before they can reach the model or be
-	// written into the persisted session transcript.
+	// SECURITY: redact credentials before they reach the model or transcript.
 	var redactions []string
 	if s.Guard != nil {
 		var hits []string
@@ -137,7 +144,6 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	result.Output += DescribeRedactions(redactions)
 
 	if err != nil {
-		// Distinguish timeout from other errors.
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			result.Error = fmt.Sprintf("command timed out after %s", timeout)
 		} else if ctx.Err() == context.Canceled {
@@ -153,6 +159,36 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	return result, nil
 }
 
+// waitDelayGrace bounds pipe release after exit/cancellation.
+const waitDelayGrace = 2 * time.Second
+
+// cappedWriter discards bytes beyond max instead of buffering them.
+type cappedWriter struct {
+	buf    []byte
+	max    int
+	capped bool
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	if w.max > 0 && len(w.buf) >= w.max {
+		w.capped = true
+		return len(p), nil
+	}
+	if w.max > 0 {
+		if room := w.max - len(w.buf); len(p) > room {
+			w.buf = append(w.buf, p[:room]...)
+			w.capped = true
+			return len(p), nil
+		}
+	}
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+func (w *cappedWriter) String() string {
+	return string(w.buf)
+}
+
 func (s *ShellExecTool) timeout() time.Duration {
 	if s.Timeout > 0 {
 		return s.Timeout
@@ -165,11 +201,4 @@ func (s *ShellExecTool) maxOutput() int {
 		return s.MaxOutputBytes
 	}
 	return 1024 * 1024 // 1MB default
-}
-
-func truncateOutput(s string, maxBytes int) string {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s
-	}
-	return s[:maxBytes] + "\n... (output truncated)"
 }

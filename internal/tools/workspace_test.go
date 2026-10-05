@@ -77,7 +77,6 @@ func TestValidatePath_TraversalAttempt(t *testing.T) {
 func TestValidatePath_AbsolutePathOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
 
-	// Create a separate directory outside the workspace.
 	outsideDir := t.TempDir()
 	outsideFile := filepath.Join(outsideDir, "secret.txt")
 	os.WriteFile(outsideFile, []byte("secret"), 0o644)
@@ -94,12 +93,10 @@ func TestValidatePath_AbsolutePathOutsideWorkspace(t *testing.T) {
 func TestValidatePath_SymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 
-	// Create a directory outside the workspace.
 	outsideDir := t.TempDir()
 	outsideFile := filepath.Join(outsideDir, "secret.txt")
 	os.WriteFile(outsideFile, []byte("secret data"), 0o644)
 
-	// Create a symlink inside the workspace pointing outside.
 	symlinkPath := filepath.Join(root, "escape_link")
 	err := os.Symlink(outsideDir, symlinkPath)
 	if err != nil {
@@ -121,7 +118,6 @@ func TestValidatePath_SymlinkInsideWorkspace(t *testing.T) {
 	os.MkdirAll(realDir, 0o755)
 	os.WriteFile(filepath.Join(realDir, "file.txt"), []byte("content"), 0o644)
 
-	// Create a symlink inside workspace pointing to another place inside workspace.
 	symlinkPath := filepath.Join(root, "linked")
 	err := os.Symlink(realDir, symlinkPath)
 	if err != nil {
@@ -158,7 +154,6 @@ func TestValidatePath_WorkspaceRootItself(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected workspace root itself to be allowed, got: %v", err)
 	}
-	// Normalize both paths for comparison.
 	absRoot, _ := filepath.Abs(root)
 	if filepath.Clean(result) != filepath.Clean(absRoot) {
 		t.Errorf("expected %q, got %q", absRoot, result)
@@ -168,7 +163,6 @@ func TestValidatePath_WorkspaceRootItself(t *testing.T) {
 func TestValidatePath_NewFileInWorkspace(t *testing.T) {
 	root := t.TempDir()
 
-	// This file doesn't exist yet — should still validate.
 	result, err := ValidatePath(root, "new_subdir/new_file.txt")
 	if err != nil {
 		t.Fatalf("expected no error for new file path, got: %v", err)

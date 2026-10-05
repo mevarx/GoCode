@@ -28,14 +28,12 @@ func TestLoopGuardStopsIdenticalRetries(t *testing.T) {
 	g := NewLoopGuard()
 	limit := DefaultMaxRepeatedToolCalls
 
-	// The first `limit` identical calls are permitted.
 	for i := 0; i < limit; i++ {
 		if err := g.CheckCall(call("file_read", `{"path":"a.txt"}`)); err != nil {
 			t.Fatalf("call %d of %d should be allowed: %v", i+1, limit, err)
 		}
 	}
 
-	// The next one trips the guard.
 	err := g.CheckCall(call("file_read", `{"path":"a.txt"}`))
 	if err == nil {
 		t.Fatal("expected identical repeat to be stopped")
@@ -81,7 +79,6 @@ func TestLoopGuardConfigOverridesDefaults(t *testing.T) {
 		t.Errorf("expected MaxRepeatedCalls 1, got %d", g.MaxRepeatedCalls)
 	}
 
-	// With MaxRepeatedCalls=1, the second identical call trips.
 	if err := g.CheckCall(call("shell_exec", `{"command":"ls"}`)); err != nil {
 		t.Fatalf("first call should be allowed: %v", err)
 	}
@@ -100,9 +97,8 @@ func TestLoopGuardNonPositiveConfigFallsBackToDefaults(t *testing.T) {
 	}
 }
 
-// A failing tool the model retries identically is the exact runaway shape
-// observed in the wild: the guard must stop it, and must do so without waiting
-// for the iteration cap.
+// A failing tool retried identically is the runaway shape: the guard must stop it
+// well before the iteration cap.
 func TestLoopGuardStopsRunawayFailingTool(t *testing.T) {
 	g := NewLoopGuardWithConfig(LoopGuardConfig{MaxIterations: 1000})
 	stopped := 0
@@ -119,6 +115,48 @@ func TestLoopGuardStopsRunawayFailingTool(t *testing.T) {
 		t.Errorf("expected stop within %d calls, took %d", DefaultMaxRepeatedToolCalls+1, stopped)
 	}
 	t.Logf("stopped after %d identical calls (iteration cap was 1000)", stopped)
+}
+
+// Same logical call in four textual shapes must count as a repeat; raw-byte keys let them evade the guard.
+func TestLoopGuardCanonicalisesArguments(t *testing.T) {
+	g := NewLoopGuard()
+	shapes := []string{
+		`{"a":1,"b":2}`,
+		`{"b":2,"a":1}`,
+		`{ "a" : 1, "b" : 2 }`,
+		`{"a":1.0,"b":2}`,
+	}
+	for i, s := range shapes[:len(shapes)-1] {
+		if err := g.CheckCall(call("file_read", s)); err != nil {
+			t.Fatalf("call %d should be allowed: %v", i+1, err)
+		}
+	}
+	if err := g.CheckCall(call("file_read", shapes[len(shapes)-1])); err == nil {
+		t.Fatal("canonical repeats of the same call should trip the guard")
+	}
+}
+
+// Repeats count only when consecutive; the old cumulative counter aborted real work.
+func TestLoopGuardCountsConsecutiveRepeatsOnly(t *testing.T) {
+	g := NewLoopGuard()
+	// Interleave the repeated call with distinct calls, well past the limit:
+	// the streak resets on every interleaved call, so this must never stop.
+	for i := 0; i < DefaultMaxRepeatedToolCalls+3; i++ {
+		if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err != nil {
+			t.Fatalf("interleaved repeat %d should be allowed: %v", i+1, err)
+		}
+		if err := g.CheckCall(call("file_read", `{"path":"f`+strings.Repeat("x", i+1)+`"}`)); err != nil {
+			t.Fatalf("distinct call %d should be allowed: %v", i+1, err)
+		}
+	}
+	for i := 0; i < DefaultMaxRepeatedToolCalls; i++ {
+		if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err != nil {
+			t.Fatalf("consecutive repeat %d of %d should be allowed: %v", i+1, DefaultMaxRepeatedToolCalls, err)
+		}
+	}
+	if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err == nil {
+		t.Fatal("consecutive streak beyond the limit should trip the guard")
+	}
 }
 
 func TestLoopGuardSummary(t *testing.T) {

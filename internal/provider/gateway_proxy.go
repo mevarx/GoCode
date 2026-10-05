@@ -31,6 +31,8 @@ func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProx
 		cfg:  cfg,
 		client: &http.Client{
 			Transport: NewRetryTransport(baseTransport),
+			// Ceiling so a stalled gateway can't hold a turn forever.
+			Timeout: 10 * time.Minute,
 		},
 	}
 }
@@ -62,6 +64,9 @@ func (p *GatewayProxyProvider) setCustomHeaders(req *http.Request) {
 }
 
 func (p *GatewayProxyProvider) Models(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -106,9 +111,7 @@ type openAIMessage struct {
 	Content    string           `json:"content,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
-	// ReasoningContent is replayed on assistant turns so providers that
-	// thread reasoning through the request (MiniMax, DeepSeek) keep the
-	// chain continuous across a tool-call round trip.
+	// ReasoningContent is replayed so MiniMax/DeepSeek keep the chain across tool-call round trips.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
@@ -128,17 +131,20 @@ type openAIToolSpec struct {
 	Function openAIToolFunction `json:"function"`
 }
 
-// openAIToolFunction is the wire shape of a tool. ToolSpec already has exactly
-// these fields, so this is a conversion: a parallel struct would have to be
-// kept in sync by hand.
+// openAIToolFunction is ToolSpec's wire shape; alias avoids a hand-synced parallel struct.
 type openAIToolFunction ToolSpec
 
 type openAIStreamChunk struct {
+	// Error is the in-band {"error":{...}} payload some APIs pack into a 200 response.
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+	} `json:"error"`
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
-			// ReasoningContent is the DeepSeek-style thinking field used by
-			// MiniMax, DeepSeek and Hermes-compatible endpoints.
+			// ReasoningContent is the DeepSeek-style thinking field (MiniMax, DeepSeek, Hermes).
 			ReasoningContent string `json:"reasoning_content"`
 			ToolCalls        []struct {
 				Index    int    `json:"index"`
@@ -191,12 +197,16 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 		return nil, fmt.Errorf("gateway %q returned status %d: %s", p.name, resp.StatusCode, string(body))
 	}
 
+	if check := checkEventStreamContentType(resp, p.name); check != nil {
+		return nil, check
+	}
+
 	ch := make(chan StreamChunk, 64)
 
 	go func() {
 		defer resp.Body.Close()
 		defer close(ch)
-		streamOpenAISSE(resp.Body, ch, p.name)
+		streamOpenAISSE(ctx, resp.Body, ch, p.name)
 	}()
 
 	return ch, nil

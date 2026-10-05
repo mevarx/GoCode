@@ -53,8 +53,7 @@ func (f *FilePatchTool) RequiresApproval() bool {
 	return true
 }
 
-// Preview generates a diff preview of the proposed patch WITHOUT modifying
-// any files. This is called before approval.
+// Preview shows a diff preview without modifying files.
 func (f *FilePatchTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
 	_, path, oldContent, newContent, count, err := f.computePatch(args)
 	if err != nil {
@@ -70,7 +69,7 @@ func (f *FilePatchTool) Preview(ctx context.Context, args json.RawMessage) (Prev
 	}, nil
 }
 
-// Execute applies the patch. This is called ONLY after approval.
+// Execute applies the patch. Called only after approval.
 func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
 	_, path, oldContent, newContent, count, err := f.computePatch(args)
 	if err != nil {
@@ -112,7 +111,6 @@ func (f *FilePatchTool) computePatch(args json.RawMessage) (filePatchArgs, strin
 		return a, "", "", "", 0, fmt.Errorf("find string cannot be empty")
 	}
 
-	// Workspace confinement.
 	var path string
 	if f.WorkspaceRoot != "" {
 		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
@@ -124,10 +122,21 @@ func (f *FilePatchTool) computePatch(args json.RawMessage) (filePatchArgs, strin
 		path = filepath.Clean(a.Path)
 	}
 
-	// Check sensitive file protection.
 	if f.SensitiveMatcher != nil {
-		if blocked, reason := f.SensitiveMatcher.ShouldBlock(path, false); blocked {
+		blocked, reason, err := CheckSensitiveFile(f.SensitiveMatcher, path, false)
+		if err != nil {
+			return a, "", "", "", 0, err
+		}
+		if blocked {
 			return a, "", "", "", 0, fmt.Errorf("%s: %s", path, reason)
+		}
+		// SECURITY: hardlink aliases share inodes with sensitive files.
+		if f.WorkspaceRoot != "" {
+			if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+				if IsBlockedByIdentity(SensitiveIdentitySet(f.WorkspaceRoot, f.SensitiveMatcher), info) {
+					return a, "", "", "", 0, fmt.Errorf("%s: access denied: matches a sensitive file (hardlink alias)", path)
+				}
+			}
 		}
 	} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
 		return a, "", "", "", 0, fmt.Errorf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)

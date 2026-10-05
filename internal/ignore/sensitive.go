@@ -66,15 +66,13 @@ var defaultSensitivePatterns = []string{
 	".kube/config",
 }
 
-// SensitiveMatcher wraps an existing Matcher and additionally checks against
-// built-in sensitive file patterns.
+// SensitiveMatcher also checks built-in sensitive file patterns.
 type SensitiveMatcher struct {
 	Inner    Matcher
 	Patterns []string
 }
 
-// NewSensitiveMatcher creates a matcher that combines the given inner matcher
-// with built-in sensitive file patterns. Additional patterns can be added.
+// NewSensitiveMatcher combines an inner matcher with sensitive patterns.
 func NewSensitiveMatcher(inner Matcher, extraPatterns []string) *SensitiveMatcher {
 	patterns := make([]string, len(defaultSensitivePatterns))
 	copy(patterns, defaultSensitivePatterns)
@@ -96,19 +94,16 @@ func (s *SensitiveMatcher) IsIgnored(path string, isDir bool) bool {
 	return false
 }
 
-// IsSensitive checks if the given path matches any sensitive file pattern.
-// Returns the matching pattern if sensitive, or empty string if not.
+// IsSensitive returns the matching pattern, or "" if not sensitive.
 func (s *SensitiveMatcher) IsSensitive(path string) string {
 	base := filepath.Base(path)
 	normalizedPath := filepath.ToSlash(path)
 
 	for _, pattern := range s.Patterns {
-		// Check exact basename match
 		if base == pattern {
 			return pattern
 		}
 
-		// Check .env.* style patterns
 		if pattern == ".env" && base == ".env" {
 			return pattern
 		}
@@ -116,14 +111,12 @@ func (s *SensitiveMatcher) IsSensitive(path string) string {
 			return pattern
 		}
 
-		// Check glob patterns against basename
 		if strings.ContainsAny(pattern, "*?[") {
 			if matched, _ := filepath.Match(pattern, base); matched {
 				return pattern
 			}
 		}
 
-		// Check path suffix match (e.g., ".aws/credentials")
 		if strings.Contains(pattern, "/") {
 			if strings.HasSuffix(normalizedPath, pattern) {
 				return pattern
@@ -131,7 +124,6 @@ func (s *SensitiveMatcher) IsSensitive(path string) string {
 		}
 	}
 
-	// Special case: any file starting with ".env."
 	if strings.HasPrefix(base, ".env.") {
 		return ".env.*"
 	}
@@ -140,7 +132,6 @@ func (s *SensitiveMatcher) IsSensitive(path string) string {
 }
 
 // ShouldBlock combines IsIgnored and IsSensitive checks.
-// Returns (blocked bool, reason string).
 func (s *SensitiveMatcher) ShouldBlock(path string, isDir bool) (bool, string) {
 	if s.IsIgnored(path, isDir) {
 		return true, "file is ignored by ignore rules (.gocodeignore/.gitignore)"

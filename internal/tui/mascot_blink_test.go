@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// A mascot that never blinks reads as a dead drawing. setState no-ops when the
-// state is unchanged, so a session idle from startup to shutdown never blinked.
+// Idle-only sessions never blinked since setState no-ops when unchanged.
 func TestMascotEventuallyBlinksWithoutAnyStateChange(t *testing.T) {
 	start := nowForTest()
 	realNow := msgNow
@@ -16,8 +15,6 @@ func TestMascotEventuallyBlinksWithoutAnyStateChange(t *testing.T) {
 	m := newMascot()
 
 	blinked := false
-	// Sample across two full blink periods; the mascot is stepped far more
-	// often than the 4s cycle because frame rate and blink period differ.
 	for i := 0; i < 400; i++ {
 		msgNow = func() time.Time { return start.Add(time.Duration(i) * 20 * time.Millisecond) }
 		m.step(msgNow())
@@ -32,7 +29,7 @@ func TestMascotEventuallyBlinksWithoutAnyStateChange(t *testing.T) {
 	}
 }
 
-// The blink must be a small fraction of the cycle, not a permanently shut face.
+// Blink must be a small fraction of the cycle, not permanently shut.
 func TestBlinkDoesNotStayClosed(t *testing.T) {
 	start := nowForTest()
 	m := newMascot()
@@ -46,8 +43,7 @@ func TestBlinkDoesNotStayClosed(t *testing.T) {
 			closedFrames++
 		}
 	}
-	// 200 frames at 20ms is 4s, exactly one period with a 110ms closure: 6
-	// frames. Allow generous slack for sampling boundaries.
+	// 200 frames at 20ms is 4s, exactly one period with 110ms closure.
 	if closedFrames == 0 {
 		t.Error("blink never fired")
 	}

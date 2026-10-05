@@ -18,10 +18,7 @@ type Tool interface {
 	RequiresApproval() bool
 }
 
-// Previewer is an optional interface that tools can implement to provide
-// a preview of the proposed change before execution. This enables the
-// approval-before-execution flow where the user sees a diff/command
-// preview and approves before any filesystem changes are made.
+// Previewer optionally provides a preview for approval before execution.
 type Previewer interface {
 	Preview(ctx context.Context, args json.RawMessage) (Preview, error)
 }
@@ -71,8 +68,13 @@ func NewRegistry() *Registry {
 	}
 }
 
-func (r *Registry) Register(t Tool) {
-	r.tools[t.Spec().Name] = t
+func (r *Registry) Register(t Tool) error {
+	name := t.Spec().Name
+	if _, exists := r.tools[name]; exists {
+		return fmt.Errorf("tool name collision: %q is already registered", name)
+	}
+	r.tools[name] = t
+	return nil
 }
 
 func (r *Registry) Get(name string) Tool {

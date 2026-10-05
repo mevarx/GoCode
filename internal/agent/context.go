@@ -26,6 +26,10 @@ func NewContextManager(maxTokens int) *ContextManager {
 func (cm *ContextManager) EstimateTokens(msg provider.Message) int {
 	tokens := len(msg.Content)/4 + 4
 
+	// Reasoning is replayed into history for reasoning providers, so it
+	// occupies real request budget even though it is never displayed.
+	tokens += len(msg.ReasoningContent) / 4
+
 	for _, tc := range msg.ToolCalls {
 		tokens += len(tc.Name)/4 + len(tc.Args)/4 + 4
 	}
@@ -58,9 +62,7 @@ func (t Turn) Tokens(cm *ContextManager) int {
 	return total
 }
 
-// groupIntoTurns groups non-system messages into coherent conversation turns.
-// A turn typically starts with a "user" message and includes all subsequent
-// "assistant" and "tool" messages up until the next "user" message.
+// groupIntoTurns groups non-system messages into turns starting at each user message.
 func groupIntoTurns(messages []provider.Message) []Turn {
 	var turns []Turn
 	var current Turn
@@ -81,11 +83,8 @@ func groupIntoTurns(messages []provider.Message) []Turn {
 	return turns
 }
 
-// Truncate enforces MaxTokens while preserving conversation structure:
-// 1. Always preserves the system message (if present).
-// 2. Truncates in whole conversation turns so tool-call / tool-result pairs are never separated.
-// 3. Never leaves an orphaned "tool" message at the beginning of the context.
-// 4. Always retains at least the latest user turn.
+// Truncate enforces MaxTokens in whole turns, preserving system message and latest turn.
+// Never leaves an orphaned "tool" message at the start of the context.
 func (cm *ContextManager) Truncate(history []provider.Message) []provider.Message {
 	if len(history) == 0 {
 		return history
@@ -123,8 +122,6 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		sysTokens = cm.EstimateTokens(*systemMsg)
 	}
 
-	// Drop oldest turns until we fit within MaxTokens,
-	// but always keep at least the last turn.
 	for len(turns) > 1 {
 		totalTokens := sysTokens
 		for _, t := range turns {
@@ -133,10 +130,9 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		if totalTokens <= cm.MaxTokens {
 			break
 		}
-		turns = turns[1:] // Drop oldest turn
+		turns = turns[1:]
 	}
 
-	// Rebuild message list
 	var result []provider.Message
 	if systemMsg != nil {
 		result = append(result, *systemMsg)
@@ -157,8 +153,7 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 	return result
 }
 
-// Compact summarizes or compresses the history by retaining the system prompt,
-// a brief summary of omitted turns, and the most recent N turns.
+// Compact retains the system prompt, a summary of omitted turns, and the last N turns.
 func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int) []provider.Message {
 	if keepLastTurns <= 0 {
 		keepLastTurns = 2
@@ -178,7 +173,7 @@ func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int)
 
 	turns := groupIntoTurns(nonSystem)
 	if len(turns) <= keepLastTurns {
-		return history // Nothing to compact
+		return history
 	}
 
 	omittedTurns := len(turns) - keepLastTurns
@@ -195,7 +190,6 @@ func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int)
 		result = append(result, *systemMsg)
 	}
 
-	// Insert summary message
 	result = append(result, provider.Message{
 		Role:    "user",
 		Content: summaryText,
@@ -204,7 +198,6 @@ func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int)
 		Content: "Understood. Continuing with recent context.",
 	})
 
-	// Append kept turns
 	for i := omittedTurns; i < len(turns); i++ {
 		result = append(result, turns[i].Messages...)
 	}

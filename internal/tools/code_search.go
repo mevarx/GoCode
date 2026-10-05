@@ -87,7 +87,6 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 		maxResults = 50
 	}
 
-	// Determine and validate search root.
 	searchPath := a.Path
 	if searchPath == "" {
 		searchPath = "."
@@ -108,7 +107,6 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 		rootDir = abs
 	}
 
-	// Compile search regex.
 	pattern := a.Query
 	if !a.CaseSensitive {
 		pattern = "(?i)" + pattern
@@ -131,13 +129,46 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 		return Result{Error: fmt.Sprintf("cannot access path: %v", err)}, nil
 	}
 
+	// SECURITY: hardlink aliases share inodes with sensitive files and must be skipped by identity.
+	var blockedIDs []os.FileInfo
+	resolvedRoot, err := resolveExistingAncestor(rootDir)
+	if err != nil {
+		resolvedRoot = rootDir
+	}
+	if c.SensitiveMatcher != nil {
+		blockedIDs = SensitiveIdentitySet(rootDir, c.SensitiveMatcher)
+	}
+
+	// checkFile enforces workspace confinement, sensitive checks, and hardlink-identity blocking.
+	checkFile := func(path string) bool {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return false
+		}
+		if err := checkPathWithinRoot(resolvedRoot, resolved); err != nil {
+			return false
+		}
+		if c.SensitiveMatcher != nil {
+			if blocked, _, err := CheckSensitiveFile(c.SensitiveMatcher, resolved, false); blocked || err != nil {
+				return false
+			}
+		}
+		if len(blockedIDs) > 0 {
+			if info, statErr := os.Stat(path); statErr == nil {
+				if IsBlockedByIdentity(blockedIDs, info) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
 	var results []string
 	matchCount := 0
 	hitLimit := false
 
-	// Single file search.
 	if !stat.IsDir() {
-		if c.isBlocked(rootDir, false) {
+		if c.isBlocked(rootDir, false) || !checkFile(rootDir) {
 			return Result{Error: "access denied: file is ignored or sensitive"}, nil
 		}
 		fileMatches, err := c.searchFile(rootDir, re, a.ContextLines, maxResults-matchCount)
@@ -147,13 +178,11 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 		results = append(results, fileMatches...)
 		matchCount += len(fileMatches)
 	} else {
-		// Directory walk.
 		err = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return fmt.Errorf("search %s: %w", path, walkErr)
 			}
 
-			// Check context cancellation.
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -167,7 +196,6 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 
 			name := d.Name()
 
-			// Skip common large or hidden directories.
 			if d.IsDir() {
 				if name == ".git" || name == "node_modules" || name == "vendor" {
 					return filepath.SkipDir
@@ -175,15 +203,20 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 				if c.isBlocked(path, true) {
 					return filepath.SkipDir
 				}
+				// SECURITY: directory symlinks are never descended into.
+				if d.Type()&os.ModeSymlink != 0 {
+					if resolved, err := filepath.EvalSymlinks(path); err != nil || checkPathWithinRoot(resolvedRoot, resolved) != nil {
+						return filepath.SkipDir
+					}
+				}
 				return nil
 			}
 
-			// Check file block rules.
-			if c.isBlocked(path, false) {
+			// SECURITY: enforces resolved-target confinement and hardlink-identity blocking.
+			if c.isBlocked(path, false) || !checkFile(path) {
 				return nil
 			}
 
-			// Apply glob filter if specified.
 			if a.Glob != "" {
 				matched, globErr := filepath.Match(a.Glob, name)
 				if globErr != nil || !matched {
@@ -216,20 +249,36 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 	}
 
 	var out strings.Builder
-	out.WriteString(strings.Join(results, "\n"))
+	truncated := false
+	for _, line := range results {
+		if out.Len()+len(line)+1 > maxSearchOutputBytes {
+			truncated = true
+			break
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(line)
+	}
 	if hitLimit {
 		out.WriteString(fmt.Sprintf("\n... (results capped at %d matches)", maxResults))
+	}
+	if truncated {
+		out.WriteString(fmt.Sprintf("\n... (output capped at %d bytes)", maxSearchOutputBytes))
 	}
 
 	return Result{Output: out.String()}, nil
 }
 
+// maxSearchOutputBytes bounds one result so it cannot dominate the context budget.
+const maxSearchOutputBytes = 64 * 1024
+
 func (c *CodeSearchTool) isBlocked(path string, isDir bool) bool {
 	if c.SensitiveMatcher != nil {
-		if blocked, _ := c.SensitiveMatcher.ShouldBlock(path, isDir); blocked {
-			return true
-		}
-	} else if c.IgnoreMatcher != nil && c.IgnoreMatcher.IsIgnored(path, isDir) {
+		blocked, _, err := CheckSensitiveFile(c.SensitiveMatcher, path, isDir)
+		return blocked || err != nil
+	}
+	if c.IgnoreMatcher != nil && c.IgnoreMatcher.IsIgnored(path, isDir) {
 		return true
 	}
 	return false
@@ -246,7 +295,6 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 	}
 	defer f.Close()
 
-	// Check if binary file: read first 512 bytes for null byte.
 	buf := make([]byte, 512)
 	n, _ := f.Read(buf)
 	if bytes.IndexByte(buf[:n], 0) != -1 {
@@ -265,7 +313,6 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 
 	var allLines []string
 	scanner := bufio.NewScanner(f)
-	// Buffer large lines up to 1MB.
 	bufLarge := make([]byte, 64*1024)
 	scanner.Buffer(bufLarge, 1024*1024)
 
@@ -276,7 +323,7 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 		line := scanner.Text()
 		allLines = append(allLines, line)
 		if re.MatchString(line) {
-			matchIndices = append(matchIndices, lineNum-1) // 0-indexed
+			matchIndices = append(matchIndices, lineNum-1)
 			if len(matchIndices) >= limit {
 				break
 			}
@@ -297,7 +344,6 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 			out = append(out, fmt.Sprintf("%s:%d: %s", displayPath, idx+1, allLines[idx]))
 		}
 	} else {
-		// Context lines display.
 		for _, idx := range matchIndices {
 			start := idx - contextLines
 			if start < 0 {

@@ -30,7 +30,8 @@ func NewRetryTransport(base http.RoundTripper) *RetryTransport {
 	}
 }
 
-// RoundTrip executes the HTTP request, retrying on 429, 500, 502, 503, 504.
+// RoundTrip retries 429/500/502/503/504 for idempotent methods only.
+// POSTs are never replayed: a failed POST may already have been accepted and billed upstream.
 func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var bodyBytes []byte
 	if req.Body != nil && req.Body != http.NoBody {
@@ -42,20 +43,20 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		_ = req.Body.Close()
 	}
 
+	retryable := isIdempotentMethod(req.Method)
+
 	maxRetries := t.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
 
 	for attempt := 0; ; attempt++ {
-		// Reset body for this attempt
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
 		resp, err := t.Base.RoundTrip(req)
 
-		// Determine if we should retry
 		shouldRetry := false
 		var retryDelay time.Duration
 
@@ -63,23 +64,35 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if req.Context().Err() != nil {
 				return nil, req.Context().Err()
 			}
-			shouldRetry = true
-		} else if isRetryableStatus(resp.StatusCode) {
+			shouldRetry = retryable
+		} else if retryable && isRetryableStatus(resp.StatusCode) {
 			shouldRetry = true
 			retryDelay = parseRetryAfter(resp.Header.Get("Retry-After"))
-			// Drain and close response body before retrying
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			if t.MaxDelay > 0 && retryDelay > t.MaxDelay {
+				// Retry-After is untrusted; clamp so a broken server can't park the turn.
+				retryDelay = t.MaxDelay
+			}
+			if attempt < maxRetries {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				resp = nil
+			} else {
+				// Buffer final body so the caller gets a readable error instead of a drained stream.
+				body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRetryBodyBytes))
+				resp.Body.Close()
+				if readErr != nil {
+					return nil, readErr
+				}
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+			}
 		}
 
 		if !shouldRetry || attempt >= maxRetries {
 			return resp, err
 		}
 
-		// Calculate backoff
 		if retryDelay <= 0 {
 			backoff := t.InitialDelay * (1 << attempt)
-			// Add 10-20% jitter
 			jitter := time.Duration(float64(backoff) * (0.1 + rand.Float64()*0.1))
 			retryDelay = backoff + jitter
 			if t.MaxDelay > 0 && retryDelay > t.MaxDelay {
@@ -95,13 +108,25 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 }
 
+func isIdempotentMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+// maxRetryBodyBytes caps the buffered final error body.
+const maxRetryBodyBytes = 1 << 20
+
 func isRetryableStatus(statusCode int) bool {
 	switch statusCode {
-	case http.StatusTooManyRequests, // 429
-		http.StatusInternalServerError, // 500
-		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503
-		http.StatusGatewayTimeout:      // 504
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
 		return true
 	default:
 		return false
@@ -112,11 +137,9 @@ func parseRetryAfter(val string) time.Duration {
 	if val == "" {
 		return 0
 	}
-	// Try parsing as seconds
 	if secs, err := strconv.Atoi(val); err == nil && secs > 0 {
 		return time.Duration(secs) * time.Second
 	}
-	// Try parsing as HTTP date (RFC1123)
 	if t, err := http.ParseTime(val); err == nil {
 		diff := time.Until(t)
 		if diff > 0 {

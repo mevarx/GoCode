@@ -108,7 +108,6 @@ func BuildSystemPromptWithOptions(opts PromptOptions) string {
 
 	sb.WriteString(baseSystemPrompt)
 
-	// Runtime Environment context
 	var runtimeItems []string
 	if opts.OS != "" {
 		runtimeItems = append(runtimeItems, fmt.Sprintf("OS: %s", opts.OS))
@@ -131,7 +130,6 @@ func BuildSystemPromptWithOptions(opts PromptOptions) string {
 		for _, item := range runtimeItems {
 			sb.WriteString(fmt.Sprintf("- %s\n", item))
 		}
-		// Trim trailing newline for clean spacing
 		content := strings.TrimRight(sb.String(), "\n")
 		sb.Reset()
 		sb.WriteString(content)

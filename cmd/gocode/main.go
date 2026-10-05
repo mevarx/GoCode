@@ -82,11 +82,7 @@ func main() {
 		Short: "Add or update an MCP server configuration",
 		Args:  cobra.MinimumNArgs(2),
 		RunE:  runMCPAdd,
-		// MCP server commands routinely take their own flags —
-		// `npx -y @scope/server` is the common case — and cobra would parse
-		// those as GoCode's, so the documented command failed outright. With
-		// this set, a `--` separator is still honoured for GoCode's own
-		// flags such as --config.
+		// Server commands take their own flags, so disable parsing; `--` still ends GoCode's flags.
 		DisableFlagParsing: true,
 	}
 
@@ -122,22 +118,14 @@ func main() {
 	}
 }
 
-// gatewayProviderNames lists every built-in provider that speaks the
-// OpenAI-compatible Chat Completions protocol and is therefore served by
-// GatewayProxyProvider. Each name must have a matching field on
-// config.ProviderConfig; TestGatewayProviderNamesAreWired enforces that.
+// gatewayProviderNames lists built-in OpenAI-compatible providers served by GatewayProxyProvider.
 var gatewayProviderNames = []string{
 	"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi",
 	"hermes", "xai", "mistral", "minimax", "deepseek", "together",
 	"fireworks", "cerebras", "zhipu", "nvidia",
 }
 
-// gatewayConfigFor resolves a provider name to its configuration.
-//
-// An explicitly configured custom provider wins over the built-in of the same
-// name. Before a provider became built-in, a user could legitimately have
-// added it via `provider add`; that entry is an explicit choice and must keep
-// working instead of being silently shadowed by the built-in default.
+// gatewayConfigFor resolves a provider name; an explicit custom entry wins over the built-in.
 func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConfig {
 	if custom, ok := cfg.Custom[name]; ok {
 		return custom
@@ -184,7 +172,6 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 	}
 }
 
-// setupLogging configures structured logging and returns a cleanup function.
 func setupLogging(verbose bool) (cleanup func(), err error) {
 	logFilePath := config.LogFilePath()
 	if err := os.MkdirAll(filepath.Dir(logFilePath), 0o755); err != nil {
@@ -251,16 +238,18 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to configure custom providers: %w", err)
 	}
 
-	// session.persist was previously parsed and then ignored, so
-	// `persist = false` still wrote every message to disk. Honor it now:
-	// with persistence off, the store is never opened, so nothing is read
-	// back on resume and nothing is written during the session.
+	// With persist=false the store is never opened, so nothing is read or written.
 	sessionStore, err := openSessionStore(cfg.Session.Persist, filepath.Join(config.SessionDir(), "sessions.db"))
 	if err != nil {
 		slog.Warn("failed to open session store", "error", err)
+		fmt.Fprintf(os.Stderr, "warning: session persistence disabled: %v\n", err)
 	}
 	if sessionStore != nil {
-		defer sessionStore.Close()
+		defer func() {
+			if cerr := sessionStore.Close(); cerr != nil {
+				slog.Warn("failed to close session store", "error", cerr)
+			}
+		}()
 	}
 
 	var activeSessionRec *session.SessionRecord
@@ -296,7 +285,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		case "ollama":
 			model = cfg.Provider.Ollama.DefaultModel
 			if model == "" {
-				if models, err := ollamaProvider.Models(context.Background()); err == nil && len(models) > 0 {
+				ollamaCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if models, err := ollamaProvider.Models(ollamaCtx); err == nil && len(models) > 0 {
 					model = models[0]
 				} else {
 					model = "codellama"
@@ -328,7 +319,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 				newID = rec.ID
 			}
 		}
-		// Determine workspace root.
 		workspaceRoot := flagWorkdir
 		if workspaceRoot == "" {
 			workspaceRoot, _ = os.Getwd()
@@ -345,7 +335,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	// Ensure workspaceRoot is set if session was resumed
 	workspaceRoot := flagWorkdir
 	if workspaceRoot == "" {
 		workspaceRoot, _ = os.Getwd()
@@ -396,31 +385,32 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}()
 
 	mcpManager := mcp.NewManager(cfg.MCP.Servers)
-	_ = mcpManager.StartAll(ctx, toolRegistry)
+	if err := mcpManager.StartAll(ctx, toolRegistry); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: MCP server startup failed: %v\n", err)
+		slog.Warn("mcp startup", "error", err)
+	}
 	defer mcpManager.CloseAll()
 
 	approval := tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
 
-	// One guard configuration for both UI paths, so the plain loop and the TUI
-	// cannot disagree about when a turn is allowed to stop.
+	// One guard config for both UI paths so they agree on when a turn may stop.
 	guardCfg := agent.LoopGuardConfig{
 		MaxIterations:    cfg.Tools.MaxToolIterations,
 		MaxRepeatedCalls: cfg.Tools.MaxRepeatedToolCalls,
 	}
 
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg)
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens)
 	}
 
 	loop := agent.NewAgentLoop(providerRegistry, sess, toolRegistry, approval)
 	loop.WorkspaceRoot = workspaceRoot
 	loop.GuardConfig = guardCfg
+	loop.ContextManager = agent.NewContextManager(cfg.Tools.MaxContextTokens)
 	return loop.Run(ctx)
 }
 
-// openSessionStore opens the SQLite session store when persistence is
-// enabled. It is a separate function so the persist=false path is directly
-// testable: with persistence off nothing is created and nothing is written.
+// openSessionStore opens the store when persistence is enabled; split out for testability.
 func openSessionStore(persist bool, dbPath string) (*session.SessionStore, error) {
 	if !persist {
 		slog.Info("session persistence disabled by config")
@@ -435,8 +425,7 @@ func openSessionStore(persist bool, dbPath string) (*session.SessionStore, error
 }
 
 func runMCPAdd(cmd *cobra.Command, args []string) error {
-	// Flag parsing is off for this command, so pull GoCode's own flags out of
-	// the raw arguments by hand.
+	// Flag parsing is off, so extract GoCode's flags by hand.
 	rest, configPath := splitMCPAddArgs(args)
 	if configPath != "" {
 		flagConfig = configPath
@@ -469,21 +458,9 @@ func runMCPAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// splitMCPAddArgs separates GoCode's own flags from the server command.
-//
-// MCP server commands routinely take their own flags — `npx -y @scope/server`
-// is the common case — and cobra would have parsed those as GoCode's, so the
-// documented command failed outright. The rule here is positional rather than
-// clever: GoCode's flags come before the server name, and everything from the
-// first non-flag token onward belongs to the server, flags included. A literal
-// `--` ends GoCode's section early and is not itself passed to the server.
-//
-//	--config <path> add <name> <command> [args...]
-//	add <name> <command> [args...] -- --config <path>
+// splitMCPAddArgs separates GoCode's flags (before the server name) from the server command; `--` ends GoCode's section.
 func splitMCPAddArgs(args []string) (serverArgs []string, configPath string) {
-	// Split off the section after `--` first. Cobra passes the separator
-	// through verbatim, and it can appear anywhere, so it cannot be found by
-	// walking forward from the start.
+	// Split off the post-`--` section first; it can appear anywhere.
 	head := args
 	var tail []string
 	if i := indexOfString(args, "--"); i >= 0 {
@@ -505,8 +482,7 @@ func splitMCPAddArgs(args []string) (serverArgs []string, configPath string) {
 		case arg == "--verbose" || arg == "-verbose" || arg == "-v":
 			flagVerbose = true
 		default:
-			// First positional: the server name. Everything from here is the
-			// server's, so --config here would belong to the server.
+			// First positional starts the server command, so --config here belongs to the server.
 			serverStart = i
 		}
 		if serverStart >= 0 {
@@ -518,10 +494,7 @@ func splitMCPAddArgs(args []string) (serverArgs []string, configPath string) {
 		serverStart = len(head)
 	}
 
-	// A --config in the post-separator tail is unambiguously ours, in either
-	// spelling, because the separator already ended the server command. Only
-	// the tail is scanned: a --config appearing in the server's own arguments
-	// belongs to the server.
+	// A --config after `--` is ours since the separator ended the server command.
 	tailArgs, tailConfig := splitTailConfig(tail)
 	if tailConfig != "" {
 		configPath = tailConfig
@@ -534,7 +507,6 @@ func splitMCPAddArgs(args []string) (serverArgs []string, configPath string) {
 	return serverArgs, configPath
 }
 
-// splitTailConfig pulls a trailing --config out of the post-separator tail.
 func splitTailConfig(tail []string) (rest []string, configPath string) {
 	for i := 0; i < len(tail); i++ {
 		a := tail[i]
@@ -561,12 +533,10 @@ func indexOfString(haystack []string, needle string) int {
 	return -1
 }
 
-// removeAt deletes one index.
 func removeAt(args []string, i int) []string {
 	return append(args[:i:i], args[i+1:]...)
 }
 
-// removeSlice deletes the [from, to) range.
 func removeSlice(args []string, from, to int) []string {
 	out := make([]string, 0, len(args)-(to-from))
 	out = append(out, args[:from]...)
@@ -733,9 +703,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ %-14s configured (default: %s, %d models known)\n", "anthropic", anthropicCfg.DefaultModel, len(models))
 	}
 
-	// Ask the provider whether it has a token rather than reimplementing the
-	// lookup; otherwise a user who ran `gocode auth copilot` (which saves the
-	// token to a file) is wrongly told they have no credentials.
+	// Ask the provider for token state so `doctor` agrees with actual auth (file tokens included).
 	cp := provider.NewCopilotProvider(cfg.Provider.Copilot)
 	fmt.Println(copilotDoctorLine(cp, ctx, cfg.Provider.Copilot.DefaultModel))
 
@@ -743,11 +711,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// copilotDoctorLine renders the `doctor` status line for Copilot.
-//
-// It asks the provider rather than inspecting the environment, so the reported
-// state always matches what the provider can actually authenticate with.
-// Extracted so the token-availability path is testable without a network call.
+// copilotDoctorLine renders the `doctor` status line; it asks the provider so reported state matches actual auth.
 func copilotDoctorLine(cp *provider.CopilotProvider, ctx context.Context, defaultModel string) string {
 	if !cp.HasToken() {
 		return fmt.Sprintf("⚠ %-14s no GitHub OAuth token (run `gocode auth copilot`, or set $%s)", "copilot", cp.TokenEnvName())

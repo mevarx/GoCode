@@ -5,15 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// nowForTest is a frozen instant so blink cycles cannot make these assertions
-// depend on when the suite happened to run.
+// Frozen instant so blink cycles can't make assertions time-dependent.
 func nowForTest() time.Time { return time.Unix(1_700_000_000, 0) }
 
-// The banner draws a static portrait, and hero() trims rows when the bob is
-// positive, so a portrait built from springs still in flight loses its antenna.
+// Mid-flight bob trims antenna, so portrait must come from rest().
 func TestRestPortraitIsStableAndComplete(t *testing.T) {
 	wantRows := strings.Split(stripANSI(newMascot().rest().hero(nowForTest(), mascotFaceStyles)), "\n")
 	if len(wantRows) < 6 {
@@ -23,8 +21,7 @@ func TestRestPortraitIsStableAndComplete(t *testing.T) {
 		t.Errorf("portrait is missing its antenna tip; first row is %q", wantRows[0])
 	}
 
-	// Repeated calls must be byte-identical: no dependence on time or on how
-	// many frames have elapsed.
+	// Repeated calls must be byte-identical.
 	for i := 0; i < 5; i++ {
 		got := strings.Split(stripANSI(newMascot().rest().hero(nowForTest(), mascotFaceStyles)), "\n")
 		if strings.Join(got, "\n") != strings.Join(wantRows, "\n") {
@@ -32,9 +29,7 @@ func TestRestPortraitIsStableAndComplete(t *testing.T) {
 		}
 	}
 
-	// Every row must be the same visible width, or the mascot's right-hand
-	// border drifts. Measure display cells, not runes: the face glyphs are
-	// East Asian Ambiguous width, so the two disagree.
+	// Measure display cells, not runes: face glyphs are ambiguous width.
 	base := lipgloss.Width(stripANSI(wantRows[len(wantRows)-1]))
 	for i, row := range wantRows {
 		if w := lipgloss.Width(stripANSI(row)); w != base {
@@ -43,7 +38,7 @@ func TestRestPortraitIsStableAndComplete(t *testing.T) {
 	}
 }
 
-// rest() must actually neutralise the motion, not just reset the phase.
+// rest() must neutralise motion, not just reset phase.
 func TestRestClearsSpringMotion(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())
@@ -64,8 +59,7 @@ func TestRestClearsSpringMotion(t *testing.T) {
 	}
 }
 
-// Row width must hold at every bob offset, not only at rest: rest() pins the
-// offset to 0, so an assertion using it cannot see the animated paths at all.
+// Row width must hold at every offset, not only at rest.
 func TestHeroRowsAlignAtEveryOffset(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())

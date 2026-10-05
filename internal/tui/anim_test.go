@@ -7,20 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// Layout regressions are invisible in a unit test until the status bar tears,
-// so every width below is measured from real rendered output, never assumed.
+// Widths measured from rendered output, never assumed.
 
 var animANSISeq = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// animVisibleWidth measures the printable cells a styled string occupies.
 func animVisibleWidth(s string) int {
 	return lipgloss.Width(animANSISeq.ReplaceAllString(s, ""))
 }
 
-// animAllStates is the closed set of states the UI can put the mascot in.
 func animAllStates() []mascotState {
 	return []mascotState{mascotIdle, mascotThinking, mascotWorking, mascotSuccess, mascotError}
 }
@@ -51,8 +48,7 @@ func TestSpringConvergesOnTarget(t *testing.T) {
 			if math.Abs(s.value()-tc.target) > 0.01 {
 				t.Errorf("after 400 frames spring is at %v, want %v (within 0.01)", s.value(), tc.target)
 			}
-			// Position alone is not convergence: a spring passing through
-			// the target also matches, so velocity has to have died too.
+			// Must also check velocity; passing through target also matches.
 			if math.Abs(s.vel) > 0.01 {
 				t.Errorf("spring converged in position but is still moving: vel=%v", s.vel)
 			}
@@ -60,9 +56,7 @@ func TestSpringConvergesOnTarget(t *testing.T) {
 	}
 }
 
-// The whole reason for harmonica over a linear ramp: damping below 1 must
-// actually carry the value past the target. If this stops happening the mascot
-// stops reading as alive.
+// Damping <1 must overshoot or mascot stops reading as alive.
 func TestSpringOvershootsWhenUnderDamped(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -185,8 +179,7 @@ func TestBlinkIsClosedWindow(t *testing.T) {
 }
 
 func TestBlinkIsRareAndShort(t *testing.T) {
-	// A blink that never reopens is a mascot with the eyes glued shut; one that
-	// fires constantly is just noise. Both ends are regressions.
+	// Never-reopening and constantly-firing are both regressions.
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	b := newMascot().eyes
 	if b.every <= 0 || b.closed <= 0 {
@@ -196,7 +189,7 @@ func TestBlinkIsRareAndShort(t *testing.T) {
 		t.Errorf("closed window %v is not shorter than the %v cycle", b.closed, b.every)
 	}
 
-	// A blink with no start time never fires, so arm it explicitly.
+	// No start time never fires, so arm explicitly.
 	b.at = start
 	closedSamples := 0
 	const total = 4000
@@ -208,7 +201,7 @@ func TestBlinkIsRareAndShort(t *testing.T) {
 	if closedSamples == 0 {
 		t.Error("blink never closed during the sampled window")
 	}
-	// Sampling at every/100 resolution, closed is roughly closed/every of the time.
+	// Sampling at every/100, closed is roughly closed/every of the time.
 	if closedSamples > total/4 {
 		t.Errorf("eyes were closed for %d of %d samples; blink is too frequent", closedSamples, total)
 	}
@@ -266,8 +259,7 @@ func TestMascotFacesCoverEveryState(t *testing.T) {
 					t.Errorf("%s glyph is empty", part)
 				}
 			}
-			// The thinking face deliberately uses mismatched eyes (◐ vs ◑), so
-			// the invariant is equal cell width rather than equal glyphs.
+			// Thinking eyes differ by design; invariant is equal cell width.
 			if lipgloss.Width(f.left) != lipgloss.Width(f.right) {
 				t.Errorf("eyes differ in width: %q is %d cells, %q is %d",
 					f.left, lipgloss.Width(f.left), f.right, lipgloss.Width(f.right))
@@ -285,7 +277,6 @@ func TestMascotCadenceOrdering(t *testing.T) {
 		})
 	}
 
-	// A smaller interval means a faster animation.
 	if cadence(mascotWorking) >= cadence(mascotIdle) {
 		t.Errorf("working cadence %v must be faster than idle cadence %v",
 			cadence(mascotWorking), cadence(mascotIdle))
@@ -325,17 +316,14 @@ func TestMascotAmplitudeOrdering(t *testing.T) {
 	}
 }
 
-// Every state shares one oscillator rate: what distinguishes a working mascot
-// from an idle one is amplitude. The rate exists only to stay inside the
-// spring's tracking band.
+// States differ by amplitude; rate only stays in tracking band.
 func TestMascotRateStaysInTheTrackingBand(t *testing.T) {
 	m := newMascot()
 	rate := m.rate()
 	if rate <= 0 {
 		t.Fatal("rate must be positive or the mascot never animates")
 	}
-	// Above ~0.05 the bob spring attenuates below one cell and the mascot
-	// quantises to a standstill.
+	// Above ~0.05 the spring attenuates to standstill.
 	if rate > 0.05 {
 		t.Errorf("rate %.3f drives the spring too fast; the mascot stops moving", rate)
 	}
@@ -356,8 +344,7 @@ func TestWaveAtStaysInRange(t *testing.T) {
 	}
 }
 
-// Convention in the source: the wave starts at its LOW extreme (-1) at phase 0
-// and peaks at +1 at phase 0.5, returning to -1 at phase 1.
+// Wave: -1 at 0, +1 at 0.5, -1 at 1.
 func TestWaveAtExtremes(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -380,8 +367,7 @@ func TestWaveAtExtremes(t *testing.T) {
 }
 
 func TestWaveAtIsContinuousAcrossCycleBoundary(t *testing.T) {
-	// step() wraps phase back into [0,1); a discontinuity at the wrap would
-	// show up as a single-frame jerk in the mascot.
+	// Wrap discontinuity would show as single-frame jerk.
 	prev := waveAt(0)
 	for i := 1; i <= 2000; i++ {
 		phase := float64(i%1000) / 1000
@@ -421,8 +407,6 @@ func TestMascotStateTransitionsDoNotPanic(t *testing.T) {
 	states := animAllStates()
 	base := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 
-	// Every ordered pair, then a long run of frames through each, exercising
-	// setState/step/faceFor/inline/hero/cellOffset together.
 	for _, from := range states {
 		for _, to := range states {
 			m := newMascot()
@@ -431,8 +415,7 @@ func TestMascotStateTransitionsDoNotPanic(t *testing.T) {
 			if m.state != to {
 				t.Errorf("setState(%v) left the mascot in %v", to, m.state)
 			}
-			// setState is a documented no-op when the state is unchanged, so
-			// only a real transition is expected to re-arm the blink.
+			// setState no-ops when unchanged, so only transitions re-arm blink.
 			if from != to && !m.eyes.at.Equal(base.Add(100*time.Millisecond)) {
 				t.Errorf("%v→%v did not re-arm the blink, eyes.at=%v", from, to, m.eyes.at)
 			}
@@ -502,8 +485,7 @@ func TestMascotAmplitudeEasesRatherThanSnaps(t *testing.T) {
 func TestMascotBlinkClosesIdleEyes(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	m := newMascot()
-	// setState is a no-op while already idle, so leave idle first: a mascot
-	// that never transitions has no blink start time and never blinks at all.
+	// Must leave idle first or blink never arms.
 	m.setState(mascotWorking, start)
 	m.setState(mascotIdle, start)
 
@@ -519,7 +501,7 @@ func TestMascotBlinkClosesIdleEyes(t *testing.T) {
 	}
 }
 
-// Working states are meant to look focused, not sleepy.
+// Working states look focused, not sleepy.
 func TestMascotDoesNotBlinkWhileWorking(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	m := newMascot()
@@ -534,13 +516,10 @@ func TestMascotDoesNotBlinkWhileWorking(t *testing.T) {
 
 // --- layout ---------------------------------------------------------------
 
-// animInlineWidth is the visible cell width of inline(): the 7-cell mascot plus
-// the one cell of sway travel. Pinned as a constant so a future glyph swap has
-// to update this test deliberately rather than silently reflow the status bar.
+// Pinned so glyph swaps must update test deliberately.
 const animInlineWidth = 8
 
-// The status bar must not reflow mid-animation: inline() occupies a fixed cell
-// width in every state, at every blink phase, under every colour scheme.
+// inline() must hold fixed width across states, blinks, and styles.
 func TestMascotInlineWidthIsConstant(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	styles := []struct {
@@ -562,11 +541,8 @@ func TestMascotInlineWidthIsConstant(t *testing.T) {
 			t.Run(sk.name+"/"+s.String(), func(t *testing.T) {
 				m := newMascot()
 				m.state = s
-				// Arm the blink: setState is a no-op for idle, so a mascot that
-				// never leaves idle would otherwise never close its eyes.
+				// Arm blink; idle-only mascots never close eyes otherwise.
 				m.eyes.at = start
-				// Offsets inside, on the edge of, and outside the closed window,
-				// plus one well clear of any blink.
 				for _, offset := range []time.Duration{0, 10 * time.Millisecond, 109 * time.Millisecond, 110 * time.Millisecond, 3 * time.Second} {
 					for i := 0; i < 30; i++ {
 						now := start.Add(offset + time.Duration(i)*cadence(s))
@@ -584,8 +560,6 @@ func TestMascotInlineWidthIsConstant(t *testing.T) {
 }
 
 func TestMascotInlineWidthIsIdenticalAcrossStates(t *testing.T) {
-	// The strongest form of the invariant: whatever the absolute width turns out
-	// to be, it must be the same for every state and every blink phase.
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	seen := map[int][]mascotState{}
 	for _, s := range animAllStates() {
@@ -631,12 +605,10 @@ func TestPadToCentresWithinWidth(t *testing.T) {
 		want  string
 	}{
 		{name: "already the right width", in: "abcde", width: 5, want: "abcde"},
-		// Odd remainders split evenly: one cell of padding on each side.
 		{name: "centred with an odd remainder", in: "abc", width: 5, want: " abc "},
 		{name: "even remainder splits evenly", in: "ab", width: 6, want: "  ab  "},
 		{name: "empty string", in: "", width: 5, want: "     "},
-		// The mouth is a two-cell presentation form, so padTo has to measure by
-		// cells rather than runes or the row comes out short.
+		// Mouth is two-cell; must measure by cells, not runes.
 		{name: "wide glyph measured by cell", in: "︶", width: 5, want: " ︶  "},
 		{name: "eyes", in: "● ●", width: 5, want: " ● ● "},
 	}
@@ -653,8 +625,7 @@ func TestPadToCentresWithinWidth(t *testing.T) {
 	}
 
 	t.Run("oversized input is returned unchanged", func(t *testing.T) {
-		// padTo documents that oversized input is returned unchanged rather
-		// than truncated, so this pins the documented behaviour.
+		// Pins documented oversized-input behaviour.
 		if got := padTo("abcdefgh", 5); got != "abcdefgh" {
 			t.Errorf("padTo(%q, 5) = %q, want it unchanged", "abcdefgh", got)
 		}
@@ -671,8 +642,7 @@ func TestPadToCentresWithinWidth(t *testing.T) {
 	})
 }
 
-// hero() pads the eye and mouth rows to the same interior width so the right
-// border lines up; the antenna rows above the head are narrower by design.
+// Eye/mouth rows share interior width so right border aligns.
 func TestMascotHeroRowsAlign(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	m := newMascot()
@@ -686,8 +656,7 @@ func TestMascotHeroRowsAlign(t *testing.T) {
 			t.Fatalf("frame %d: hero has %d rows, expected at least 5", i, len(rows))
 		}
 
-		// Every row of the body is the same width, which is what keeps the
-		// right-hand border from drifting between frames.
+		// Same width keeps right border from drifting between frames.
 		body := rows[len(rows)-4:]
 		want := animVisibleWidth(body[0])
 		if want < 9 {

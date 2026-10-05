@@ -86,7 +86,7 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 	ollamaTools := make([]api.Tool, 0, len(tools))
 	for _, ts := range tools {
 		var params api.ToolFunctionParameters
-		if err := json.Unmarshal(ts.Parameters, &params); err != nil {
+		if err := json.Unmarshal(validOrDefaultToolSchema(ts.Parameters), &params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal tool params for %s: %w", ts.Name, err)
 		}
 		ollamaTools = append(ollamaTools, api.Tool{
@@ -123,7 +123,7 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 					argsJSON, err := json.Marshal(tc.Function.Arguments)
 					if err != nil {
 						chunk.Err = fmt.Errorf("failed to marshal tool call args: %w", err)
-						ch <- chunk
+						emitChunk(ctx, ch, chunk)
 						return err
 					}
 					chunk.ToolCalls = append(chunk.ToolCalls, ToolCall{
@@ -134,12 +134,14 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 				}
 			}
 
-			ch <- chunk
+			if !emitChunk(ctx, ch, chunk) {
+				return ctx.Err()
+			}
 			return nil
 		})
 
 		if err != nil {
-			ch <- StreamChunk{Err: err, Done: true}
+			emitChunk(ctx, ch, StreamChunk{Err: err, Done: true})
 		}
 	}()
 

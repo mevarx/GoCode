@@ -1,12 +1,12 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
+	"charm.land/lipgloss/v2"
 )
 
-// ModelItem represents a selectable model item in the fuzzy picker.
+// ModelItem is a selectable model in the fuzzy picker.
 type ModelItem struct {
 	Provider string
 	Model    string
@@ -16,23 +16,17 @@ func (i ModelItem) Title() string       { return i.Model }
 func (i ModelItem) Description() string { return "Provider: " + i.Provider }
 func (i ModelItem) FilterValue() string { return i.Provider + " " + i.Model }
 
-// Picker delegate geometry. The list measures its text column from
-// NormalTitle's padding, and the selected row is indented by its border instead,
-// so the two must stay in lockstep or the cursor jumps between lines.
+// NormalTitle padding and selected-row border must stay in lockstep or cursor jumps.
 const (
-	// pickerRowPad is the indent of unselected row text.
 	pickerRowPad = 2
-	// pickerSelectedPad is one narrower than pickerRowPad, because the selected
-	// row spends that cell on its border rule. These two must sum to the same
-	// total or the cursor makes the text jump sideways on every row change.
+	// One narrower: selected row spends a cell on border.
 	pickerSelectedPad = pickerRowPad - 1
-	// pickerFramePad aligns the title, status and help rows with row text.
+	// Aligns title, status and help rows with row text.
 	pickerFramePad = 2
 )
 
 var (
-	// Unselected rows are body text, so they recede and the cursor carries the
-	// eye.
+	// Body text so cursor carries the eye.
 	pickerItemTitleStyle = lipgloss.NewStyle().
 				Foreground(colorText).
 				Padding(0, 0, 0, pickerRowPad)
@@ -40,9 +34,7 @@ var (
 				Foreground(colorMutedFg).
 				Padding(0, 0, 0, pickerRowPad)
 
-	// The cursor is marked by a left rule rather than a background wash: a
-	// filled row would tint the text and fight the fuzzy-match highlighting
-	// layered on top of it.
+	// Left rule, not fill: fill would fight fuzzy-match highlighting.
 	pickerSelectedTitleStyle = lipgloss.NewStyle().
 					Border(lipgloss.NormalBorder(), false, false, false, true).
 					BorderForeground(colorAccent).
@@ -53,8 +45,7 @@ var (
 				Bold(false).
 				Foreground(colorMutedFg)
 
-	// Filter matches are the highlight colour rather than the cursor's accent,
-	// so "where did it match" stays legible even on the selected row.
+	// Highlight hue, not accent, so matches stay legible on selected row.
 	pickerFilterMatchStyle = lipgloss.NewStyle().
 				Foreground(colorHighlight).
 				Underline(true)
@@ -81,8 +72,6 @@ var (
 			Foreground(colorMutedFg)
 )
 
-// pickerDelegate builds the row renderer. Left borders, not fills or colour
-// swaps alone, signal selection so the row's fuzzy-match highlighting survives.
 func pickerDelegate() list.DefaultDelegate {
 	delegate := list.NewDefaultDelegate()
 
@@ -97,12 +86,9 @@ func pickerDelegate() list.DefaultDelegate {
 	return delegate
 }
 
-// NewModelPicker creates and configures the bubbles/list model picker. Its
-// caller frames it with modalOverlayStyle, so it draws no border of its own.
+// Caller frames with modalOverlayStyle, so no border here.
 func NewModelPicker(items []list.Item, width, height int) list.Model {
-	// The caller re-sizes the picker on every window resize, so these clamps are
-	// only the initial bounds: wide enough for a provider name plus model id,
-	// short enough that a long model list still fits beside the modal padding.
+	// Only initial bounds; caller re-sizes on every window resize.
 	w := width - 10
 	if w > 60 {
 		w = 60
@@ -123,18 +109,22 @@ func NewModelPicker(items []list.Item, width, height int) list.Model {
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 
-	// Naming the item type turns the status bar from "2 items" into "2 models",
-	// and makes the empty state read "No models." instead of "No items.".
 	l.SetStatusBarItemName("model", "models")
 
-	// The placeholder is what a user sees when they open the filter with nothing
-	// typed; without it the prompt sits empty and looks broken.
+	// Empty prompt looks broken without it.
 	l.FilterInput.Placeholder = "type to filter by provider or model"
-	l.FilterInput.PlaceholderStyle = pickerPlaceholderStyle
+
+	// v2 Styles() returns a copy, so write back via SetStyles.
+	filterStyles := l.FilterInput.Styles()
+	filterStyles.Focused.Placeholder = pickerPlaceholderStyle
+	filterStyles.Blurred.Placeholder = pickerPlaceholderStyle
+	l.FilterInput.SetStyles(filterStyles)
 
 	l.Styles.Title = pickerTitleStyle
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, pickerFramePad)
-	l.Styles.FilterPrompt = pickerFilterPromptStyle
+	// Same colour in both states so prompt doesn't shift on focus.
+	l.Styles.Filter.Focused.Prompt = pickerFilterPromptStyle
+	l.Styles.Filter.Blurred.Prompt = pickerFilterPromptStyle
 	l.Styles.NoItems = pickerNoItemsStyle
 	l.Styles.StatusBar = lipgloss.NewStyle().Foreground(colorMutedFg).Padding(0, 0, 1, pickerFramePad)
 	l.Styles.StatusEmpty = pickerNoItemsStyle
@@ -146,8 +136,7 @@ func NewModelPicker(items []list.Item, width, height int) list.Model {
 	l.Help.Styles.FullKey = pickerHelpStyle.Bold(true)
 	l.Help.Styles.FullDesc = pickerHelpStyle
 
-	// Surface the select action, since the list's own help omits it and the
-	// picker is dismissed the moment Enter is pressed.
+	// List help omits select action, so surface it.
 	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),

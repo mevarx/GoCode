@@ -36,7 +36,6 @@ func TestCodeSearchTool_BasicSearch(t *testing.T) {
 
 	tool := &CodeSearchTool{WorkspaceRoot: dir}
 
-	// Case-insensitive search should find both
 	args, _ := json.Marshal(codeSearchArgs{Query: "hello"})
 	res, err := tool.Execute(context.Background(), args)
 	if err != nil {
@@ -49,7 +48,6 @@ func TestCodeSearchTool_BasicSearch(t *testing.T) {
 		t.Errorf("expected matches in both files, got:\n%s", res.Output)
 	}
 
-	// Case-sensitive search should only match lowercase
 	argsCS, _ := json.Marshal(codeSearchArgs{Query: "Hello", CaseSensitive: true})
 	resCS, err := tool.Execute(context.Background(), argsCS)
 	if err != nil || resCS.Error != "" {

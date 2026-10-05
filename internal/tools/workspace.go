@@ -4,14 +4,108 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-// ValidatePath ensures that the requested path resolves to a location within
-// the workspace root. It converts relative paths to absolute, cleans them,
-// evaluates symlinks, and rejects any path that escapes the workspace boundary.
-//
-// Returns the cleaned absolute path if valid.
+// isCaseInsensitiveFS reports whether the OS resolves filenames case-insensitively.
+func isCaseInsensitiveFS() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
+
+// rejectNormalisationForms refuses spellings the OS opens differently than named (ADS, trailing space/dot).
+// SECURITY: these spellings defeat name-based sensitive matching, so they are rejected outright.
+func rejectNormalisationForms(path string) error {
+	if strings.Contains(path, "::") {
+		return fmt.Errorf("alternate data stream paths are not allowed: %s", path)
+	}
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == "" || part == "." || part == ".." {
+			continue
+		}
+		if idx := strings.Index(part, ":"); idx >= 0 {
+			// A drive letter ("D:") is fine; other colons mark a stream form.
+			if !(idx == 1 && len(part) == 2) {
+				return fmt.Errorf("alternate data stream paths are not allowed: %s", path)
+			}
+		}
+		if strings.HasSuffix(part, " ") {
+			return fmt.Errorf("trailing-space path components are not allowed: %s", path)
+		}
+		if strings.HasSuffix(part, ".") {
+			return fmt.Errorf("trailing-dot path components are not allowed: %s", path)
+		}
+	}
+	return nil
+}
+
+// canonicalPathForSensitiveCheck returns the spelling the filesystem will open, case-folded where needed.
+func canonicalPathForSensitiveCheck(path string) string {
+	p := filepath.Clean(path)
+	if isCaseInsensitiveFS() {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
+// CheckSensitiveFile rejects normalisation tricks, then applies ignore and case-folded sensitive checks.
+func CheckSensitiveFile(m *ignore.SensitiveMatcher, path string, isDir bool) (bool, string, error) {
+	if err := rejectNormalisationForms(path); err != nil {
+		return true, "", err
+	}
+	if m == nil {
+		return false, "", nil
+	}
+	if m.IsIgnored(path, isDir) {
+		return true, "file is ignored by ignore rules (.gocodeignore/.gitignore)", nil
+	}
+	if pattern := m.IsSensitive(canonicalPathForSensitiveCheck(path)); pattern != "" {
+		return true, `access denied: matches sensitive file pattern "` + pattern + `"`, nil
+	}
+	return false, "", nil
+}
+
+// SensitiveIdentitySet returns FileInfo of blocked files. SECURITY: hardlink aliases match by identity.
+// Callers filter candidates by identity instead of by name.
+func SensitiveIdentitySet(root string, m *ignore.SensitiveMatcher) []os.FileInfo {
+	var set []os.FileInfo
+	if root == "" || m == nil {
+		return nil
+	}
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		blocked, _, err := CheckSensitiveFile(m, path, false)
+		if blocked || err != nil {
+			if info, statErr := os.Stat(path); statErr == nil {
+				set = append(set, info)
+			}
+		}
+		return nil
+	})
+	return set
+}
+
+// IsBlockedByIdentity reports whether info is SameFile-equal to any entry in set.
+func IsBlockedByIdentity(set []os.FileInfo, info os.FileInfo) bool {
+	for _, fi := range set {
+		if os.SameFile(fi, info) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidatePath ensures the requested path resolves inside the workspace root. Returns the absolute path.
 func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is not configured")
@@ -20,17 +114,14 @@ func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 	if requestedPath == "" {
 		return "", fmt.Errorf("path cannot be empty")
 	}
-	// Treat both slash styles as separators so traversal checks behave the same
-	// when paths come from prompts or configuration created on another OS.
+	// Treat both slash styles as separators for cross-OS paths.
 	requestedPath = strings.ReplaceAll(requestedPath, "\\", string(filepath.Separator))
 
-	// Ensure workspace root is absolute.
 	absRoot, err := filepath.Abs(workspaceRoot)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve workspace root: %w", err)
 	}
 
-	// Resolve the requested path relative to the workspace root.
 	var absPath string
 	if filepath.IsAbs(requestedPath) {
 		absPath = filepath.Clean(requestedPath)
@@ -38,13 +129,16 @@ func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 		absPath = filepath.Clean(filepath.Join(absRoot, requestedPath))
 	}
 
-	// First check: the cleaned path must be within the workspace.
 	if err := checkPathWithinRoot(absRoot, absPath); err != nil {
 		return "", err
 	}
 
-	// Resolve the nearest existing ancestor so new paths remain comparable with
-	// the canonical workspace path even when the workspace itself is a symlink.
+	// SECURITY: reject ADS/trailing space-dot spellings that bypass sensitive checks.
+	if err := rejectNormalisationForms(absPath); err != nil {
+		return "", err
+	}
+
+	// Resolve the nearest existing ancestor so symlinked workspaces stay comparable.
 	resolvedPath, err := resolveExistingAncestor(absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve symlinks for %s: %w", requestedPath, err)
@@ -54,7 +148,6 @@ func ValidatePath(workspaceRoot, requestedPath string) (string, error) {
 		return "", fmt.Errorf("failed to resolve workspace root symlinks: %w", err)
 	}
 
-	// The resolved (symlink-resolved) path must also be within the workspace.
 	if err := checkPathWithinRoot(resolvedRoot, resolvedPath); err != nil {
 		return "", fmt.Errorf("symlink %s resolves outside workspace: %w", requestedPath, err)
 	}
@@ -90,18 +183,15 @@ func resolveExistingAncestor(path string) (string, error) {
 	}
 }
 
-// checkPathWithinRoot verifies that absPath is at or under absRoot.
 func checkPathWithinRoot(absRoot, absPath string) error {
 	// Normalize for comparison — on Windows, drive letter case may differ.
 	normRoot := normalizeForComparison(absRoot)
 	normPath := normalizeForComparison(absPath)
 
-	// The path must equal the root or be a child of it.
 	if normPath == normRoot {
 		return nil
 	}
 
-	// Ensure the root ends with a separator for prefix check.
 	rootPrefix := normRoot
 	if !strings.HasSuffix(rootPrefix, string(filepath.Separator)) {
 		rootPrefix += string(filepath.Separator)
@@ -114,11 +204,9 @@ func checkPathWithinRoot(absRoot, absPath string) error {
 	return nil
 }
 
-// normalizeForComparison returns a path suitable for case-insensitive comparison
-// on Windows or exact comparison on other platforms.
+// normalizeForComparison cleans and lowercases on Windows for case-insensitive comparison.
 func normalizeForComparison(p string) string {
 	p = filepath.Clean(p)
-	// On Windows, normalize to lowercase for case-insensitive comparison.
 	if os.PathSeparator == '\\' {
 		p = strings.ToLower(p)
 	}

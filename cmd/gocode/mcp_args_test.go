@@ -2,9 +2,7 @@ package main
 
 import "testing"
 
-// Server commands routinely take their own flags (`npx -y ...`), so cobra must
-// not parse them. GoCode's flags go before the server name; everything after
-// the first positional belongs to the server.
+// Server commands take their own flags, so cobra must not parse them; GoCode's flags precede the server name.
 func TestSplitMCPAddArgs(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -82,7 +80,6 @@ func TestSplitMCPAddArgs(t *testing.T) {
 	}
 }
 
-// The separator must never leak into the server's argument list.
 func TestSplitMCPAddArgsDropsSeparator(t *testing.T) {
 	server, _ := splitMCPAddArgs([]string{"sep", "docker", "--", "run", "--rm"})
 	for _, a := range server {

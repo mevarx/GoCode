@@ -3,12 +3,10 @@ package tui
 import (
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// A mascot that does not move is not an animation. Springs can stay finite,
-// faces correct and tests green while every frame renders identically, so these
-// assertions measure the rendered motion instead.
+// Springs can stay finite while every frame renders identically, so measure rendered motion.
 func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 	for _, state := range []mascotState{mascotIdle, mascotThinking, mascotWorking} {
 		t.Run(state.String(), func(t *testing.T) {
@@ -28,9 +26,7 @@ func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 				}
 			}
 
-			// Working must clear a whole cell, or the motion never reaches
-			// the screen. Thinking clears half of one, so its cell flips are
-			// the visible part of a subtler motion.
+			// Working must clear a whole cell; thinking clears half.
 			wantPeak := 1.0
 			if state == mascotThinking {
 				wantPeak = 0.5
@@ -41,9 +37,7 @@ func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 			if state == mascotThinking && peak < wantPeak {
 				t.Errorf("thinking bob peaks at %.2f cells, want >= %.2f", peak, wantPeak)
 			}
-			// Idle is deliberately sub-cell: a twitchy mascot while the user
-			// is reading output is worse than a still one, so only the peak
-			// is bounded here, not the cell changes.
+			// Idle is deliberately sub-cell; only peak is bounded here.
 			if state != mascotIdle && moved == 0 {
 				t.Errorf("%v mascot never changed cell in %d frames", state, frames)
 			}
@@ -51,8 +45,7 @@ func TestBobActuallyMovesEnoughToQuantize(t *testing.T) {
 	}
 }
 
-// Working must animate more than idle, which is what makes the state readable
-// at a glance without reading the status text.
+// Working must animate more than idle to read at a glance.
 func TestWorkingAnimatesMoreThanIdle(t *testing.T) {
 	peak := func(state mascotState) float64 {
 		m := newMascot()
@@ -73,7 +66,7 @@ func TestWorkingAnimatesMoreThanIdle(t *testing.T) {
 	}
 }
 
-// The status bar must not reflow while the sprite sways sideways.
+// Bar must not reflow while sprite sways sideways.
 func TestInlineWidthSurvivesSway(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())

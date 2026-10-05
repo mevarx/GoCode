@@ -11,13 +11,7 @@ import (
 	"github.com/mevarx/GoCode/internal/provider"
 )
 
-// isolateConfigDir points every platform-specific config path at a temp
-// directory so a test that reads or writes the saved Copilot token cannot see
-// — or clobber — the developer's real one.
-//
-// config.ConfigDir() uses APPDATA on Windows and XDG_CONFIG_HOME / $HOME
-// elsewhere, so all of them have to be redirected. Setting only APPDATA left
-// macOS and Linux tests writing into ~/.config/gocode.
+// isolateConfigDir redirects all config paths to temp dir so tests never touch the real token.
 func isolateConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,12 +24,7 @@ func isolateConfigDir(t *testing.T) string {
 	return dir
 }
 
-// A user who completed `gocode auth copilot` has a token saved on disk.
-// `doctor` must not tell them they have none.
-//
-// This was a real regression: doctor checked only the environment variable
-// while the provider also reads the saved file, so the health check disagreed
-// with the provider that actually does the work.
+// A saved device-flow token must count; doctor once checked only env vars and disagreed with the provider.
 func TestDoctorReportsCopilotTokenFromSavedFile(t *testing.T) {
 	t.Setenv("GOCODE_TEST_COPILOT_TOKEN", "")
 	isolateConfigDir(t)
@@ -53,9 +42,7 @@ func TestDoctorReportsCopilotTokenFromSavedFile(t *testing.T) {
 		DefaultModel:  "gpt-4.1",
 	})
 
-	// A cancelled context makes the reachability probe fail immediately
-	// without dialling out. The assertion is about token detection, not
-	// network success.
+	// Cancelled context fails the probe without dialling out; assertion is about token detection.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

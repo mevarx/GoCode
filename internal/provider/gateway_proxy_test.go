@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mevarx/GoCode/internal/config"
 )
@@ -113,6 +114,162 @@ func TestGatewayProxyProvider_Stream(t *testing.T) {
 	}
 }
 
+// Non-SSE 200 must surface as error with body, not empty stream.
+func TestGatewayProxyProvider_NonSSE200ResponseIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintln(w, `<html><body>quota exceeded</body></html>`)
+	}))
+	defer server.Close()
+
+	provider := NewGatewayProxyProvider("omniroute", config.GatewayConfig{BaseURL: server.URL})
+	_, err := provider.Stream(context.Background(), "auto", []Message{{Role: "user", Content: "hi"}}, nil)
+	if err == nil {
+		t.Fatal("expected an error for a non-SSE 200 response")
+	}
+	if !strings.Contains(err.Error(), "non-SSE") || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Errorf("error should name the content-type and include the body snippet, got %q", err.Error())
+	}
+}
+
+// In-band {"error":...} must surface as chunk error, not empty success.
+func TestGatewayProxyProvider_InBandErrorPayloadSurfaces(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(w, `data: {"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}`)
+	}))
+	defer server.Close()
+
+	provider := NewGatewayProxyProvider("omniroute", config.GatewayConfig{BaseURL: server.URL})
+	ch, err := provider.Stream(context.Background(), "auto", []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gotErr error
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "quota") {
+		t.Errorf("expected the in-band error message, got %v", gotErr)
+	}
+}
+
+// New id at same index starts new call; otherwise args merge/corrupt.
+func TestStreamOpenAISSEToolCallIDReset(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"write_file","arguments":"{\"path\":\"a\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_b","function":{"name":"write_file","arguments":"{\"path\":\"b\"}"}}]}}]}`,
+		`data: {"choices":[{"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	ch := make(chan StreamChunk, 16)
+	go func() {
+		defer close(ch)
+		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, "test")
+	}()
+
+	var calls []ToolCall
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 distinct tool calls, got %d: %+v", len(calls), calls)
+	}
+	ids := map[string]string{calls[0].ID: string(calls[0].Args), calls[1].ID: string(calls[1].Args)}
+	if ids["call_a"] != `{"path":"a"}` || ids["call_b"] != `{"path":"b"}` {
+		t.Errorf("arguments were merged or corrupted: %v", ids)
+	}
+}
+
+func TestStreamOpenAISSEFinishReasonLengthIsTruncation(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"partial answer"}}]}`,
+		`data: {"choices":[{"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	ch := make(chan StreamChunk, 16)
+	go func() {
+		defer close(ch)
+		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, "test")
+	}()
+
+	var gotErr error
+	var gotFinish string
+	var text string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		if chunk.FinishReason != "" {
+			gotFinish = chunk.FinishReason
+		}
+		text += chunk.Delta
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "length") {
+		t.Errorf("expected truncation error mentioning length, got %v", gotErr)
+	}
+	if gotFinish != "length" {
+		t.Errorf("expected FinishReason length, got %q", gotFinish)
+	}
+	if text != "partial answer" {
+		t.Errorf("content chunks must still be delivered before the truncation error, got %q", text)
+	}
+}
+
+// Cancel must close channel without leaking goroutine.
+func TestStreamOpenAISSECancelAbortsCleanly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for i := 0; ; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk%d\"}}]}\n\n", i)
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	provider := NewGatewayProxyProvider("omniroute", config.GatewayConfig{BaseURL: server.URL})
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := provider.Stream(ctx, "auto", []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	<-ch // read one chunk
+	cancel()
+
+	select {
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream channel was not closed after cancellation; goroutine leak")
+	case <-ch:
+		// drain until closed
+		for range ch {
+		}
+	}
+}
+
+func TestBuildOpenAIToolsDefaultsNullSchema(t *testing.T) {
+	tools := buildOpenAITools([]ToolSpec{{Name: "t", Description: "d", Parameters: nil}})
+	if got := string(tools[0].Function.Parameters); !strings.Contains(got, `"type":"object"`) {
+		t.Errorf("expected defaulted parameters schema, got %q", got)
+	}
+}
+
 func TestGatewayProxyProvider_StreamMultipleToolCallsOrdered(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -154,7 +311,6 @@ func TestGatewayProxyProvider_StreamMultipleToolCallsOrdered(t *testing.T) {
 		t.Fatalf("expected 2 assembled tool calls, got %d", len(assembledTools))
 	}
 
-	// Must be ordered by index: index 0 first, index 1 second
 	if assembledTools[0].ID != "call_a" || assembledTools[0].Name != "tool_a" {
 		t.Errorf("expected tool 0 to be call_a, got %+v", assembledTools[0])
 	}

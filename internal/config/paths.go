@@ -58,9 +58,7 @@ func ConfigFilePath() string {
 	return filepath.Join(ConfigDir(), "config.toml")
 }
 
-// CopilotTokenPath is where `gocode auth copilot` stores the GitHub OAuth
-// token. It lives in the config dir (not the data dir) because it is a
-// credential, and is written with owner-only permissions.
+// CopilotTokenPath stores the GitHub OAuth token in the config dir (a credential, written owner-only).
 func CopilotTokenPath() string {
 	return filepath.Join(ConfigDir(), "copilot_token")
 }

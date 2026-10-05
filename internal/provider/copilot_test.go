@@ -17,9 +17,7 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// newCopilotTestProvider builds a Copilot provider whose OAuth exchange and
-// chat endpoints both live on one local test server, and reports how many
-// times the token exchange ran.
+// Points exchange and chat at one test server; returns exchange count.
 func newCopilotTestProvider(t *testing.T, exchange http.HandlerFunc, chat http.HandlerFunc) (*CopilotProvider, *int32) {
 	t.Helper()
 
@@ -31,7 +29,17 @@ func newCopilotTestProvider(t *testing.T, exchange http.HandlerFunc, chat http.H
 
 	mux.HandleFunc("/copilot_internal/v2/token", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&exchangeCount, 1)
-		exchange(w, r)
+		// Buffer exchange so endpoints.api can be rewritten to this server.
+		rec := httptest.NewRecorder()
+		exchange(rec, r)
+		body := strings.ReplaceAll(rec.Body.String(), "https://api.githubcopilot.com", server.URL)
+		for k, vs := range rec.Header() {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(rec.Code)
+		fmt.Fprint(w, body)
 	})
 	mux.HandleFunc("/chat/completions", chat)
 	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
@@ -47,9 +55,7 @@ func newCopilotTestProvider(t *testing.T, exchange http.HandlerFunc, chat http.H
 	})
 	p.client = server.Client()
 	p.tokenURL = server.URL + "/copilot_internal/v2/token"
-	// Permit this test server and real GitHub hosts through the allowlist.
-	// Tests that only assert caching pass the real base URL but never call
-	// it; tests that assert the allowlist leave the production predicate.
+	// Allow test server plus real hosts; caching tests pass real URL but never call it.
 	p.allowAPIURL = func(u *url.URL) bool {
 		if u != nil && u.Host == server.Listener.Addr().String() {
 			return true
@@ -61,8 +67,6 @@ func newCopilotTestProvider(t *testing.T, exchange http.HandlerFunc, chat http.H
 	return p, &exchangeCount
 }
 
-// tokenExchangeOK is a valid exchange response pointing back at the test
-// server. apiBase must be filled in by the caller.
 func tokenExchangeOK(apiBase string, expiresAt time.Time) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -94,7 +98,7 @@ func TestCopilotTokenExchangeUsesOAuthTokenAndEditorHeaders(t *testing.T) {
 	serverURL = p.tokenURL
 
 	if _, err := p.Models(context.Background()); err != nil {
-		t.Fatalf("Models should fall back rather than fail, got %v", err)
+		t.Fatalf("Models should succeed against the rewritten exchange target, got %v", err)
 	}
 	_ = serverURL
 
@@ -229,13 +233,7 @@ func TestCopilotStreamSendsBearerJWTToDynamicBaseURL(t *testing.T) {
 	}
 }
 
-// isolateConfigDir redirects every platform-specific config path at a temp
-// directory so a test touching the saved Copilot token cannot read or clobber
-// the real one.
-//
-// config.ConfigDir() uses APPDATA on Windows and XDG_CONFIG_HOME / $HOME
-// elsewhere. Setting only APPDATA meant the macOS and Linux runs wrote a token
-// into ~/.config/gocode, which sibling tests then read back.
+// Redirect all platform config paths to temp dir; only APPDATA leaked to ~/.config on macOS/Linux.
 func isolateConfigDir(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -261,15 +259,11 @@ func TestCopilotErrorsWhenNoOAuthToken(t *testing.T) {
 	}
 }
 
-// HasToken must agree with what the provider will actually use. `gocode doctor`
-// consults it, and it previously reported "no token" to users who had saved
-// one with `gocode auth copilot` because it only looked at the environment.
+// HasToken must see the saved file, not just env.
 func TestCopilotHasTokenSeesSavedTokenFile(t *testing.T) {
 	envName := "GOCODE_TEST_COPILOT_TOKEN"
 	t.Setenv(envName, "")
 
-	// Point the saved-token lookup at a temp dir by setting the platform
-	// config dir, then write a token the way `gocode auth copilot` does.
 	isolateConfigDir(t)
 
 	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: envName})
@@ -288,14 +282,13 @@ func TestCopilotHasTokenSeesSavedTokenFile(t *testing.T) {
 	if !p.HasToken() {
 		t.Error("HasToken must see a token saved by `gocode auth copilot`")
 	}
-	// Whitespace around the saved token must not defeat the check.
+	// Saved token must be trimmed.
 	if got := p.oauthToken(); got != "ghu_saved_token_value" {
 		t.Errorf("saved token not trimmed: got %q", got)
 	}
 }
 
-// The environment variable wins over the saved file, so a user can override a
-// stale login without re-running the device flow.
+// Env wins over saved file so stale login can be overridden without device flow.
 func TestCopilotEnvTokenOverridesSavedFile(t *testing.T) {
 	envName := "GOCODE_TEST_COPILOT_TOKEN"
 	isolateConfigDir(t)
@@ -318,9 +311,7 @@ func TestCopilotEnvTokenOverridesSavedFile(t *testing.T) {
 	}
 }
 
-// The base URL in the exchange response is untrusted input. Sending the Copilot
-// JWT to an attacker-chosen host would leak the credential, so an untrusted
-// host must be rejected rather than used.
+// Exchange base URL is untrusted; JWT to attacker host would leak credential, must reject.
 func TestCopilotRejectsUntrustedAPIBaseURL(t *testing.T) {
 	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("the token must never be sent to an untrusted host")
@@ -377,8 +368,7 @@ func TestValidCopilotAPIURL(t *testing.T) {
 		}
 	}
 
-	// Each of these is either not GitHub-owned, not HTTPS, or uses a trick
-	// that a naive suffix check would let through.
+	// Each defeats a naive check: non-GitHub host, non-HTTPS, or suffix trick.
 	untrusted := []string{
 		"https://evil.com",
 		"https://api.githubcopilot.com.evil.com",
@@ -389,7 +379,7 @@ func TestValidCopilotAPIURL(t *testing.T) {
 		"https://127.0.0.1",
 		"https://localhost",
 		"https://user:pass@api.githubcopilot.com",
-		// A query or fragment would swallow the appended /chat/completions path.
+		// Query/fragment would swallow the appended /chat/completions path.
 		"https://api.githubcopilot.com?x=1",
 		"https://api.githubcopilot.com#frag",
 	}
@@ -407,6 +397,81 @@ func TestResolveCopilotAPIFallsBackWhenAbsent(t *testing.T) {
 	}
 	if got != copilotFallbackAPI {
 		t.Errorf("expected fallback %q, got %q", copilotFallbackAPI, got)
+	}
+}
+
+func TestCopilotModelsFailureSurfaced(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/copilot_internal/v2/token", tokenExchangeOK(server.URL, time.Now().Add(30*time.Minute)))
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, `{"error":"upstream down"}`)
+	})
+
+	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: "GOCODE_TEST_COPILOT_TOKEN"})
+	p.client = server.Client()
+	p.tokenURL = server.URL + "/copilot_internal/v2/token"
+	p.allowAPIURL = func(u *url.URL) bool { return u != nil && u.Host == server.Listener.Addr().String() }
+	t.Setenv("GOCODE_TEST_COPILOT_TOKEN", "ghu_test_token_value")
+
+	if _, err := p.Models(context.Background()); err == nil {
+		t.Fatal("Models must surface a failure instead of returning a canned list")
+	}
+}
+
+// 401 must invalidate cached JWT and recover with one re-exchange + retry.
+func TestCopilotStream401InvalidatesCachedToken(t *testing.T) {
+	var chatCalls int32
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	var exchangeCount int32
+	mux.HandleFunc("/copilot_internal/v2/token", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&exchangeCount, 1)
+		tokenExchangeOK(server.URL, time.Now().Add(30*time.Minute))(w, r)
+	})
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&chatCalls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintln(w, `{"error":"token expired"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`)
+		fmt.Fprintln(w, `data: [DONE]`)
+	})
+
+	p := NewCopilotProvider(config.CopilotConfig{OAuthTokenEnv: "GOCODE_TEST_COPILOT_TOKEN"})
+	p.client = server.Client()
+	p.tokenURL = server.URL + "/copilot_internal/v2/token"
+	p.allowAPIURL = func(u *url.URL) bool { return u != nil && u.Host == server.Listener.Addr().String() }
+	t.Setenv("GOCODE_TEST_COPILOT_TOKEN", "ghu_test_token_value")
+
+	ch, err := p.Stream(context.Background(), "gpt-4.1", []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		text += chunk.Delta
+	}
+	if text != "ok" {
+		t.Errorf("expected the retried stream, got %q", text)
+	}
+	if got := atomic.LoadInt32(&exchangeCount); got != 2 {
+		t.Errorf("expected 2 token exchanges after the 401, got %d", got)
+	}
+	if got := atomic.LoadInt32(&chatCalls); got != 2 {
+		t.Errorf("expected the chat request to be retried once, got %d", got)
 	}
 }
 
@@ -454,8 +519,7 @@ func TestCopilotRejectsEmptyToken(t *testing.T) {
 	}
 }
 
-// Reasoning deltas must survive the shared SSE parser, because MiniMax,
-// DeepSeek and Copilot all stream thinking separately from the answer.
+// Reasoning streams separately from answer; parser must preserve it.
 func TestStreamOpenAISSEPreservesReasoning(t *testing.T) {
 	body := strings.Join([]string{
 		`: keepalive`,
@@ -468,7 +532,7 @@ func TestStreamOpenAISSEPreservesReasoning(t *testing.T) {
 	ch := make(chan StreamChunk, 16)
 	go func() {
 		defer close(ch)
-		streamOpenAISSE(strings.NewReader(body), ch, "test")
+		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, "test")
 	}()
 
 	var text, reasoning string
@@ -495,8 +559,7 @@ func TestStreamOpenAISSEPreservesReasoning(t *testing.T) {
 	}
 }
 
-// buildOpenAIMessages must echo reasoning back on assistant turns; providers
-// document that dropping it breaks multi-turn tool-call continuity.
+// Assistant reasoning must be replayed; dropping it breaks multi-turn continuity.
 func TestBuildOpenAIMessagesReplaysReasoning(t *testing.T) {
 	msgs := buildOpenAIMessages([]Message{
 		{Role: "assistant", Content: "text", ReasoningContent: "chain"},

@@ -4,23 +4,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// mascotState drives the face, the spring constants and the motion cadence.
 type mascotState int
 
 const (
-	// mascotIdle is the resting state between turns.
 	mascotIdle mascotState = iota
-	// mascotThinking covers the gap between a prompt being sent and the first
-	// token arriving — the model is working but has said nothing yet.
+	// Gap between prompt sent and first token arriving.
 	mascotThinking
-	// mascotWorking is an active stream.
 	mascotWorking
-	// mascotSuccess is a turn that finished cleanly.
 	mascotSuccess
-	// mascotError is a turn that failed.
 	mascotError
 )
 
@@ -40,14 +34,11 @@ func (s mascotState) String() string {
 	}
 }
 
-// face is the mascot's expression: two eyes and a mouth.
 type face struct {
 	left, right, mouth string
 }
 
-// faces holds the expression for each state. Every glyph is single-cell so the
-// silhouette never changes width between states; a status bar that reflows
-// mid-animation is unreadable.
+// Every glyph is single-cell so the bar never reflows mid-animation.
 var faces = map[mascotState]face{
 	mascotIdle:     {left: "•", right: "•", mouth: "︶"},
 	mascotThinking: {left: "◐", right: "◑", mouth: "︵"},
@@ -56,45 +47,35 @@ var faces = map[mascotState]face{
 	mascotError:    {left: "×", right: "×", mouth: "︷"},
 }
 
-// mascot is GoCode's character, drawn from box-drawing runes. Spring-driven
-// rather than frame-indexed, so it decelerates instead of snapping between poses.
+// Spring-driven so it decelerates instead of snapping between poses.
 type mascot struct {
 	state mascotState
 
-	// bob is the vertical offset in cells. Under-damped so it overshoots
-	// slightly, which is what makes a hop read as a hop.
-	bob spring
-	// sway is the horizontal offset, gentler than bob.
+	// Vertical offset; under-damped so overshoot reads as a hop.
+	bob  spring
 	sway spring
 
-	// phase advances continuously; oscillating it is what the springs chase.
+	// Phase advances continuously; springs chase it.
 	phase float64
 
-	// amp is the current motion amplitude in cells, eased toward the value
-	// amplitude() reports for the current state so a state change eases in
-	// rather than snapping.
+	// Eased toward amplitude() so state changes ramp instead of snapping.
 	amp float64
 
 	eyes blink
 }
 
-// newMascot builds the mascot at rest.
 func newMascot() mascot {
 	return mascot{
 		state: mascotIdle,
-		// Damping 0.55 is under-damped: it overshoots once and settles, which
-		// reads as weight. At 1.0 the motion would feel like a machine.
+		// 0.55 overshoots once for weight; 1.0 would feel mechanical.
 		bob: newSpring(activeFPS, 5.2, 0.55),
-		// Horizontal motion is slower and tighter; too much sway reads as
-		// drifting rather than alive.
+		// Slower and tighter; too much sway reads as drifting.
 		sway: newSpring(activeFPS, 3.1, 0.7),
 		eyes: blink{every: 4 * time.Second, closed: 110 * time.Millisecond},
 	}
 }
 
-// cadence is the frame interval for a state. Working states animate fast
-// enough to feel responsive; idle is slow so a parked session costs almost
-// nothing.
+// Working is fast to feel responsive; idle is slow so parked sessions cost nothing.
 func cadence(s mascotState) time.Duration {
 	switch s {
 	case mascotWorking:
@@ -106,9 +87,7 @@ func cadence(s mascotState) time.Duration {
 	}
 }
 
-// amplitude is how far the mascot moves, in cells, per state. Idle uses a
-// sub-cell amplitude that rounds to nothing most frames — a mascot frozen at
-// rest is calmer than one always twitching.
+// Idle is sub-cell so rest stays calm instead of twitching.
 func amplitude(s mascotState) float64 {
 	switch s {
 	case mascotWorking:
@@ -120,8 +99,7 @@ func amplitude(s mascotState) float64 {
 	}
 }
 
-// setState moves the mascot to a new state, resetting the blink so a change of
-// expression reads as a reaction rather than a random blink.
+// Resets blink so the new expression reads as a reaction.
 func (m *mascot) setState(s mascotState, now time.Time) {
 	if m.state == s {
 		return
@@ -130,11 +108,7 @@ func (m *mascot) setState(s mascotState, now time.Time) {
 	m.eyes.at = now
 }
 
-// rest returns the mascot at its neutral pose.
-//
-// The banner draws a static portrait, so it must not inherit a mid-flight
-// spring: hero() trims rows when the bob is positive, and a portrait that
-// randomly loses its antenna looks broken.
+// Banner needs a neutral pose; mid-flight bob would trim the antenna.
 func (m mascot) rest() mascot {
 	m.bob.pos, m.bob.vel = 0, 0
 	m.sway.pos, m.sway.vel = 0, 0
@@ -143,23 +117,17 @@ func (m mascot) rest() mascot {
 	return m
 }
 
-// step advances the animation by one frame. It takes the frame's own timestamp
-// rather than reading the clock, so a batched or delayed frame advances the
-// springs by when it was scheduled, not by when it was finally processed.
+// Uses the frame timestamp so delayed frames advance by schedule time, not processing time.
 func (m *mascot) step(now time.Time) {
-	// Arm the blink on the first frame: setState cannot do it because it
-	// no-ops when the state is unchanged.
+	// setState no-ops when unchanged, so arm blink on first frame.
 	if m.eyes.at.IsZero() {
 		m.eyes.at = now
 	}
 
-	// Ease the amplitude toward the target for the current state so switching
-	// states ramps the motion instead of snapping.
+	// Ramp amplitude so state switches don't snap.
 	m.amp += (amplitude(m.state) - m.amp) * amplitudeEaseRate
 
-	// The oscillator runs continuously; the springs chase it. Using a phase
-	// counter rather than a frame index keeps motion smooth when the frame
-	// rate changes between states.
+	// Phase counter keeps motion smooth across frame-rate changes.
 	m.phase += m.rate()
 	if m.phase >= 1 {
 		m.phase -= 1
@@ -170,19 +138,14 @@ func (m *mascot) step(now time.Time) {
 	m.sway.step(m.amp * -wave)
 }
 
-// amplitudeEaseRate is the per-frame fraction by which motion amplitude
-// approaches its target. Lower is gentler.
 const amplitudeEaseRate = 0.12
 
-// rate is the oscillator speed in cycles per frame. Above 0.03 the bob spring
-// stops tracking, quantize() rounds the result to zero, and the mascot freezes
-// while still reporting itself as animating.
+// Above 0.03 the spring stops tracking and the mascot freezes while reporting motion.
 func (m *mascot) rate() float64 {
 	return 0.03
 }
 
-// waveAt maps a 0..1 phase onto a -1..1 triangle: constant slope, sharp sign
-// flip at the corners, no dwell at the extremes. The spring does the smoothing.
+// 0..1 phase to -1..1 triangle; spring does the smoothing.
 func waveAt(phase float64) float64 {
 	t := phase * 2
 	var v float64
@@ -194,12 +157,10 @@ func waveAt(phase float64) float64 {
 	return v*2 - 1
 }
 
-// cellOffset is the mascot's vertical offset in whole terminal cells.
 func (m *mascot) cellOffset() int {
 	return quantize(m.bob.value(), -1, 1)
 }
 
-// faceFor returns the current expression, accounting for blinks.
 func (m *mascot) faceFor(now time.Time) face {
 	f, ok := faces[m.state]
 	if !ok {
@@ -207,22 +168,14 @@ func (m *mascot) faceFor(now time.Time) face {
 	}
 	if m.state == mascotIdle || m.state == mascotThinking {
 		if m.eyes.isClosed(now) {
-			// A flat line, deliberately unlike the curved mouth glyphs: when
-			// eyes and mouth rendered the same shape the mascot looked like it
-			// was grimacing rather than blinking.
+			// Flat line unlike mouth glyphs; matching shapes looked like grimacing.
 			f.left, f.right = "─", "─"
 		}
 	}
 	return f
 }
 
-// inline renders the mascot as a single line, for the status bar.
-//
-// The sprite is 7 cells — "(", two eyes, a space, ")" and the mouth, whose
-// presentation-form glyph measures two — inside a field one cell wider. That
-// spare cell is the sway spring's travel: as it pushes, the pad moves from the
-// right of the mascot to its left, so the field is exactly 8 cells wide in
-// every state and the mascot visibly slides without the bar ever reflowing.
+// 7-cell sprite in an 8-cell field; spare cell is sway travel so the bar never reflows.
 func (m mascot) inline(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 
@@ -240,26 +193,18 @@ func (m mascot) inline(now time.Time, st mascotStyles) string {
 	return b.String()
 }
 
-// hero renders the mascot as a multi-line figure for the startup banner. The
-// antenna tip uses the same bob value as the inline sprite, so the two read as
-// one creature rather than two drawings.
+// Antenna shares inline's bob so both read as one creature.
 func (m mascot) hero(now time.Time, st mascotStyles) string {
 	f := m.faceFor(now)
 	tip := "●"
 
-	// faceWidth is the interior width of the mascot's face. Both the eye row
-	// and the mouth row must fill it exactly or the right border drifts.
+	// Eye and mouth rows must fill it exactly or the right border drifts.
 	const faceWidth = 5
 
-	// total is the width of the face box, including its two-space indent. The
-	// antenna is padded to the same width so the portrait is a clean rectangle
-	// rather than a narrow stalk floating over a wider box.
+	// Antenna padded to same width so portrait stays a clean rectangle.
 	const total = 2 + faceWidth + 2
 
-	// antennaCol is the column the stalk occupies: directly above the ┴ in the
-	// lid, which is the centre of the face box. padTo would centre it within
-	// the whole field including the two-space indent, landing it one cell left
-	// of the joint.
+	// Stalk sits above the ┴ joint; padTo would centre incl. indent and land one cell left.
 	antennaCol := 2 + 1 + (faceWidth-1)/2
 	antennaRow := func(glyph string) string {
 		return strings.Repeat(" ", antennaCol) + glyph +
@@ -269,16 +214,14 @@ func (m mascot) hero(now time.Time, st mascotStyles) string {
 	rows := []string{
 		st.tip.Render(antennaRow(tip)),
 		st.body.Render(antennaRow("│")),
-		// The ┴ is where the antenna meets the lid; without it the stalk
-		// reads as passing through the box rather than into it.
+		// ┴ joint keeps the stalk from reading as passing through the box.
 		st.body.Render("  ╭──┴──╮"),
 		st.body.Render("  │") + st.eye.Render(padTo(f.left+" "+f.right, faceWidth)) + st.body.Render("│"),
 		st.body.Render("  │") + st.mouth.Render(padTo(f.mouth, faceWidth)) + st.body.Render("│"),
 		st.body.Render("  ╰" + strings.Repeat("─", faceWidth) + "╯"),
 	}
 
-	// A rising bob adds a blank row above so the whole figure moves up; a
-	// falling one adds one below, keeping the antenna joint intact either way.
+	// Rising bob pads above, falling pads below, keeping the joint intact.
 	offset := m.cellOffset()
 	blank := padTo("", total)
 	for ; offset > 0; offset-- {
@@ -290,9 +233,7 @@ func (m mascot) hero(now time.Time, st mascotStyles) string {
 	return strings.Join(rows, "\n")
 }
 
-// padTo centres s within width cells. Input wider than width is returned
-// unchanged rather than truncated: the only caller passes single glyphs into a
-// five-cell interior, so silently dropping characters would be worse.
+// Oversized input returns unchanged rather than truncated.
 func padTo(s string, width int) string {
 	n := lipgloss.Width(s)
 	if n >= width {

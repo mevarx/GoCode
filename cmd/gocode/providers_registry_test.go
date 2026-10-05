@@ -12,10 +12,7 @@ import (
 	"github.com/mevarx/GoCode/internal/provider"
 )
 
-// Every name in gatewayProviderNames must resolve to a real, non-empty
-// endpoint. A name added to the list but forgotten in gatewayConfigFor would
-// otherwise register a provider with an empty base URL that fails only at
-// request time, with a confusing "unsupported protocol scheme" error.
+// Every gateway name must resolve to a real endpoint, or failures surface only at request time.
 func TestEveryGatewayProviderResolvesToAnEndpoint(t *testing.T) {
 	cfg := config.DefaultConfig().Provider
 	for _, name := range gatewayProviderNames {
@@ -34,8 +31,7 @@ func TestEveryGatewayProviderResolvesToAnEndpoint(t *testing.T) {
 	}
 }
 
-// isLocalGateway reports whether a base URL points at a local proxy, which
-// serves on loopback and typically needs no credential.
+// isLocalGateway reports loopback URLs, which typically need no credential.
 func isLocalGateway(baseURL string) bool {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -78,9 +74,7 @@ func TestNewProvidersAreRegistered(t *testing.T) {
 	}
 }
 
-// A custom provider whose name later became built-in must keep working.
-// Before v0.5.2 a user could `provider add deepseek`; that saved config has to
-// keep resolving to their endpoint instead of being shadowed by the built-in.
+// A custom name that later became built-in must still resolve to the user's endpoint.
 func TestCustomProviderOverridesBuiltInOfSameName(t *testing.T) {
 	cfg := config.DefaultConfig().Provider
 	cfg.Custom["deepseek"] = config.GatewayConfig{
@@ -98,9 +92,7 @@ func TestCustomProviderOverridesBuiltInOfSameName(t *testing.T) {
 	}
 }
 
-// registerCustomProviders must not fail for a saved custom provider whose
-// name is now built-in; rejecting it would make the whole agent refuse to
-// start for an existing user.
+// A saved custom name that is now built-in must not break startup.
 func TestRegisterCustomProvidersAcceptsNewlyBuiltInName(t *testing.T) {
 	registry := provider.NewRegistry()
 	configured := map[string]config.GatewayConfig{
@@ -135,10 +127,7 @@ func TestCopilotIsBuiltInAndConfigured(t *testing.T) {
 	}
 }
 
-// `gocode provider list` builds its own name list rather than reusing
-// gatewayProviderNames, so a registered provider can silently vanish from the
-// listing. Adding "copilot" once did exactly that to ollama — the shipped
-// default provider. Every registered provider must appear in the output.
+// `provider list` keeps its own name list, so every registered provider must appear in the output.
 func TestProviderListIncludesEveryRegisteredProvider(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := config.SaveToPath(config.DefaultConfig(), cfgPath); err != nil {

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +219,65 @@ func TestLoadFromPath_MalformedTOMLErrors(t *testing.T) {
 	}
 	if _, err := LoadFromPath(tmpFile); err == nil {
 		t.Error("expected a parse error for malformed TOML")
+	}
+}
+
+// MEDIUM-32: misspelled keys would silently keep defaults, so they must error.
+func TestLoadFromPath_UnknownKeysError(t *testing.T) {
+	for _, contents := range []string{
+		"[permissions]\nauto_approv = [\"file_read\"]\n",
+		"[tools]\nmax_tool_iteration = 5\n",
+		"[session]\npresist = true\n",
+		"[provider]\ndeafult = \"ollama\"\n",
+	} {
+		tmpFile := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+		if _, err := LoadFromPath(tmpFile); err == nil {
+			t.Errorf("expected an unknown-key error for %q", contents)
+		} else if !strings.Contains(err.Error(), "unknown keys") {
+			t.Errorf("error should mention unknown keys, got: %v", err)
+		}
+	}
+}
+
+// Dynamic map entries (custom providers, MCP servers) are real keys and must keep loading.
+func TestLoadFromPath_CustomAndMCPKeysAreKnown(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[provider.custom.my-gateway]\nbase_url = \"https://gw.internal/v1\"\n" +
+		"[mcp.servers.fs]\ncommand = \"npx\"\nargs = [\"-y\", \"srv\"]\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("custom/mcp keys must load, got: %v", err)
+	}
+	if loaded.Provider.Custom["my-gateway"].BaseURL != "https://gw.internal/v1" {
+		t.Errorf("custom provider lost: %+v", loaded.Provider.Custom)
+	}
+	if loaded.MCP.Servers["fs"].Command != "npx" {
+		t.Errorf("mcp server lost: %+v", loaded.MCP.Servers)
+	}
+}
+
+// MEDIUM-9/MEDIUM-34: context budget needs a sane default to avoid truncating long sessions.
+func TestConfig_MaxContextTokensDefaultAndRoundTrip(t *testing.T) {
+	if got := DefaultConfig().Tools.MaxContextTokens; got <= 0 {
+		t.Fatalf("default MaxContextTokens must be positive, got %d", got)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[tools]\nmax_context_tokens = 12345\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.Tools.MaxContextTokens != 12345 {
+		t.Errorf("expected max_context_tokens 12345, got %d", loaded.Tools.MaxContextTokens)
 	}
 }

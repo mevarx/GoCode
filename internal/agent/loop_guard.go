@@ -1,25 +1,19 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/mevarx/GoCode/internal/provider"
 )
 
-// DefaultMaxToolIterations bounds how many provider round-trips a single user
-// turn may make. Without a ceiling, a model that keeps requesting tools — or a
-// tool that keeps failing in a way the model retries identically — produces an
-// unbounded loop that burns tokens and API quota with no user-visible signal.
-//
-// The limit is deliberately generous: legitimate multi-step work rarely needs
-// more than a few dozen tool round-trips in one turn.
+// DefaultMaxToolIterations bounds provider round-trips per turn; without it a model
+// requesting tools endlessly burns tokens and quota with no visible signal.
 const DefaultMaxToolIterations = 50
 
-// DefaultMaxRepeatedToolCalls is how many times the identical tool call
-// (same name and same arguments) may repeat within one turn before the loop
-// stops. A model that retries the exact same call after the exact same result
-// is not making progress and will not make progress with another attempt.
+// DefaultMaxRepeatedToolCalls caps identical repeats per turn; retrying the same
+// call after the same result makes no progress.
 const DefaultMaxRepeatedToolCalls = 3
 
 // LoopGuardConfig carries user-configurable limits. Zero values mean "use the
@@ -32,9 +26,8 @@ type LoopGuardConfig struct {
 	MaxRepeatedCalls int
 }
 
-// LoopGuard bounds an agent turn. Both the plain loop (agent/loop.go) and the
-// TUI loop (tui/run.go) construct one so the two paths cannot drift again on
-// termination behaviour.
+// LoopGuard bounds an agent turn. Both plain and TUI loops use one so they
+// cannot drift on termination behaviour.
 type LoopGuard struct {
 	// MaxIterations caps provider round-trips per turn. Zero means
 	// DefaultMaxToolIterations.
@@ -45,8 +38,11 @@ type LoopGuard struct {
 	// ToolCalls counts every tool call seen this turn, for reporting.
 	ToolCalls int
 
-	iterations     int
-	recentCalls    map[string]int
+	iterations int
+	// lastKeys holds canonical keys from the previous batch, so only consecutive
+	// repeats count; cumulative counting aborted legitimate interleaved work.
+	lastKeys map[string]bool
+	// consecutiveRep counts consecutive batches repeating the preceding batch.
 	consecutiveRep int
 }
 
@@ -61,7 +57,7 @@ func NewLoopGuardWithConfig(cfg LoopGuardConfig) *LoopGuard {
 	g := &LoopGuard{
 		MaxIterations:    cfg.MaxIterations,
 		MaxRepeatedCalls: cfg.MaxRepeatedCalls,
-		recentCalls:      make(map[string]int),
+		lastKeys:         make(map[string]bool),
 	}
 	if g.MaxIterations <= 0 {
 		g.MaxIterations = DefaultMaxToolIterations
@@ -86,13 +82,8 @@ func (g *LoopGuard) maxRepeatedCalls() int {
 	return g.MaxRepeatedCalls
 }
 
-// CheckCall is called with each batch of tool calls the model requests. It
-// records the calls and reports whether the turn may continue. A non-nil
-// error means the turn must stop, and the message is suitable for showing to
-// the user as the turn's final output.
-//
-// Calls must be recorded before Execute runs so that the cap also bounds a
-// loop of *failing* tools, not only a loop of succeeding ones.
+// CheckCall records a batch; non-nil error means the turn must stop (message is user-facing).
+// Recorded before Execute so failing-tool loops are also bounded.
 func (g *LoopGuard) CheckCall(toolCalls []provider.ToolCall) error {
 	g.iterations++
 	g.ToolCalls += len(toolCalls)
@@ -103,37 +94,46 @@ func (g *LoopGuard) CheckCall(toolCalls []provider.ToolCall) error {
 	}
 
 	if len(toolCalls) > 0 {
-		// A batch containing any repeat beyond the limit stops the turn.
-		// Consecutive identical calls are the common runaway shape: the model
-		// retries a failing call with unchanged arguments.
+		// Only consecutive repeats count as runaway; interleaved calls reset the
+		// streak, and keys are canonicalised so formatting cannot hide repeats.
+		current := make(map[string]bool, len(toolCalls))
+		repeatName := ""
 		for _, tc := range toolCalls {
-			key := tc.Name + "\x00" + string(tc.Args)
-			g.recentCalls[key]++
-			if g.recentCalls[key] > g.maxRepeatedCalls() {
-				return fmt.Errorf("stopped: tool %q was called %d times with identical arguments. The previous attempts already produced a result; calling it again with the same input cannot change the outcome. Adjust the approach or the arguments.",
-					tc.Name, g.recentCalls[key])
+			key := canonicalCallKey(tc)
+			current[key] = true
+			if repeatName == "" && g.lastKeys[key] {
+				repeatName = tc.Name
 			}
 		}
-		// A batch that is entirely new work resets the consecutive counter.
-		allNew := true
-		for _, tc := range toolCalls {
-			if g.recentCalls[tc.Name+"\x00"+string(tc.Args)] > 1 {
-				allNew = false
-				break
-			}
-		}
-		if allNew {
-			g.consecutiveRep = 0
-		} else {
+		if repeatName != "" {
 			g.consecutiveRep++
+			if g.consecutiveRep >= g.maxRepeatedCalls() {
+				return fmt.Errorf("stopped: tool %q was called %d times in a row with identical arguments. The previous attempts already produced a result; calling it again with the same input cannot change the outcome. Adjust the approach or the arguments.",
+					repeatName, g.consecutiveRep+1)
+			}
+		} else {
+			g.consecutiveRep = 0
 		}
+		g.lastKeys = current
 	}
 
 	return nil
 }
 
-// Summary returns a one-line description of the turn's tool usage, or an empty
-// string when no tools were used.
+// canonicalCallKey normalises a call so semantically identical args compare equal.
+// Non-JSON args fall back to raw bytes so malformed calls still deduplicate.
+func canonicalCallKey(tc provider.ToolCall) string {
+	args := strings.TrimSpace(string(tc.Args))
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err == nil {
+		if canon, err := json.Marshal(v); err == nil {
+			args = string(canon)
+		}
+	}
+	return tc.Name + "\x00" + args
+}
+
+// Summary describes the turn's tool usage, or "" when no tools were used.
 func (g *LoopGuard) Summary() string {
 	if g.ToolCalls == 0 {
 		return ""

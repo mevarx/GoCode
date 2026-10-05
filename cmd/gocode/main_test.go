@@ -20,9 +20,7 @@ func TestGatewayConfigFor(t *testing.T) {
 	}
 }
 
-// Every name in gatewayProviderNames is registered in main.go, so a mismatch
-// between that slice and gatewayConfigFor would silently register a provider
-// with an empty base URL.
+// A mismatch here would silently register a provider with an empty base URL.
 func TestGatewayConfigForCoversEveryRegisteredGateway(t *testing.T) {
 	cfg := config.DefaultConfig().Provider
 	for _, name := range gatewayProviderNames {
@@ -32,8 +30,7 @@ func TestGatewayConfigForCoversEveryRegisteredGateway(t *testing.T) {
 	}
 }
 
-// gatewayConfigFor also serves the special providers, since runDoctor and the
-// provider registry call it for those.
+// gatewayConfigFor also serves the special providers.
 func TestGatewayConfigForSpecialProviders(t *testing.T) {
 	cfg := config.DefaultConfig().Provider
 	if got := gatewayConfigFor(cfg, "anthropic").BaseURL; got != "https://api.anthropic.com/v1" {
@@ -53,8 +50,7 @@ func TestGatewayConfigForReadsCustomMap(t *testing.T) {
 	}
 }
 
-// Every provider the agent can select must be registered, otherwise
-// --provider <name> fails at startup.
+// Every selectable provider must be registered, or --provider <name> fails at startup.
 func TestGatewayProviderNamesAreAllDistinct(t *testing.T) {
 	seen := make(map[string]bool, len(gatewayProviderNames))
 	for _, name := range gatewayProviderNames {

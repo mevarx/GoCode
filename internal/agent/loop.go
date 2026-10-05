@@ -14,13 +14,13 @@ import (
 type LoopEventKind int
 
 const (
-	// EventDelta is a fragment of assistant text, suitable for streaming to
-	// a display.
+	// EventDelta is a fragment of assistant text for streaming to a display.
 	EventDelta LoopEventKind = iota
+	// EventToolStart reports a tool call before approval/execution so a UI can show pending state.
+	EventToolStart
 	// EventToolResult reports the outcome of a single tool call.
 	EventToolResult
-	// EventNotice is informational output that is not an error, such as the
-	// tool-usage summary or a slash command's result.
+	// EventNotice is informational output that is not an error.
 	EventNotice
 	// EventError reports a failure the user should see.
 	EventError
@@ -32,22 +32,27 @@ const (
 )
 
 // LoopEvent is a single thing the agent loop wants the UI to show.
-//
-// The loop does not know whether it is driving a plain terminal or a Bubble
-// Tea program, so it reports rather than prints. There is exactly one engine;
-// each UI supplies a renderer for these events.
+// The loop reports rather than prints; each UI supplies a renderer.
 type LoopEvent struct {
 	Kind    LoopEventKind
 	Text    string // delta text, notice body, or error text
-	Tool    string // tool name for EventToolResult
+	Tool    string // tool name for EventToolStart and EventToolResult
 	IsError bool
+	// ToolCallID correlates start/result for the same call so a UI cannot attribute
+	// a result to the wrong call when several run in one batch.
+	ToolCallID string
+	// Args carries raw JSON arguments on EventToolStart so a card can show the
+	// request without waiting for execution; the UI decides how much to show.
+	Args string
+	// Diff carries a unified diff on EventToolResult; kept separate from Text
+	// so a UI can colour added/removed lines instead of parsing prose.
+	Diff string
 	// Err carries the underlying error on EventTurnEnd.
 	Err error
 }
 
-// maxDisplayedToolOutput caps how much of a tool result is rendered. The full
-// result always goes to the model and the session transcript; this only limits
-// what the user sees.
+// maxDisplayedToolOutput caps rendered tool output; the full result still
+// goes to the model and the session transcript.
 const maxDisplayedToolOutput = 2000
 
 // AgentLoop is the single agent engine. Both the plain terminal loop and the
@@ -65,10 +70,8 @@ type AgentLoop struct {
 	// Observe, when set, receives every event the loop produces. Nil means
 	// events are discarded, which is only appropriate in tests.
 	Observe func(LoopEvent)
-	// AskApproval, when set, is used by slash commands that need to prompt
-	// the user (for example /commit). The plain terminal loop supplies a
-	// stdin-backed implementation; the TUI relies on the approval gate's
-	// OnPresent instead and leaves this nil.
+	// AskApproval prompts for slash commands needing confirmation (e.g. /commit).
+	// The plain loop supplies stdin backing; the TUI uses the approval gate instead.
 	AskApproval func(prompt string) bool
 }
 
@@ -82,11 +85,19 @@ func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.
 	}
 }
 
-// emit reports an event to the observer, if one is attached.
 func (a *AgentLoop) emit(ev LoopEvent) {
 	if a.Observe != nil {
 		a.Observe(ev)
 	}
+}
+
+// Reports token-budget truncation ("length"/"max_tokens").
+func isTruncationFinish(reason string) bool {
+	switch reason {
+	case "length", "max_tokens":
+		return true
+	}
+	return false
 }
 
 func (a *AgentLoop) emitDelta(text string) {
@@ -120,11 +131,8 @@ func (a *AgentLoop) EnsureSystemPrompt() {
 	})
 }
 
-// RunTurn processes one user input line: a slash command if it is one,
-// otherwise a full agent turn including any tool calls.
-//
-// This is the entry point the TUI uses. The plain loop in Run calls it too,
-// so there is one implementation of turn handling in the codebase.
+// RunTurn processes one user input: slash command or full agent turn with tools.
+// Shared by the TUI and the plain loop, so turn handling has one implementation.
 func (a *AgentLoop) RunTurn(ctx context.Context, input string) error {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -175,8 +183,7 @@ func (a *AgentLoop) handleSlashCommand(ctx context.Context, input string) Comman
 	return HandleCommand(ctx, cmdCtx, input)
 }
 
-// streamResponse runs a full agent turn: repeated provider round-trips until
-// the model stops requesting tools, bounded by the loop guard.
+// Runs provider round-trips until tools stop, bounded by the loop guard.
 func (a *AgentLoop) streamResponse(ctx context.Context) error {
 	guard := NewLoopGuardWithConfig(a.GuardConfig)
 	return a.streamResponseGuarded(ctx, guard)
@@ -202,6 +209,7 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 		var fullResponse strings.Builder
 		var fullReasoning strings.Builder
 		var toolCalls []provider.ToolCall
+		var finishReason string
 
 		for chunk := range ch {
 			if chunk.Err != nil {
@@ -213,9 +221,12 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 				fullResponse.WriteString(chunk.Delta)
 			}
 
-			// Reasoning is captured but not displayed: it is model-internal
-			// thinking that some providers require to be replayed on the next
-			// turn, so it belongs in history without cluttering the terminal.
+			if chunk.FinishReason != "" {
+				finishReason = chunk.FinishReason
+			}
+
+			// Reasoning is model-internal thinking some providers require replayed,
+			// so it belongs in history without cluttering the terminal.
 			if chunk.Reasoning != "" {
 				fullReasoning.WriteString(chunk.Reasoning)
 			}
@@ -253,13 +264,21 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 			if s := guard.Summary(); s != "" {
 				a.emit(LoopEvent{Kind: EventNotice, Text: s})
 			}
+			if isTruncationFinish(finishReason) {
+				a.emit(LoopEvent{
+					Kind: EventNotice,
+					Text: fmt.Sprintf("[Warning: the provider stopped at the token limit (finish_reason %q); the answer may be incomplete.]", finishReason),
+				})
+			}
 			return nil
 		}
 
-		// Bound the turn before executing anything. A failing tool that the
-		// model retries identically must still hit the cap, so the check
-		// happens here rather than after execution.
+		// Bound the turn before executing: a failing tool retried identically
+		// must still hit the cap, so the check precedes execution.
 		if err := guard.CheckCall(toolCalls); err != nil {
+			// Calls are already in the session, so each needs a result: both
+			// OpenAI-shaped and Anthropic APIs reject calls without results.
+			a.writeSyntheticToolResults(toolCalls, fmt.Sprintf("Error: tool call not executed: %v", err))
 			a.Session.AddMessage(provider.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("Stopped: %v", err),
@@ -274,11 +293,34 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard)
 	}
 }
 
-func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.ToolCall) error {
+// writeSyntheticToolResults closes out calls that never produced a result.
+// Required because OpenAI-shaped and Anthropic APIs reject history with a call lacking a result.
+func (a *AgentLoop) writeSyntheticToolResults(toolCalls []provider.ToolCall, reason string) {
 	for _, tc := range toolCalls {
+		a.Session.AddMessage(provider.Message{
+			Role:       "tool",
+			Content:    reason,
+			ToolCallID: tc.ID,
+		})
+	}
+}
+
+func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.ToolCall) error {
+	for i, tc := range toolCalls {
 		if ctx.Err() != nil {
+			// Close out unreached calls; history must not keep a call without a result.
+			a.writeSyntheticToolResults(toolCalls[i:], "Error: tool call interrupted before it could execute.")
 			return ctx.Err()
 		}
+
+		// Announce before anything can block: the approval gate may wait on the
+		// user, and the UI would otherwise show nothing while approval pends.
+		a.emit(LoopEvent{
+			Kind:       EventToolStart,
+			Tool:       tc.Name,
+			ToolCallID: tc.ID,
+			Args:       string(tc.Args),
+		})
 
 		tool := a.ToolRegistry.Get(tc.Name)
 		if tool == nil {
@@ -288,7 +330,7 @@ func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.To
 				Content:    msg,
 				ToolCallID: tc.ID,
 			})
-			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, Text: msg, IsError: true})
+			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, ToolCallID: tc.ID, Text: msg, IsError: true})
 			continue
 		}
 
@@ -300,7 +342,7 @@ func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.To
 				Content:    msg,
 				ToolCallID: tc.ID,
 			})
-			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, Text: msg, IsError: true})
+			a.emit(LoopEvent{Kind: EventToolResult, Tool: tc.Name, ToolCallID: tc.ID, Text: msg, IsError: true})
 			continue
 		}
 
@@ -323,10 +365,12 @@ func (a *AgentLoop) handleToolCalls(ctx context.Context, toolCalls []provider.To
 			display = display[:maxDisplayedToolOutput] + "\n… (truncated)"
 		}
 		a.emit(LoopEvent{
-			Kind:    EventToolResult,
-			Tool:    tc.Name,
-			Text:    display,
-			IsError: result.Error != "",
+			Kind:       EventToolResult,
+			Tool:       tc.Name,
+			ToolCallID: tc.ID,
+			Text:       display,
+			Diff:       result.Diff,
+			IsError:    result.Error != "",
 		})
 	}
 

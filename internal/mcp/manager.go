@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -33,6 +36,8 @@ func (m *Manager) StartAll(ctx context.Context, toolRegistry *tools.Registry) er
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	var failures []error
+
 	for name, cfg := range m.servers {
 		if cfg.Command == "" {
 			continue
@@ -41,6 +46,8 @@ func (m *Manager) StartAll(ctx context.Context, toolRegistry *tools.Registry) er
 		client := NewClient(cfg.Command, cfg.Args, cfg.Env)
 		if err := client.Start(); err != nil {
 			slog.Warn("failed to start MCP server", "name", name, "error", err)
+			fmt.Fprintf(os.Stderr, "gocode: MCP server %q failed to start: %v\n", name, err)
+			failures = append(failures, fmt.Errorf("MCP server %q: %w", name, err))
 			continue
 		}
 
@@ -49,6 +56,8 @@ func (m *Manager) StartAll(ctx context.Context, toolRegistry *tools.Registry) er
 			cancel()
 			_ = client.Close()
 			slog.Warn("failed to initialize MCP server", "name", name, "error", err)
+			fmt.Fprintf(os.Stderr, "gocode: MCP server %q failed to initialize: %v\n", name, err)
+			failures = append(failures, fmt.Errorf("MCP server %q: %w", name, err))
 			continue
 		}
 
@@ -58,6 +67,8 @@ func (m *Manager) StartAll(ctx context.Context, toolRegistry *tools.Registry) er
 		if err != nil {
 			_ = client.Close()
 			slog.Warn("failed to list tools for MCP server", "name", name, "error", err)
+			fmt.Fprintf(os.Stderr, "gocode: MCP server %q failed to list tools: %v\n", name, err)
+			failures = append(failures, fmt.Errorf("MCP server %q: %w", name, err))
 			continue
 		}
 
@@ -65,12 +76,17 @@ func (m *Manager) StartAll(ctx context.Context, toolRegistry *tools.Registry) er
 
 		for _, tInfo := range toolList {
 			mcpTool := NewMCPTool(name, tInfo, client)
-			toolRegistry.Register(mcpTool)
+			if err := toolRegistry.Register(mcpTool); err != nil {
+				slog.Warn("failed to register MCP tool", "server", name, "tool", tInfo.Name, "error", err)
+				fmt.Fprintf(os.Stderr, "gocode: could not register MCP tool from %q: %v\n", name, err)
+				failures = append(failures, err)
+				continue
+			}
 			slog.Debug("registered MCP tool", "server", name, "tool", mcpTool.Spec().Name)
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 // CloseAll closes all active MCP client connections.

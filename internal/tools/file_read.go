@@ -62,7 +62,6 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 		return Result{Error: "path cannot be empty"}, nil
 	}
 
-	// Workspace confinement.
 	var path string
 	if f.WorkspaceRoot != "" {
 		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
@@ -82,10 +81,19 @@ func (f *FileReadTool) Execute(ctx context.Context, args json.RawMessage) (Resul
 		return Result{Error: fmt.Sprintf("cannot access file: %v", err)}, nil
 	}
 
-	// Check sensitive file protection.
 	if f.SensitiveMatcher != nil {
-		if blocked, reason := f.SensitiveMatcher.ShouldBlock(path, info.IsDir()); blocked {
+		blocked, reason, err := CheckSensitiveFile(f.SensitiveMatcher, path, info.IsDir())
+		if err != nil {
+			return Result{Error: err.Error()}, nil
+		}
+		if blocked {
 			return Result{Error: fmt.Sprintf("%s: %s", path, reason)}, nil
+		}
+		// SECURITY: hardlink aliases share inodes with sensitive files.
+		if !info.IsDir() && f.WorkspaceRoot != "" {
+			if IsBlockedByIdentity(SensitiveIdentitySet(f.WorkspaceRoot, f.SensitiveMatcher), info) {
+				return Result{Error: fmt.Sprintf("%s: access denied: matches a sensitive file (hardlink alias)", path)}, nil
+			}
 		}
 	} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, info.IsDir()) {
 		return Result{Error: fmt.Sprintf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)}, nil
@@ -108,9 +116,8 @@ func (f *FileReadTool) readDirectory(path string) (Result, error) {
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
 
-		// Check ignore/sensitive for entries.
 		if f.SensitiveMatcher != nil {
-			if blocked, _ := f.SensitiveMatcher.ShouldBlock(entryPath, entry.IsDir()); blocked {
+			if blocked, _, err := CheckSensitiveFile(f.SensitiveMatcher, entryPath, entry.IsDir()); blocked || err != nil {
 				continue
 			}
 		} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(entryPath, entry.IsDir()) {
@@ -126,7 +133,7 @@ func (f *FileReadTool) readDirectory(path string) (Result, error) {
 	return Result{Output: fmt.Sprintf("Directory listing for %s:\n%s", path, joinLines(listing))}, nil
 }
 
-const maxReadBytes = 100 * 1024 // 100KB
+const maxReadBytes = 100 * 1024
 
 func (f *FileReadTool) readFile(path string, info os.FileInfo, offset, limit int) (Result, error) {
 	data, err := os.ReadFile(path)
@@ -139,11 +146,17 @@ func (f *FileReadTool) readFile(path string, info os.FileInfo, offset, limit int
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
 
-	// Apply line offset and limit.
+	// Guard bounds before slicing: a huge or negative limit can overflow endLine and panic.
 	startLine := 1
 	endLine := totalLines
 	truncated := false
 
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = 0
+	}
 	if offset > 0 {
 		startLine = offset
 	}
@@ -152,17 +165,18 @@ func (f *FileReadTool) readFile(path string, info os.FileInfo, offset, limit int
 	}
 
 	if limit > 0 {
+		if limit > totalLines {
+			limit = totalLines
+		}
 		endLine = startLine + limit - 1
-	}
-	if endLine > totalLines {
-		endLine = totalLines
+		if endLine > totalLines {
+			endLine = totalLines
+		}
 	}
 
-	// Slice to requested range (convert to 0-based).
 	selectedLines := lines[startLine-1 : endLine]
 	selectedContent := strings.Join(selectedLines, "\n")
 
-	// Enforce max output size.
 	if len(selectedContent) > maxReadBytes {
 		selectedContent = selectedContent[:maxReadBytes]
 		truncated = true
@@ -171,7 +185,6 @@ func (f *FileReadTool) readFile(path string, info os.FileInfo, offset, limit int
 		truncated = true
 	}
 
-	// Build metadata header.
 	meta := fmt.Sprintf("path: %s | lines: %d-%d of %d | bytes: %d",
 		path, startLine, endLine, totalLines, totalBytes)
 	if truncated {

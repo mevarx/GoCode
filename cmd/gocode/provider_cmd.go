@@ -118,9 +118,7 @@ type customProvider struct {
 	endpoint config.GatewayConfig
 }
 
-// validateCustomProvider normalizes and checks a custom endpoint without
-// rejecting built-in names, so it can be reused when loading a saved config
-// whose names may predate the provider becoming built-in.
+// validateCustomProvider checks an endpoint without rejecting built-in names, so saved configs predating a built-in keep loading.
 func validateCustomProvider(name string, endpoint config.GatewayConfig) (customProvider, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if !providerNamePattern.MatchString(name) {
@@ -181,11 +179,7 @@ func registerCustomProviders(registry *provider.Registry, configured map[string]
 	sort.Strings(names)
 	seen := make(map[string]struct{}, len(names))
 	for _, rawName := range names {
-		// A name that has since become built-in is allowed through here: the
-		// user configured it explicitly before that happened, so it must keep
-		// working rather than making startup fail. Registering it after the
-		// built-ins replaces the built-in in the registry, and
-		// gatewayConfigFor prefers it for the same reason.
+		// Explicitly configured names keep working even after becoming built-in; registering after built-ins shadows them.
 		validated, err := validateCustomProvider(rawName, configured[rawName])
 		if err != nil {
 			return fmt.Errorf("custom provider %q: %w", rawName, err)

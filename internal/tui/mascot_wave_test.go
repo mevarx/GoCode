@@ -5,15 +5,12 @@ import (
 	"testing"
 )
 
-// waveAt's comment documents its shape precisely, so these assertions pin that
-// shape: editing either one should have to change the other deliberately.
+// Pins documented triangle shape.
 func TestWaveAtIsAnUnsmoothedTriangle(t *testing.T) {
 	const samples = 10000
 	step := 1.0 / samples
 
-	// No dwell at the extremes: the wave moves on every step away from the
-	// turning points. A step straddling a corner can legitimately repeat, so
-	// those are excluded.
+	// No dwell at extremes: wave moves on every step away from corners.
 	repeatsAwayFromCorners := 0
 	const cornerPhase = 0.5
 	for i := 1; i <= samples; i++ {
@@ -30,8 +27,7 @@ func TestWaveAtIsAnUnsmoothedTriangle(t *testing.T) {
 			repeatsAwayFromCorners)
 	}
 
-	// Constant slope. Raw deltas run into float64 resolution here — the wave
-	// moves 4e-5 per step against order-1 values — so divide by the step first.
+	// Constant slope; divide by step first for float64 resolution.
 	var lo, hi = math.Inf(1), 0.0
 	prev := waveAt(0)
 	for i := 1; i <= samples; i++ {
@@ -51,16 +47,14 @@ func TestWaveAtIsAnUnsmoothedTriangle(t *testing.T) {
 	if lo == 0 {
 		t.Fatal("some steps produced no measurable change away from the corners")
 	}
-	// A true triangle moves at a constant rate on both slopes.
+	// True triangle moves at constant rate on both slopes.
 	if (hi-lo)/hi > 0.01 {
 		t.Errorf("slope varies from %.3f to %.3f across the cycle; the comment says constant",
 			lo, hi)
 	}
 }
 
-// The turning point at phase 0.5 is a sharp reversal: the wave reaches +1 and
-// immediately heads back down. Nothing interpolates the corner, which is what
-// makes this a triangle rather than a curve.
+// Turning point at 0.5 is a sharp reversal, not an eased curve.
 func TestWaveAtReversesSharplyAtTheTurningPoint(t *testing.T) {
 	const eps = 1e-9
 	before := waveAt(0.5 - eps)
@@ -73,8 +67,7 @@ func TestWaveAtReversesSharplyAtTheTurningPoint(t *testing.T) {
 	if !(before < at && after < at) {
 		t.Errorf("expected a peak at 0.5, got %v -> %v -> %v", before, at, after)
 	}
-	// The descent begins immediately: one epsilon past the peak the value has
-	// already dropped measurably, rather than easing out gradually.
+	// Descent begins immediately past the peak.
 	if drop := at - after; drop <= 0 {
 		t.Errorf("no descent past the peak: %v -> %v -> %v", before, at, after)
 	}

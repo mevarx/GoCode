@@ -16,25 +16,18 @@ type ApprovalGate struct {
 	mu          sync.RWMutex
 	OnPresent   func(toolName string, args json.RawMessage, preview string) (bool, error)
 
-	// inputReader, when set, is used instead of opening a new reader on
-	// os.Stdin. The plain agent loop already holds a bufio.Scanner over
-	// stdin; a second scanner buffers ahead and swallows the piped answer,
-	// so approvals failed whenever input was piped rather than typed
-	// interactively. Sharing one reader removes the race entirely.
+	// inputReader shares the caller's stdin reader; a second scanner would swallow piped answers.
 	inputReader *bufio.Reader
 	muInput     sync.Mutex
 }
 
-// SetInputReader makes the gate read approval answers from r. Callers that
-// already read from the same stream must pass their existing reader so that
-// buffered data is not lost between the prompt and the gate.
+// SetInputReader makes the gate read answers from r. Callers sharing the stream must pass their reader.
 func (g *ApprovalGate) SetInputReader(r *bufio.Reader) {
 	g.muInput.Lock()
 	defer g.muInput.Unlock()
 	g.inputReader = r
 }
 
-// readLine returns the next input line, preferring the injected reader.
 func (g *ApprovalGate) readLine() (string, error) {
 	g.muInput.Lock()
 	r := g.inputReader
@@ -139,10 +132,32 @@ func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, pr
 	return response == "y" || response == "yes", nil
 }
 
-// WrapExecution handles the full preview → approval → execute flow.
-// If the tool implements Previewer, a preview is generated first and shown
-// to the user before execution. Denied operations never call Execute.
+// WrapExecution runs preview → approval → execute. Denied operations never call Execute.
 func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.RawMessage) (Result, error) {
+	result, err := g.wrapExecution(ctx, tool, args)
+	return redactToolResult(result, err)
+}
+
+// redactToolResult masks credentials in output, error and diff. WrapExecution is the transcript boundary.
+func redactToolResult(r Result, err error) (Result, error) {
+	if err != nil {
+		return r, err
+	}
+	var hits []string
+	r.Output, hits = RedactToolOutput(r.Output)
+	var errHits []string
+	r.Error, errHits = RedactToolOutput(r.Error)
+	var diffHits []string
+	r.Diff, diffHits = RedactToolOutput(r.Diff)
+	hits = append(hits, errHits...)
+	hits = append(hits, diffHits...)
+	if len(hits) > 0 {
+		r.Output += DescribeRedactions(hits)
+	}
+	return r, err
+}
+
+func (g *ApprovalGate) wrapExecution(ctx context.Context, tool Tool, args json.RawMessage) (Result, error) {
 	toolName := tool.Spec().Name
 
 	if g.IsDenied(toolName) {
@@ -150,17 +165,16 @@ func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.R
 	}
 
 	if g.IsAutoApproved(toolName) {
-		return tool.Execute(ctx, args)
+		return executeToolRecovered(ctx, tool, args)
 	}
 
 	if !tool.RequiresApproval() {
-		return tool.Execute(ctx, args)
+		return executeToolRecovered(ctx, tool, args)
 	}
 
-	// Generate preview if the tool supports it.
 	var previewStr string
 	if previewer, ok := tool.(Previewer); ok {
-		preview, err := previewer.Preview(ctx, args)
+		preview, err := previewToolRecovered(ctx, previewer, args)
 		if err != nil {
 			// Preview errors are validation errors — return them without executing.
 			return Result{Error: fmt.Sprintf("preview error: %v", err)}, nil
@@ -179,5 +193,27 @@ func (g *ApprovalGate) WrapExecution(ctx context.Context, tool Tool, args json.R
 		}, nil
 	}
 
+	return executeToolRecovered(ctx, tool, args)
+}
+
+// executeToolRecovered converts a tool panic into an error so one tool cannot kill the process.
+func executeToolRecovered(ctx context.Context, tool Tool, args json.RawMessage) (result Result, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = Result{Error: fmt.Sprintf("panic while executing %s: %v", tool.Spec().Name, r)}
+			err = nil
+		}
+	}()
 	return tool.Execute(ctx, args)
+}
+
+// previewToolRecovered is the same containment for the preview step.
+func previewToolRecovered(ctx context.Context, previewer Previewer, args json.RawMessage) (preview Preview, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			preview = Preview{}
+			err = fmt.Errorf("panic while generating preview: %v", r)
+		}
+	}()
+	return previewer.Preview(ctx, args)
 }

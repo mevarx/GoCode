@@ -48,7 +48,7 @@ type SessionStore struct {
 // NewStore opens or creates a SQLite session database at dbPath.
 func NewStore(dbPath string) (*SessionStore, error) {
 	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create session directory %s: %w", dir, err)
 	}
 
@@ -57,13 +57,26 @@ func NewStore(dbPath string) (*SessionStore, error) {
 		return nil, fmt.Errorf("failed to open sqlite database %s: %w", dbPath, err)
 	}
 
+	// Pin the pool to one connection: pragmas are per-connection, so a second
+	// pooled connection would run without foreign_keys or busy_timeout.
+	db.SetMaxOpenConns(1)
+
+	// busy_timeout must precede the WAL switch: entering WAL needs the EXCLUSIVE
+	// lock that contends most, so the wait itself stays bounded by the timeout.
 	if _, err := db.Exec(`
+		PRAGMA busy_timeout = 5000;
 		PRAGMA foreign_keys = ON;
 		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 5000;
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set sqlite pragmas: %w", err)
+	}
+
+	// The transcript can contain file contents read by tools, so it must not
+	// inherit the process umask (typically 0644).
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to tighten session database permissions: %w", err)
 	}
 
 	store := &SessionStore{db: db}
@@ -108,11 +121,7 @@ func (s *SessionStore) migrate() error {
 	return s.addMissingColumns()
 }
 
-// addMissingColumns brings an existing database up to the current schema.
-//
-// CREATE TABLE IF NOT EXISTS is a no-op when the table already exists, so a
-// database created by an older release never gains a column added to the
-// schema above. Each entry is additive and idempotent.
+// addMissingColumns brings older databases up to the current schema; each entry is additive and idempotent.
 func (s *SessionStore) addMissingColumns() error {
 	migrations := []struct {
 		column string
@@ -140,7 +149,6 @@ func (s *SessionStore) addMissingColumns() error {
 	return nil
 }
 
-// columnExists reports whether table already has the named column.
 func (s *SessionStore) columnExists(table, column string) (bool, error) {
 	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
@@ -319,7 +327,6 @@ func (s *SessionStore) GetSession(id string) (*SessionRecord, error) {
 	return s.getSessionLocked(id)
 }
 
-// getSessionLocked is the internal implementation of GetSession.
 // Caller must hold s.mu (read or write).
 func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	row := s.db.QueryRow(`
@@ -365,6 +372,9 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 			_ = json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls)
 		}
 		rec.Messages = append(rec.Messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate messages: %w", err)
 	}
 
 	return &rec, nil
@@ -417,6 +427,9 @@ func (s *SessionStore) ListSessions(limit int) ([]SessionSummary, error) {
 			return nil, fmt.Errorf("failed to scan session summary: %w", err)
 		}
 		summaries = append(summaries, sum)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate sessions: %w", err)
 	}
 
 	return summaries, nil

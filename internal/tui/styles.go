@@ -1,82 +1,57 @@
-// Package tui style tokens: the single source of truth for the TUI's visual
-// language. Colour lives here and nowhere else, so call sites never write hex,
-// every colour is a role rather than a pigment, and all of it is AdaptiveColor
-// because a TUI is not assumed to run on a dark terminal.
-//
-// Direction: cool chrome, warm content — anything the agent did is amber or red,
-// so colour alone tells you whether you are looking at UI or at output.
+// Package tui style tokens: single source of truth for visual language.
+// Direction: cool chrome, warm content — colour alone distinguishes UI from output.
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
-// Layout constants.
-//
-// The gutter is fixed at 2 cells to match the marker glyphs the renderer writes
-// into its own label strings. Styles drawing message *content* indent by
-// indentGutter; styles drawing labels must not, or they indent twice.
+// Gutter is 2 cells to match marker glyphs; content indents, labels must not.
 const (
-	// indentGutter is the left gutter for message content.
 	indentGutter = 2
-	// rowPadCompact is horizontal padding for single-line rows (bubbles,
-	// status bar cells): one space reads as padding, two reads as a panel.
+	// One space reads as padding, two as a panel.
 	rowPadCompact = 1
-	// rowPadAction is horizontal padding for things the user clicks or picks
-	// (modal buttons): the extra space makes them look pressable.
+	// Extra space makes buttons look pressable.
 	rowPadAction = 2
-	// separatorGlyph is the horizontal rule; statusSepGlyph is the inline
-	// divider. Matching weights keep rules and dividers from looking like two
-	// different UI languages.
+	// Matching weights so rules/dividers read as one UI language.
 	separatorGlyph = "─"
 	statusSepGlyph = "│"
 )
 
-// Semantic colour ramp.
+// v1 role names kept; values come from theme.go palette. No hex here.
 var (
-	// Surfaces. colorBg repaints the region a modal occupies, so it must equal
-	// the app background; colorSurface lifts a focused control off it.
-	colorBg      = lipgloss.AdaptiveColor{Light: "#f6f8fa", Dark: "#0d1117"}
-	colorSurface = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#161b22"}
+	// colorBg must equal app background to repaint modal region.
+	colorBg      = col.bg
+	colorSurface = col.surface
 
-	colorBorder = lipgloss.AdaptiveColor{Light: "#d0d7de", Dark: "#30363d"}
+	colorBorder = col.border
 
-	// Text ramp. colorText is body copy; colorMutedFg is metadata that must stay
-	// legible but must not compete with it.
-	colorText    = lipgloss.AdaptiveColor{Light: "#1f2328", Dark: "#e6edf3"}
-	colorMutedFg = lipgloss.AdaptiveColor{Light: "#59636e", Dark: "#8b949e"}
+	// Muted stays legible but doesn't compete with body.
+	colorText    = col.text
+	colorMutedFg = col.muted
 
-	// Interactive accent (chrome) and selection highlight. Distinct hues so
-	// "focused" and "selected" never read as the same state.
-	colorAccent    = lipgloss.AdaptiveColor{Light: "#0969da", Dark: "#58a6ff"}
-	colorHighlight = lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#bc8cff"}
+	// Distinct hues so focused/selected never read as same.
+	colorAccent    = col.accent
+	colorHighlight = col.highlight
 
-	// Status semantics. Deliberately separate hues from the speech-role colours
-	// below: green here means "fine", green there means "the assistant spoke".
-	colorSuccess = lipgloss.AdaptiveColor{Light: "#1a7f37", Dark: "#3fb950"}
-	colorWarning = lipgloss.AdaptiveColor{Light: "#9a6700", Dark: "#e3b341"}
-	colorDanger  = lipgloss.AdaptiveColor{Light: "#cf222e", Dark: "#ff7b72"}
+	// Separate hues from speech roles: green here means fine, there means assistant.
+	colorSuccess = col.success
+	colorWarning = col.warning
+	colorDanger  = col.danger
 
-	// colorOnAccent is text sitting on a saturated fill, so it stays light in
-	// both themes rather than flipping to a theme-matched value that would lose
-	// contrast against the fill itself.
-	colorOnAccent = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#ffffff"}
+	// Stays light in both themes to keep contrast on saturated fills.
+	colorOnAccent = col.onAccent
 
-	// Speech roles. Each speaker owns a hue so a transcript can be scanned by
-	// colour alone, with a tinted fill only for the two sides that are quoted
-	// text (user input and tool output) rather than narration.
-	colorUserBg = lipgloss.AdaptiveColor{Light: "#d0f2f7", Dark: "#0b2b30"}
-	colorUserFg = lipgloss.AdaptiveColor{Light: "#0b7285", Dark: "#66d9e8"}
-	colorAsstFg = lipgloss.AdaptiveColor{Light: "#2b8a3e", Dark: "#8ce99a"}
-	colorToolBg = lipgloss.AdaptiveColor{Light: "#fff4d6", Dark: "#33280a"}
-	colorToolFg = lipgloss.AdaptiveColor{Light: "#b06000", Dark: "#ffc078"}
+	// Each speaker owns a hue; fills only for quoted user/tool text.
+	colorUserBg = col.userBg
+	colorUserFg = col.userFg
+	colorAsstFg = col.asstFg
+	colorToolBg = col.toolBg
+	colorToolFg = col.toolFg
 )
 
-// Status bar.
-//
-// The one cell of padding on each side is load-bearing: renderStatusBar pads its
-// right segment to contentWidth and relies on it to land at the terminal width.
+// Side padding is load-bearing for renderStatusBar width math.
 var (
 	statusBarStyle = lipgloss.NewStyle().
-			Background(lipgloss.AdaptiveColor{Light: "#eaeef2", Dark: "#161b22"}).
+			Background(col.statusBarBg).
 			Foreground(colorMutedFg).
 			Padding(0, rowPadCompact)
 
@@ -90,23 +65,18 @@ var (
 	statusPathStyle = statusBarStyle.
 			Foreground(colorMutedFg)
 
-	// Streaming gets the warning hue, not the accent, so a running turn is
-	// distinguishable from the provider name it sits next to.
+	// Warning, not accent, so running turn differs from provider name.
 	statusStreamingStyle = statusBarStyle.
 				Foreground(colorWarning).
 				Bold(true)
 
-	// The bar's own padding spaces the glyph, so the literal is the divider
-	// alone; adding spaces here would triple the gap between segments.
+	// Padding already spaces glyph; no extra spaces or gap triples.
 	statusSeparator = statusBarStyle.
 			Foreground(colorBorder).
 			Render(statusSepGlyph)
 )
 
-// Transcript.
-//
-// Labels are margin-free by design (see indentGutter). Bodies all share one
-// gutter so a transcript reads as a single aligned column.
+// Labels margin-free; bodies share one gutter for a single aligned column.
 var (
 	userLabelStyle = lipgloss.NewStyle().
 			Foreground(colorUserFg).
@@ -122,9 +92,7 @@ var (
 			Foreground(colorAsstFg).
 			Bold(true)
 
-	// The assistant body is full-bleed prose, so it takes no horizontal
-	// padding: padding it would also shrink its wrap width and push it out of
-	// alignment with the quoted bubbles, which are inset to read as quotes.
+	// No padding or wrap width shrinks and it misaligns with quoted bubbles.
 	asstContentStyle = lipgloss.NewStyle().
 				Foreground(colorText).
 				MarginLeft(indentGutter)
@@ -139,9 +107,7 @@ var (
 			Padding(0, rowPadCompact).
 			MarginLeft(indentGutter)
 
-	// Single-line roles carry their gutter in the rendered text itself (the
-	// renderer writes a two-space prefix), so these must stay margin-free or
-	// they indent twice and sit a column right of every multi-line message.
+	// Gutter already in text prefix; margin would indent twice.
 	errorStyle = lipgloss.NewStyle().
 			Foreground(colorDanger).
 			Bold(true)
@@ -151,12 +117,7 @@ var (
 			Italic(true)
 )
 
-// Input.
-//
-// Focus is signalled by border hue *and* a raised fill, not hue alone: on
-// terminals that flatten colour to plain text, or for readers who cannot
-// separate the accent from the border, the fill change still shows focus. The
-// blurred box keeps the same geometry so typing never reflows the view.
+// Focus is hue plus fill so it survives flattened colour; blurred keeps same geometry.
 var (
 	inputBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -174,12 +135,7 @@ var (
 			Italic(true)
 )
 
-// Approval modal.
-//
-// The panel itself is neutral rather than red: the same overlay frames the
-// model picker, and a danger-washed surface would make a routine choice look
-// like an emergency. The danger signal is carried by the title and the deny
-// button, which only ever appear on the approval path.
+// Neutral panel; danger signal lives in title/deny button only.
 var (
 	modalOverlayStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -187,9 +143,7 @@ var (
 				Padding(1, rowPadAction).
 				Background(colorBg)
 
-	// No bottom margin here: the modal body already inserts a blank line after
-	// the title. Two owners for one gap is how a dialog ends up with a hole in
-	// it.
+	// No margin; body already gaps after title.
 	modalTitleStyle = lipgloss.NewStyle().
 			Foreground(colorDanger).
 			Bold(true)
@@ -198,8 +152,7 @@ var (
 				Foreground(colorWarning).
 				Bold(true)
 
-	// Keys are muted and values take body colour, so the argument table reads
-	// as label/value pairs rather than a wall of equally loud text.
+	// Muted keys, body values so args read as pairs.
 	modalArgKeyStyle = lipgloss.NewStyle().
 				Foreground(colorMutedFg)
 
@@ -218,9 +171,7 @@ var (
 			Bold(true).
 			Padding(0, rowPadAction)
 
-	// Focus is an underline rather than a border: a border adds a row and would
-	// knock this button out of alignment with its unbordered neighbours, and the
-	// underline survives terminals that flatten colour to plain text.
+	// Underline, not border: border misaligns; underline survives flattened colour.
 	modalButtonFocused = lipgloss.NewStyle().
 				Background(colorAccent).
 				Foreground(colorOnAccent).
@@ -229,23 +180,15 @@ var (
 				Underline(true)
 )
 
-// separator renders a full-width horizontal rule. Narrow terminals still get a
-// single cell rather than an empty string, so callers can rely on the rule
-// occupying a line.
-
-// Mascot palette.
-//
-// The mascot uses the same chrome colours as the rest of the UI so it reads as
-// part of the application. Only the eye and antenna tip are saturated.
+// Same chrome as UI; only eye/tip saturated.
 var (
-	colorMascotBody  = lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#7d8590"}
-	colorMascotEye   = lipgloss.AdaptiveColor{Light: "#005f87", Dark: "#58a6ff"}
-	colorMascotMouth = lipgloss.AdaptiveColor{Light: "#57606a", Dark: "#8b949e"}
-	colorMascotTip   = lipgloss.AdaptiveColor{Light: "#0f7b3f", Dark: "#3fb950"}
+	colorMascotBody  = col.mascotBody
+	colorMascotEye   = col.mascotEye
+	colorMascotMouth = col.mascotMouth
+	colorMascotTip   = col.mascotTip
 )
 
-// mascotStyles is the mascot's colour scheme, held as a struct so one sprite
-// can be rendered in more than one palette (the tests render it unstyled).
+// Struct so one sprite renders in multiple palettes (tests use unstyled).
 type mascotStyles struct {
 	body  lipgloss.Style
 	eye   lipgloss.Style
@@ -268,8 +211,7 @@ var (
 
 	bannerHintStyle = lipgloss.NewStyle().Foreground(colorMutedFg).Italic(true)
 
-	// Session chips are filled pills, so their text must contrast with their
-	// own background rather than with the app background.
+	// Pill text contrasts with own background, not app background.
 	chipTextStyle = lipgloss.NewStyle().Foreground(colorBg).Bold(true).Padding(0, rowPadCompact)
 
 	chipVersionStyle  = chipTextStyle.Background(colorAccent)

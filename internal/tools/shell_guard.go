@@ -9,63 +9,55 @@ import (
 	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-// ShellGuard applies defense-in-depth filtering around shell_exec.
-//
-// An arbitrary `sh -c` string cannot be reliably confined: command
-// substitution, pipes, variables and interpreters can all reach outside the
-// workspace no matter how the command line is inspected. GoCode therefore does
-// not claim to sandbox the shell. What it can enforce is that secrets which
-// come back on stdout/stderr are not handed to the model or written into a
-// session transcript, and that commands referencing known-sensitive paths are
-// surfaced in the approval preview so the user can decline them.
-//
-// The file tools remain the hard boundary: those are genuinely confined to the
-// workspace by ValidatePath and the sensitive-file matcher.
+// ShellGuard redacts secrets from shell output and warns about sensitive paths. It does not sandbox the shell.
+// SECURITY: file tools stay confined via ValidatePath; the shell is advisory-only.
 type ShellGuard struct {
-	// SensitiveMatcher identifies paths that should never be referenced by a
-	// shell command. May be nil, in which case only secret redaction applies.
+	// SensitiveMatcher flags sensitive paths. May be nil; redaction still applies.
 	SensitiveMatcher *ignore.SensitiveMatcher
-	// RedactSecretOutput disables redaction of secret-shaped values in output.
+	// RedactSecretOutput enables redaction of secret-shaped values in output.
 	RedactSecretOutput bool
 }
 
 const redactedMarker = "***REDACTED***"
 
-// secretPatterns match values that look like credentials regardless of the
-// file they came from. Order matters only for reporting; each is independent.
+// secretPatterns match credential-shaped values; order affects reporting only.
 var secretPatterns = []struct {
 	name  string
 	re    *regexp.Regexp
 	group int
 }{
 	{"anthropic-api-key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_\-]{16,}`), 0},
-	{"openai-api-key", regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`), 0},
+	{"openai-api-key", regexp.MustCompile(`sk-[A-Za-z0-9_\-]{20,}`), 0},
 	{"github-token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{30,}`), 0},
+	{"github-fine-grained-pat", regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`), 0},
 	{"google-api-key", regexp.MustCompile(`AIza[0-9A-Za-z_\-]{30,}`), 0},
 	{"slack-token", regexp.MustCompile(`xox[baprs]-[A-Za-z0-9\-]{10,}`), 0},
+	{"slack-app-token", regexp.MustCompile(`xapp-[A-Za-z0-9\-]{10,}`), 0},
 	{"aws-access-key-id", regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`), 0},
+	{"stripe-key", regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{16,}`), 0},
+	{"sendgrid-key", regexp.MustCompile(`SG\.[A-Za-z0-9_\-]{16,}`), 0},
+	{"npm-token", regexp.MustCompile(`npm_[A-Za-z0-9]{20,}`), 0},
+	{"pypi-token", regexp.MustCompile(`pypi-[A-Za-z0-9_\-]{16,}`), 0},
+	{"digitalocean-token", regexp.MustCompile(`dop_v1_[A-Za-z0-9_\-]{16,}`), 0},
+	{"google-oauth-access-token", regexp.MustCompile(`ya29\.[A-Za-z0-9_\-]+`), 0},
 	{"private-key-block", regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), 0},
 	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}`), 0},
 	{"aws-secret-access-key", regexp.MustCompile(`(?i)aws_?secret_?access_?key\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})`), 1},
-	{"assigned-secret", regexp.MustCompile(`(?i)\b([a-z0-9_\-]*(?:api[_-]?key|secret|passwd|password|token|access[_-]?key)[a-z0-9_\-]*)\s*[:=]\s*["']?([^\s"',;]{8,})`), 2},
+	// JSON-tolerant: covers {"apiKey": "..."} as well as api_key: ...
+	{"assigned-secret", regexp.MustCompile(`(?i)\b([a-z0-9_\-]*(?:api[_-]?key|secret|passwd|password|token|access[_-]?key)[a-z0-9_\-]*)["']?\s*[:=]\s*["']?([^\s"',;]{8,})`), 2},
 }
 
-// RedactSecrets replaces secret-shaped values in command output with a marker
-// and returns the redacted text plus the set of pattern names that matched.
-// With redaction disabled the text is returned unchanged.
-func (g *ShellGuard) RedactSecrets(output string) (string, []string) {
-	if g == nil || !g.RedactSecretOutput || output == "" {
+// RedactToolOutput masks credential-shaped values unconditionally. SECURITY: it is the transcript boundary.
+func RedactToolOutput(output string) (string, []string) {
+	if output == "" {
 		return output, nil
 	}
-
 	redacted := output
 	var hits []string
 	for _, p := range secretPatterns {
 		if !p.re.MatchString(redacted) {
 			continue
 		}
-		// Replace only the capture group so the surrounding key name stays
-		// visible and the model can still tell that a credential was present.
 		redacted = p.re.ReplaceAllStringFunc(redacted, func(match string) string {
 			idx := p.re.FindStringSubmatchIndex(match)
 			if idx == nil {
@@ -82,13 +74,18 @@ func (g *ShellGuard) RedactSecrets(output string) (string, []string) {
 		})
 		hits = append(hits, p.name)
 	}
-
 	return redacted, hits
 }
 
-// FlagSensitivePaths returns the sensitive paths referenced by a shell command.
-// This is advisory: it powers the approval preview, it does not block
-// execution, because a shell string cannot be reliably confined.
+// RedactSecrets masks secret-shaped values. With redaction disabled the text is unchanged.
+func (g *ShellGuard) RedactSecrets(output string) (string, []string) {
+	if g == nil || !g.RedactSecretOutput || output == "" {
+		return output, nil
+	}
+	return RedactToolOutput(output)
+}
+
+// FlagSensitivePaths returns sensitive paths referenced by a command for the approval preview. Advisory only.
 func (g *ShellGuard) FlagSensitivePaths(command string) []string {
 	if g == nil || g.SensitiveMatcher == nil || command == "" {
 		return nil
@@ -105,8 +102,7 @@ func (g *ShellGuard) FlagSensitivePaths(command string) []string {
 			continue
 		}
 
-		// Check both the bare token and its basename so "secrets/.env" and
-		// ".env" are both recognised.
+		// Match bare token and basename so "secrets/.env" and ".env" are both recognised.
 		candidates := []string{cleaned, filepath.Base(cleaned)}
 		for _, c := range candidates {
 			if c == "" {
@@ -126,7 +122,6 @@ func (g *ShellGuard) FlagSensitivePaths(command string) []string {
 	return flagged
 }
 
-// shellTokens splits a command line into candidate path tokens.
 func shellTokens(command string) []string {
 	fields := strings.FieldsFunc(command, func(r rune) bool {
 		switch r {

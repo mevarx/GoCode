@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func newTestModel(cancelCh chan struct{}) Model {
@@ -29,7 +29,7 @@ func TestEscClearsInputAndDoesNotQuit(t *testing.T) {
 	m := newTestModel(nil)
 	m.textarea.SetValue("half-typed message")
 
-	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m2, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmdQuits(t, cmd) {
 		t.Fatal("Esc unexpectedly quit the program")
 	}
@@ -40,7 +40,7 @@ func TestEscClearsInputAndDoesNotQuit(t *testing.T) {
 
 func TestEscIdleDoesNotQuit(t *testing.T) {
 	m := newTestModel(nil)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmdQuits(t, cmd) {
 		t.Fatal("Esc with empty input unexpectedly quit the program")
 	}
@@ -48,7 +48,7 @@ func TestEscIdleDoesNotQuit(t *testing.T) {
 
 func TestCtrlCQuitsWhenIdle(t *testing.T) {
 	m := newTestModel(nil)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !cmdQuits(t, cmd) {
 		t.Fatal("expected Ctrl+C to quit while idle")
 	}
@@ -59,7 +59,7 @@ func TestCtrlCInterruptsStreamingTurn(t *testing.T) {
 	m := newTestModel(cancelCh)
 	m.streaming = true
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmdQuits(t, cmd) {
 		t.Fatal("first Ctrl+C while streaming must interrupt, not quit")
 	}
@@ -74,13 +74,13 @@ func TestWindowResizeFitsSmallTerminal(t *testing.T) {
 	m := newTestModel(nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 32, Height: 10})
 	m = updated.(Model)
-	if m.viewport.Width != 32 || m.viewport.Height != 3 {
-		t.Fatalf("unexpected viewport dimensions: %dx%d", m.viewport.Width, m.viewport.Height)
+	if m.viewport.Width() != 32 || m.viewport.Height() != 3 {
+		t.Fatalf("unexpected viewport dimensions: %dx%d", m.viewport.Width(), m.viewport.Height())
 	}
-	if got := lipgloss.Height(m.View()); got != 10 {
+	if got := lipgloss.Height(m.View().Content); got != 10 {
 		t.Errorf("expected terminal-height layout of 10 lines, got %d", got)
 	}
-	for i, line := range strings.Split(m.View(), "\n") {
+	for i, line := range strings.Split(m.View().Content, "\n") {
 		if width := lipgloss.Width(line); width > 32 {
 			t.Errorf("view line %d is %d cells wide in a 32-cell terminal", i, width)
 		}
@@ -104,7 +104,7 @@ func TestEscInterruptsStreamingTurn(t *testing.T) {
 	m := newTestModel(cancelCh)
 	m.streaming = true
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmdQuits(t, cmd) {
 		t.Fatal("Esc while streaming must interrupt, not quit")
 	}
@@ -121,7 +121,7 @@ func TestSecondCtrlCWhileStreamingQuits(t *testing.T) {
 	m.streaming = true
 	m.cancelRequested = true
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !cmdQuits(t, cmd) {
 		t.Fatal("second Ctrl+C while streaming should quit")
 	}
@@ -131,7 +131,7 @@ func TestEnterQuitAliases(t *testing.T) {
 	for _, alias := range []string{"exit", "quit", "/exit", "/quit"} {
 		m := newTestModel(nil)
 		m.textarea.SetValue(alias)
-		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if !cmdQuits(t, cmd) {
 			t.Errorf("expected %q to quit the program", alias)
 		}

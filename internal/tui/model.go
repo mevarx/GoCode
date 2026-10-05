@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/mevarx/GoCode/internal/agent"
+	"github.com/mevarx/GoCode/internal/provider"
 )
 
 type ChatRole int
@@ -29,18 +32,27 @@ type ChatMessage struct {
 	Role    ChatRole
 	Label   string
 	Content string
+	Diff    string
 }
 
 type agentChunkMsg struct{ delta string }
 type agentDoneMsg struct{ err error }
 type agentToolMsg struct {
-	name    string
-	result  string
-	isError bool
+	name       string
+	result     string
+	isError    bool
+	toolCallID string
+	diff       string
 }
 
-// agentExitMsg is emitted when a slash command asks the program to quit. Any
-// notice is rendered before the program stops.
+// Opens a pending card so the UI shows the call while awaiting approval.
+type agentToolStartMsg struct {
+	name       string
+	args       string
+	toolCallID string
+}
+
+// Notice renders before the program stops.
 type agentExitMsg struct{ notice string }
 type approvalRequestMsg struct{ req ApprovalRequest }
 
@@ -62,14 +74,11 @@ type Model struct {
 	workspaceRoot string
 	streaming     bool
 
-	// mascot lives in the model rather than a package global because Bubble
-	// Tea copies the model by value on every Update.
+	// In model, not a global: Bubble Tea copies the model by value on Update.
 	mascot mascot
-	// animating gates the frame ticker. An idle session stops redrawing
-	// entirely rather than burning a core on a mascot nobody is watching.
+	// False stops redrawing entirely instead of burning CPU while idle.
 	animating bool
-	// animEpoch increments per turn. A frame from an earlier turn is dropped
-	// rather than re-armed, so two ticking chains can never overlap.
+	// Incremented per turn so stale frames can't re-arm the ticker.
 	animEpoch int
 
 	modelPickerActive bool
@@ -83,6 +92,13 @@ type Model struct {
 	inputCh  chan string
 	outputCh chan tea.Msg
 	cancelCh chan struct{}
+
+	// Engine's authoritative model/provider; status bar reverts optimistic picker picks.
+	agentSession *agent.Session
+	registry     *provider.Registry
+
+	// Maps tool call ID to transcript index so results replace pending cards.
+	pendingTools map[string]int
 
 	cancelRequested bool
 }
@@ -112,6 +128,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		inputCh:       inputCh,
 		outputCh:      outputCh,
 		cancelCh:      cancelCh,
+		pendingTools:  make(map[string]int),
 		focused:       true,
 	}
 }
@@ -133,36 +150,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
-		headerH := 1
-		footerH := m.textareaHeight() + 3
+
+		// Size input first; viewport gets the leftover.
+		//
+		// v2 Width is border-box: size textarea to interior or placeholder wraps.
+		boxWidth := max(1, m.width-2)
+		m.textarea.SetWidth(max(1, boxWidth-2*rowPadCompact-2))
+
+		// Measure chrome instead of hardcoding; widget height drifts with text.
+		footerH := lipgloss.Height(m.renderInputArea()) + lipgloss.Height(m.renderHelpLine())
+		headerH := lipgloss.Height(m.renderStatusBar())
 		vpH := m.height - headerH - footerH
 		if vpH < 1 {
 			vpH = 1
 		}
+
 		atBottom := m.ready && m.viewport.AtBottom()
 		if !m.ready {
-			m.viewport = viewport.New(m.width, vpH)
+			m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(vpH))
 			m.viewport.SetContent(m.renderMessages())
 			m.ready = true
 		} else {
-			m.viewport.Width = m.width
-			m.viewport.Height = vpH
+			m.viewport.SetWidth(m.width)
+			m.viewport.SetHeight(vpH)
 			m.viewport.SetContent(m.renderMessages())
 			if atBottom {
 				m.viewport.GotoBottom()
 			}
 		}
-		m.textarea.SetWidth(max(1, m.width-4))
 		m.modelPicker.SetWidth(max(1, m.width-10))
 		m.modelPicker.SetHeight(max(1, m.height-6))
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.modelPickerActive {
-			switch msg.Type {
-			case tea.KeyCtrlL, tea.KeyEsc:
+			switch msg.String() {
+			case "ctrl+l", "esc":
 				m.modelPickerActive = false
 				return m, nil
-			case tea.KeyEnter:
+			case "enter":
 				if !m.modelPicker.SettingFilter() {
 					if sel := m.modelPicker.SelectedItem(); sel != nil {
 						if item, ok := sel.(ModelItem); ok {
@@ -188,14 +213,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateApproval(msg)
 		}
 
-		switch msg.Type {
-		case tea.KeyCtrlL:
+		switch msg.String() {
+		case "ctrl+l":
 			m.modelPickerActive = true
 			m.modelPicker.SetWidth(max(1, m.width-10))
 			m.modelPicker.SetHeight(max(1, m.height-6))
 			return m, nil
 
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			if m.streaming {
 				if m.cancelRequested {
 					return m, tea.Quit
@@ -206,7 +231,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 
-		case tea.KeyEsc:
+		case "esc":
 			if m.streaming {
 				if m.cancelRequested {
 					return m, tea.Quit
@@ -220,7 +245,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.KeyEnter:
+		case "enter":
 			if m.streaming {
 				return m, nil
 			}
@@ -236,8 +261,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.streaming = true
 			m.streamBuf.Reset()
-			// The model is working but has produced nothing yet, so the mascot
-			// waits rather than claiming to be streaming.
+			// No tokens yet, so show thinking rather than streaming.
 			m.mascot.setState(mascotThinking, msgNow())
 			m.animating = true
 			m.animEpoch++
@@ -245,18 +269,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			go func() { inputCh <- input }()
 			cmds = append(cmds, m.listenOutput(), tickUntil(cadence(mascotThinking), m.animEpoch))
 
-		case tea.KeyUp:
+		case "up":
 			if !m.textarea.Focused() {
 				m.viewport.ScrollUp(3)
 			}
-		case tea.KeyDown:
+		case "down":
 			if !m.textarea.Focused() {
 				m.viewport.ScrollDown(3)
 			}
-		case tea.KeyPgUp:
-			m.viewport.ScrollUp(m.viewport.Height / 2)
-		case tea.KeyPgDown:
-			m.viewport.ScrollDown(m.viewport.Height / 2)
+		case "pgup":
+			m.viewport.ScrollUp(m.viewport.Height() / 2)
+		case "pgdown":
+			m.viewport.ScrollDown(m.viewport.Height() / 2)
 		}
 
 	case agentChunkMsg:
@@ -272,8 +296,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.cancelRequested = false
 		m.streamBuf.Reset()
-		// A cancelled turn is a user action, not a failure, so it relaxes to
-		// idle rather than showing the mascot an error face.
+		// Cancelled turn is user action, not failure: relax to idle.
 		switch {
 		case msg.err != nil && !errors.Is(msg.err, context.Canceled):
 			m.mascot.setState(mascotError, msgNow())
@@ -283,6 +306,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mascot.setState(mascotIdle, msgNow())
 		}
 		m.animating = false
+		// Revert optimistic picker pick to engine truth.
+		if m.agentSession != nil && m.registry != nil {
+			m.providerName = m.registry.ActiveName()
+			m.modelName = m.agentSession.Model()
+		}
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				m.addMessage(ChatMessage{Role: RoleSystem, Label: "⏹ Stopped", Content: "generation canceled — enter a new message to continue"})
@@ -290,6 +318,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: msg.err.Error()})
 			}
 		}
+		m.viewport.GotoBottom()
+		cmds = append(cmds, m.listenOutput())
+
+	case agentToolStartMsg:
+		if m.streaming {
+			m.mascot.setState(mascotWorking, msgNow())
+		}
+		trimmed := strings.TrimSpace(msg.args)
+		if len(trimmed) > 200 {
+			trimmed = trimmed[:197] + "..."
+		}
+		content := "running…"
+		if trimmed != "" {
+			content += "\n" + trimmed
+		}
+		m.messages = append(m.messages, ChatMessage{
+			Role:    RoleTool,
+			Label:   "🔧 " + msg.name,
+			Content: content,
+		})
+		if msg.toolCallID != "" {
+			m.pendingTools[msg.toolCallID] = len(m.messages) - 1
+		}
+		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
@@ -303,7 +355,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			role = RoleError
 			label = msg.name
 		}
-		m.addMessage(ChatMessage{Role: role, Label: label, Content: msg.result})
+		if idx, ok := m.pendingTools[msg.toolCallID]; ok && idx < len(m.messages) {
+			m.messages[idx].Role = role
+			m.messages[idx].Label = label
+			m.messages[idx].Content = msg.result
+			m.messages[idx].Diff = msg.diff
+			delete(m.pendingTools, msg.toolCallID)
+			m.viewport.SetContent(m.renderMessages())
+		} else {
+			m.addMessage(ChatMessage{Role: role, Label: label, Content: msg.result, Diff: msg.diff})
+		}
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
@@ -326,8 +387,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case frameMsg:
 		m.mascot.step(msg.at)
-		// Re-arm only for the current turn, so a late frame from a finished
-		// turn cannot keep a chain ticking behind the live one.
+		// Re-arm only current turn so late frames can't keep old chains ticking.
 		if m.animating && msg.epoch == m.animEpoch {
 			cmds = append(cmds, tickUntil(cadence(m.mascot.state), m.animEpoch))
 		}
@@ -346,15 +406,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) updateApproval(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyLeft, tea.KeyRight, tea.KeyTab:
+func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "left", "right", "tab":
 		if m.approvalFocus == 0 {
 			m.approvalFocus = 1
 		} else {
 			m.approvalFocus = 0
 		}
-	case tea.KeyEnter:
+	case "enter":
 		approved := m.approvalFocus == 0
 		req := m.approvalReq
 		m.approvalActive = false
@@ -367,13 +427,13 @@ func (m Model) updateApproval(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.addMessage(ChatMessage{Role: role, Label: label, Content: req.ToolName})
 		m.viewport.GotoBottom()
 		go func() { req.ReplyCh <- approved }()
-	case tea.KeyEsc:
+	case "esc":
 		req := m.approvalReq
 		m.approvalActive = false
 		m.addMessage(ChatMessage{Role: RoleSystem, Label: "✗ Denied", Content: req.ToolName})
 		m.viewport.GotoBottom()
 		go func() { req.ReplyCh <- false }()
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		req := m.approvalReq
 		m.approvalActive = false
 		go func() { req.ReplyCh <- false }()
@@ -389,7 +449,22 @@ func (m *Model) interruptTurn() {
 	}
 }
 
-func (m Model) View() string {
+// View renders the whole UI.
+//
+// v2 view is declarative: AltScreen/MouseMode must be set on every return.
+// Routing through newView guarantees that.
+func (m Model) View() tea.View {
+	return m.newView(m.render())
+}
+
+func (m Model) newView(content string) tea.View {
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m Model) render() string {
 	if !m.ready {
 		return "\n  Initializing GoCode…\n"
 	}
@@ -414,17 +489,13 @@ func (m Model) View() string {
 	return base
 }
 
-// minModelWidth is how many cells the model id needs to be worth showing at
-// all. Below this the bar drops the model rather than truncating it to a
-// meaningless stub like "hf.co/de…".
+// Below this the bar drops model id rather than truncating to a stub.
 const minModelWidth = 12
 
 func (m *Model) renderStatusBar() string {
 	contentWidth := max(1, m.width-2)
 
-	// The mascot leads unconditionally. It is the only element on the bar with
-	// no textual fallback, so it is the last thing that may be dropped and
-	// never the first: when the bar is too narrow, the model id truncates.
+	// Mascot has no textual fallback, so it's dropped last; model id truncates first.
 	head := m.mascot.inline(msgNow(), mascotFaceStyles) +
 		statusSeparator + statusProviderStyle.Render(m.providerName)
 
@@ -433,8 +504,7 @@ func (m *Model) renderStatusBar() string {
 		suffix = statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
 	}
 
-	// The workspace path is the first casualty when the bar is tight, the model
-	// id the second.
+	// When tight, drop workspace path first, model id second.
 	var right string
 	if path := workspaceShortName(m.workspaceRoot); path != "" {
 		needed := lipgloss.Width(path) + lipgloss.Width(statusSeparator)
@@ -444,7 +514,6 @@ func (m *Model) renderStatusBar() string {
 		}
 	}
 
-	// Whatever the head, suffix and path leave behind goes to the model id.
 	left := head
 	room := contentWidth - lipgloss.Width(head) - lipgloss.Width(suffix) -
 		lipgloss.Width(right) - lipgloss.Width(statusSeparator)
@@ -462,18 +531,14 @@ func (m *Model) renderStatusBar() string {
 
 func (m *Model) renderInputArea() string {
 	style := inputBoxStyle
-	// A blurred box while a turn runs, and while the user has not focused the
-	// input. Prompt-looking focus during a stream would invite typing that is
-	// silently dropped.
+	// Blurred while streaming; focused prompt would invite typing that's dropped.
 	if !m.focused || m.streaming {
 		style = inputBoxBlurStyle
 	}
 	return style.Width(max(1, m.width-2)).Render(m.textarea.View())
 }
 
-// renderHelpLine lists the keys that work right now, not every binding.
-// Mid-turn the only useful action is interrupting, so the hint says that
-// instead of listing keys that currently do nothing.
+// Shows only keys that work now; mid-turn that's just interrupt.
 func (m *Model) renderHelpLine() string {
 	var text string
 	switch {
@@ -544,6 +609,9 @@ func (m *Model) renderMessage(msg ChatMessage) string {
 	case RoleTool:
 		label := toolLabelStyle.Render("  " + msg.Label)
 		content := toolBubbleStyle.Width(max(1, m.width-6)).Render(msg.Content)
+		if msg.Diff != "" {
+			content += "\n" + m.renderDiff(msg.Diff)
+		}
 		return label + "\n" + content + "\n"
 	case RoleError:
 		return errorStyle.Render("  ✗ "+msg.Label+": "+msg.Content) + "\n"
@@ -555,6 +623,9 @@ func (m *Model) renderMessage(msg ChatMessage) string {
 
 func (m *Model) renderApprovalModal() string {
 	req := m.approvalReq
+
+	// Clamp to terminal; Place returns input unchanged when too narrow.
+	modalW := max(8, min(m.width, 56))
 
 	title := modalTitleStyle.Render("⚠  Tool Approval Required")
 	toolLine := "  Tool: " + modalToolNameStyle.Render(req.ToolName)
@@ -591,15 +662,53 @@ func (m *Model) renderApprovalModal() string {
 		append(argLines, preview, "", "  "+approveBtn+"   "+denyBtn, systemStyle.Render("  ← → Tab: switch  Enter: confirm  Esc: deny"))...,
 	), "\n")
 
-	return modalOverlayStyle.Render(body)
+	return modalOverlayStyle.Width(modalW).Render(body)
+}
+
+func (m *Model) renderDiff(diff string) string {
+	addStyle := lipgloss.NewStyle().Foreground(col.diffAddFg).Background(col.diffAddBg).Padding(0, rowPadCompact).MarginLeft(indentGutter)
+	delStyle := lipgloss.NewStyle().Foreground(col.diffDelFg).Background(col.diffDelBg).Padding(0, rowPadCompact).MarginLeft(indentGutter)
+	metaStyle := lipgloss.NewStyle().Foreground(col.diffMeta).MarginLeft(indentGutter + rowPadCompact)
+	ctxStyle := lipgloss.NewStyle().Foreground(colorText).MarginLeft(indentGutter + rowPadCompact)
+	w := max(1, m.width-6)
+	lines := strings.Split(strings.TrimRight(diff, "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index "):
+			out = append(out, metaStyle.Width(w).Render(line))
+		case strings.HasPrefix(line, "+"):
+			out = append(out, addStyle.Width(w).Render(line))
+		case strings.HasPrefix(line, "-"):
+			out = append(out, delStyle.Width(w).Render(line))
+		default:
+			out = append(out, ctxStyle.Width(w).Render(line))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func placeModal(base, modal string, totalW, totalH int) string {
-	return lipgloss.Place(totalW, totalH, lipgloss.Center, lipgloss.Center,
-		modal,
+	// Clamp first; Place bails when oversized, then overlay so transcript stays visible.
+	clamped := lipgloss.NewStyle().
+		MaxWidth(max(1, totalW)).
+		MaxHeight(max(1, totalH)).
+		Render(modal)
+
+	canvas := lipgloss.Place(totalW, totalH, lipgloss.Left, lipgloss.Top, base,
 		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceBackground(colorBg),
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(colorBg)),
 	)
+
+	mW := lipgloss.Width(clamped)
+	mH := lipgloss.Height(clamped)
+	colOff := max(0, (totalW-mW)/2)
+	rowOff := max(0, (totalH-mH)/2)
+
+	return lipgloss.NewCompositor(
+		lipgloss.NewLayer(canvas).Z(0),
+		lipgloss.NewLayer(clamped).X(colOff).Y(rowOff).Z(1),
+	).Render()
 }
 
 func (m *Model) addMessage(msg ChatMessage) {

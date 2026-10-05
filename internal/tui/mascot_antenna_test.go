@@ -5,20 +5,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 func zzClock() time.Time { return time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC) }
 
 func lipglossWidth(s string) int { return lipgloss.Width(s) }
 
-// The antenna has to sit directly above the ┴ in the lid. padTo centres a
-// glyph within the whole portrait width, which includes the two-space indent,
-// so it put the stalk one cell left of the joint — the antenna looked
-// detached from the box it was supposed to sprout from.
-//
-// Columns are measured in display cells, not runes: the mouth is a
-// presentation-form glyph that both terminals and lipgloss count as two.
+// Antenna must sit above the ┴ joint; padTo incl. indent lands one cell left.
+// Columns measured in display cells, not runes.
 func TestHeroAntennaSitsAboveTheLidJoint(t *testing.T) {
 	for _, off := range []int{-1, 0, 1} {
 		m := newMascot()
@@ -43,15 +38,12 @@ func TestHeroAntennaSitsAboveTheLidJoint(t *testing.T) {
 			t.Fatalf("bob %+d: lid has %d ┴ joints, want exactly 1", off, len(jointCol))
 		}
 		want := jointCol[0]
-		// The ┴ is the middle of the lid: ╭──┴──╮.
 		l, r := displayCols(rows[lidRow], '╭'), displayCols(rows[lidRow], '╮')
 		if len(l) == 1 && len(r) == 1 && l[0]+r[0] != 2*want {
 			t.Errorf("bob %+d: lid corners at %d and %d are not symmetric about the ┴ at %d",
 				off, l[0], r[0], want)
 		}
 
-		// Every non-blank row above the lid is antenna, and each must line up
-		// with the joint.
 		antennaRows := 0
 		for i := 0; i < lidRow; i++ {
 			cols := nonSpaceCols(rows[i])
@@ -75,7 +67,6 @@ func TestHeroAntennaSitsAboveTheLidJoint(t *testing.T) {
 	}
 }
 
-// nonSpaceCols returns the display columns of every non-space rune in s.
 func nonSpaceCols(s string) []int {
 	var out []int
 	col := 0
@@ -88,7 +79,6 @@ func nonSpaceCols(s string) []int {
 	return out
 }
 
-// displayCols returns the display columns of every occurrence of target.
 func displayCols(s string, target rune) []int {
 	var out []int
 	col := 0
@@ -101,13 +91,11 @@ func displayCols(s string, target rune) []int {
 	return out
 }
 
-// heroOf renders the portrait with the deterministic test clock.
 func heroOf(m mascot) string {
 	return m.hero(zzClock(), mascotFaceStyles)
 }
 
-// Every row must be the same width at every bob offset, and the antenna rows
-// must match the box they sit on.
+// Rows must share width at every bob offset.
 func TestHeroAntennaRowsAreWidthMatched(t *testing.T) {
 	for _, off := range []int{-1, 0, 1} {
 		m := newMascot()

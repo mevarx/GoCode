@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mevarx/GoCode/internal/provider"
@@ -26,6 +27,24 @@ func TestEstimateTokens_SimpleMessage(t *testing.T) {
 	tokens := cm.EstimateTokens(msg)
 	if tokens < 1 {
 		t.Errorf("expected at least 1 token, got %d", tokens)
+	}
+}
+
+// ReasoningContent is replayed into history, so it must count against the budget;
+// otherwise Truncate concludes an oversized request fits.
+func TestEstimateTokens_CountsReasoningContent(t *testing.T) {
+	cm := NewContextManager(0)
+	plain := cm.EstimateTokens(provider.Message{Role: "assistant", Content: "answer"})
+	withReasoning := cm.EstimateTokens(provider.Message{
+		Role:             "assistant",
+		Content:          "answer",
+		ReasoningContent: strings.Repeat("r", 400),
+	})
+	if withReasoning <= plain {
+		t.Errorf("reasoning content not counted: plain=%d withReasoning=%d", plain, withReasoning)
+	}
+	if want := 400/4 + (len("answer")/4 + 4); withReasoning < want {
+		t.Errorf("expected at least %d tokens with reasoning, got %d", want, withReasoning)
 	}
 }
 
@@ -103,12 +122,10 @@ func TestTruncate_PreservesToolPairs(t *testing.T) {
 	cm := NewContextManager(30) // Low limit to force dropping turn 1
 	history := []provider.Message{
 		{Role: "system", Content: "sys"},
-		// Turn 1
 		{Role: "user", Content: "first turn with long query text that takes up tokens"},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "shell_exec", Args: []byte(`{"command":"ls"}`)}}},
 		{Role: "tool", Content: "file1.txt\nfile2.txt"},
 		{Role: "assistant", Content: "here are the files"},
-		// Turn 2
 		{Role: "user", Content: "turn two"},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_2", Name: "code_search", Args: []byte(`{"query":"test"}`)}}},
 		{Role: "tool", Content: "match found"},
@@ -117,17 +134,14 @@ func TestTruncate_PreservesToolPairs(t *testing.T) {
 
 	result := cm.Truncate(history)
 
-	// Result must start with system message
 	if result[0].Role != "system" {
 		t.Fatalf("expected system message first, got %s", result[0].Role)
 	}
 
-	// Result must not start non-system messages with "tool" role
 	if len(result) > 1 && result[1].Role == "tool" {
 		t.Fatalf("orphaned tool message at index 1!")
 	}
 
-	// If a message has tool role, its corresponding assistant tool call must be present
 	for i, m := range result {
 		if m.Role == "tool" {
 			if i == 0 || len(result[i-1].ToolCalls) == 0 {
@@ -149,12 +163,11 @@ func TestCompact(t *testing.T) {
 		{Role: "assistant", Content: "resp 3"},
 	}
 
-	compacted := cm.Compact(history, 1) // keep only last turn
+	compacted := cm.Compact(history, 1)
 	if len(compacted) >= len(history) {
 		t.Errorf("expected compacted history to be smaller than original")
 	}
 
-	// Should have system message, summary user+assistant, and turn 3
 	if compacted[0].Role != "system" {
 		t.Errorf("expected system message first")
 	}

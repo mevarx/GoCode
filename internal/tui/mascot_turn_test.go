@@ -5,16 +5,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
-// Drives a whole turn the way the terminal does and checks the mascot is
-// actually present and actually moving at every stage.
-//
-// The mascot was once silently dropped by the status bar's narrow-terminal
-// fallback, and every unit test still passed because each one checked the
-// mascot in isolation. Only walking the real message sequence showed that the
-// bar the user looks at had no mascot in it.
+// Walks a whole turn; mascot was once dropped by narrow-terminal fallback.
 func TestMascotSurvivesAWholeTurn(t *testing.T) {
 	const model = "hf.co/dealignai/Ornith-1.5-9B-UNCENSORED-GGUF:Q4_K_M"
 
@@ -32,7 +26,7 @@ func TestMascotSurvivesAWholeTurn(t *testing.T) {
 	faces := map[string]string{"idle": face()}
 
 	m.textarea.SetValue("hi lol")
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	faces["thinking"] = face()
 	if !m.streaming {
 		t.Error("Enter did not put the model into streaming state")
@@ -50,14 +44,14 @@ func TestMascotSurvivesAWholeTurn(t *testing.T) {
 		t.Error("animation kept running after the turn ended")
 	}
 
-	// The mascot must be on the bar at every stage, not just some.
+	// Mascot must be on bar at every stage, not just some.
 	for _, stage := range []string{"idle", "thinking", "working", "done"} {
 		if strings.TrimSpace(faces[stage]) == "" {
 			t.Errorf("mascot missing from the status bar while %s", stage)
 		}
 	}
 
-	// Each state should be visually distinct, or "busy" does not read as busy.
+	// Each state should be visually distinct.
 	seen := map[string]string{}
 	for stage, f := range faces {
 		if other, dup := seen[f]; dup {
@@ -67,14 +61,13 @@ func TestMascotSurvivesAWholeTurn(t *testing.T) {
 	}
 }
 
-// A mascot that does not move is not an animation. Drive real frames and count
-// the distinct positions the springs visit.
+// Drive real frames and count distinct spring positions.
 func TestMascotActuallyMovesWhileWorking(t *testing.T) {
 	m := NewModel("ollama", "llama3", "v0.6.1", "D:/CODING/GoCode", nil,
 		make(chan string, 4), make(chan tea.Msg, 64), make(chan struct{}), nil)
 	m = drive(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.textarea.SetValue("go")
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = drive(m, agentChunkMsg{delta: "working"})
 
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
@@ -97,21 +90,18 @@ func TestMascotActuallyMovesWhileWorking(t *testing.T) {
 	if len(sway) < 8 {
 		t.Errorf("sway spring only visited %d distinct positions over 400 frames; it is not moving", len(sway))
 	}
-	// The rendered bar is what the user actually looks at, so it is the thing
-	// that has to change — not merely the spring values underneath it. Blink
-	// cannot carry this: the mascot does not blink while working.
+	// Rendered bar must change, not merely spring values; blink can't carry this.
 	if len(bars) < 2 {
 		t.Errorf("the rendered status bar never changed across 400 frames of working (%d distinct)",
 			len(bars))
 	}
-	// Same for the sprite on its own, which isolates it from bar padding.
+	// Same for sprite alone, isolating it from bar padding.
 	if len(sprites) < 2 {
 		t.Errorf("the mascot sprite never changed across 400 frames of working (%d distinct)",
 			len(sprites))
 	}
 }
 
-// drive feeds one message through Update and returns the resulting model.
 func drive(m Model, msg tea.Msg) Model {
 	next, _ := m.Update(msg)
 	return next.(Model)

@@ -69,7 +69,6 @@ func TestHandleCommand_Clear(t *testing.T) {
 		t.Fatal("expected /clear to be handled")
 	}
 
-	// Should have cleared user message and re-added system message
 	history := sess.History()
 	if len(history) != 1 || history[0].Role != "system" {
 		t.Errorf("expected only system message after clear, got %d messages", len(history))
@@ -112,13 +111,11 @@ func TestHandleCommand_ProvidersAndModels(t *testing.T) {
 		Registry: reg,
 	}
 
-	// List providers
 	resP := HandleCommand(context.Background(), cmdCtx, "/providers")
 	if !resP.Handled || !strings.Contains(resP.Output, "provA") || !strings.Contains(resP.Output, "provB") {
 		t.Errorf("expected providers listed, got: %s", resP.Output)
 	}
 
-	// Switch provider
 	resSwitch := HandleCommand(context.Background(), cmdCtx, "/provider provB")
 	if !resSwitch.Handled || !strings.Contains(resSwitch.Output, "Switched provider to provB") {
 		t.Errorf("expected provider switched, got: %s", resSwitch.Output)
@@ -127,13 +124,11 @@ func TestHandleCommand_ProvidersAndModels(t *testing.T) {
 		t.Errorf("expected active provider provB, got %s", reg.ActiveName())
 	}
 
-	// Show model
 	resM := HandleCommand(context.Background(), cmdCtx, "/model")
 	if !resM.Handled || !strings.Contains(resM.Output, "Active Model") {
 		t.Errorf("expected active model output, got: %s", resM.Output)
 	}
 
-	// Set model
 	resSetM := HandleCommand(context.Background(), cmdCtx, "/model model-3")
 	if !resSetM.Handled || sess.Model() != "model-3" {
 		t.Errorf("expected model set to model-3, got %s", sess.Model())
@@ -170,5 +165,32 @@ func TestHandleCommand_Commit_CancelledByUser(t *testing.T) {
 	res := HandleCommand(context.Background(), cmdCtx, "/commit Add changed.txt")
 	if !res.Handled || !strings.Contains(res.Output, "cancelled by user") {
 		t.Errorf("expected commit cancelled by user, got: %s", res.Output)
+	}
+}
+
+// A '-' path must not parse as a flag; commit needs a pathspec to avoid sweeping the index.
+func TestGitArgsUseSeparatorAndPathspec(t *testing.T) {
+	add := gitAddArgs("-n")
+	if len(add) != 3 || add[0] != "add" || add[1] != "--" || add[2] != "-n" {
+		t.Fatalf("gitAddArgs must be [add -- <path>], got %q", add)
+	}
+
+	commit := gitCommitArgs("msg", []string{"a.txt", "-n"})
+	if len(commit) < 5 || commit[0] != "commit" {
+		t.Fatalf("unexpected commit args: %q", commit)
+	}
+	sep := -1
+	for i, a := range commit {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		t.Fatalf("commit args lack a -- separator: %q", commit)
+	}
+	rest := commit[sep+1:]
+	if len(rest) != 2 || rest[0] != "a.txt" || rest[1] != "-n" {
+		t.Errorf("commit pathspec wrong: %q (full: %q)", rest, commit)
 	}
 }

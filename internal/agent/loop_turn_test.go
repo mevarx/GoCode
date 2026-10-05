@@ -11,8 +11,7 @@ import (
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
-// recordingProvider captures the history it was asked to stream, which is the
-// only way to observe whether the engine truncated before sending.
+// recordingProvider captures streamed history to observe whether the engine truncated.
 type recordingProvider struct {
 	mu        sync.Mutex
 	received  [][]provider.Message
@@ -72,9 +71,7 @@ func engineWith(p provider.Provider, sess *Session) *AgentLoop {
 	return NewAgentLoop(reg, sess, tools.NewRegistry(), tools.NewApprovalGate())
 }
 
-// TestRunTurnTruncatesHistory is the regression test for the defect where the
-// TUI sent session.History() untruncated while the plain loop truncated. The
-// engine is the single implementation, so this now covers both UIs.
+// Regression: the TUI once sent history untruncated while the plain loop truncated.
 func TestRunTurnTruncatesHistory(t *testing.T) {
 	p := &recordingProvider{text: "done"}
 	sess := NewSession("m")
@@ -108,7 +105,6 @@ func TestRunTurnTruncatesHistory(t *testing.T) {
 	}
 }
 
-// The guard must stop a runaway turn, and must report it.
 func TestRunTurnStopsRunawayToolCalls(t *testing.T) {
 	p := &recordingProvider{toolCalls: []provider.ToolCall{{
 		ID:   "x",
@@ -144,7 +140,45 @@ func TestRunTurnStopsRunawayToolCalls(t *testing.T) {
 	}
 }
 
-// A provider that cannot stream must surface the error, not spin.
+// A token-limited answer must surface truncation, not store as complete (MEDIUM-16).
+func TestTruncatedFinishReasonSurfacesWarning(t *testing.T) {
+	sess := NewSession("m")
+	engine := engineWith(&truncatingProvider{}, sess)
+
+	var events []LoopEvent
+	engine.Observe = func(ev LoopEvent) { events = append(events, ev) }
+
+	if err := engine.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+
+	var saw bool
+	for _, ev := range events {
+		if ev.Kind == EventNotice && strings.Contains(ev.Text, "token limit") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Error("expected a notice that the provider stopped at the token limit")
+	}
+}
+
+type truncatingProvider struct{}
+
+func (t *truncatingProvider) Name() string { return "truncating" }
+
+func (t *truncatingProvider) Models(context.Context) ([]string, error) {
+	return []string{"m"}, nil
+}
+
+func (t *truncatingProvider) Stream(context.Context, string, []provider.Message, []provider.ToolSpec) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 2)
+	ch <- provider.StreamChunk{Delta: "partial answer"}
+	ch <- provider.StreamChunk{Done: true, FinishReason: "length"}
+	close(ch)
+	return ch, nil
+}
+
 func TestRunTurnSurfacesStreamError(t *testing.T) {
 	sess := NewSession("m")
 	engine := engineWith(&errProvider{}, sess)

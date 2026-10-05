@@ -10,15 +10,11 @@ import (
 	"strings"
 )
 
-// Run drives the plain terminal loop: read a line, hand it to the engine,
-// render the events it emits.
-//
-// The engine's turn logic lives in RunTurn and is shared with the TUI, so
-// there is exactly one implementation of agent behaviour in the codebase.
+// Run drives the plain terminal loop, rendering engine events.
+// Turn logic lives in RunTurn shared with the TUI: one agent implementation.
 func (a *AgentLoop) Run(ctx context.Context) error {
-	// One reader for both the prompt loop and the approval gate. Two
-	// independent scanners over the same stdin raced for buffered bytes,
-	// which broke approvals whenever input was piped.
+	// One reader for prompt loop and approval gate; two scanners over stdin
+	// raced for buffered bytes and broke approvals on piped input.
 	stdin := bufio.NewReader(os.Stdin)
 	if a.Approval != nil {
 		a.Approval.SetInputReader(stdin)
@@ -57,8 +53,8 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Slash commands that need confirmation (e.g. /commit) read from
-		// the same stdin reader, so the engine prompts through this callback.
+		// Slash commands needing confirmation (e.g. /commit) prompt via this callback
+		// on the same stdin reader.
 		a.AskApproval = func(prompt string) bool {
 			fmt.Printf("%s [y/N]: ", prompt)
 			ans, err := stdin.ReadString('\n')
@@ -69,8 +65,6 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 			return ans == "y" || ans == "yes"
 		}
 
-		// RunTurn handles slash commands and agent turns alike, so there is
-		// one implementation of turn processing for both UIs.
 		if err := a.RunTurn(ctx, input); err != nil {
 			if IsExitRequest(err) {
 				return nil
@@ -87,7 +81,6 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 	return nil
 }
 
-// renderPlain formats loop events for a plain terminal.
 func (a *AgentLoop) renderPlain(ev LoopEvent) {
 	switch ev.Kind {
 	case EventDelta:
@@ -110,7 +103,6 @@ func (a *AgentLoop) renderPlain(ev LoopEvent) {
 	}
 }
 
-// stdinErr reports a non-EOF read error, if any, that the loop exited on.
 func stdinErr(r *bufio.Reader) error {
 	if _, err := r.Peek(1); err != nil && !errors.Is(err, io.EOF) {
 		return err

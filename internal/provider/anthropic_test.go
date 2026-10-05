@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// newAnthropicTestProvider points an AnthropicProvider at a test server.
 func newAnthropicTestProvider(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -32,7 +32,6 @@ func sseLine(payload string) string {
 	return "data: " + payload + "\n\n"
 }
 
-// A text-only response must surface deltas and terminate.
 func TestAnthropicStream_TextOnly(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -71,8 +70,6 @@ func TestAnthropicStream_TextOnly(t *testing.T) {
 	}
 }
 
-// A tool_use block whose arguments arrive across several input_json_delta
-// events must be reassembled into one call with valid JSON.
 func TestAnthropicStream_ToolUseReassembles(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -127,8 +124,7 @@ func TestAnthropicStream_ToolUseReassembles(t *testing.T) {
 	}
 }
 
-// A tool_use block that never receives arguments must still emit "{}" rather
-// than an empty string, which would fail to unmarshal downstream.
+// Missing args must emit "{}", not "", which fails to unmarshal downstream.
 func TestAnthropicStream_ToolWithNoArgsEmitsEmptyObject(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -157,7 +153,6 @@ func TestAnthropicStream_ToolWithNoArgsEmitsEmptyObject(t *testing.T) {
 	}
 }
 
-// An error event must surface as a chunk error rather than silently ending.
 func TestAnthropicStream_ErrorEventSurfaces(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -178,7 +173,138 @@ func TestAnthropicStream_ErrorEventSurfaces(t *testing.T) {
 	}
 }
 
-// Keep-alive comments and non-data lines must be ignored, not treated as JSON.
+// Real error shape {"type":"error","error":{...}}; message must survive to caller.
+func TestAnthropicStream_ErrorEventRealPayload(t *testing.T) {
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseLine(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	ch, _ := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "go"}}, nil)
+
+	var gotErr error
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected an error chunk")
+	}
+	if !strings.Contains(gotErr.Error(), "Overloaded") {
+		t.Errorf("expected the real error message, got %q", gotErr.Error())
+	}
+}
+
+// Empty turns must be dropped or the API 400s with "content":[].
+func TestAnthropicStream_DropsEmptyTurnsFromRequest(t *testing.T) {
+	var body []byte
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseLine(`{"type":"message_stop"}`))
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	history := []Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: ""},
+		{Role: "assistant", Content: "  "},
+		{Role: "tool", Content: "", ToolCallID: "t0"},
+		{Role: "user", Content: "next"},
+	}
+	ch, err := p.Stream(context.Background(), "claude-test", history, nil)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	for range ch {
+	}
+
+	s := string(body)
+	if strings.Contains(s, `"content":[]`) {
+		t.Errorf("empty assistant turn serialised as content:[]: %s", s)
+	}
+	if strings.Contains(s, `"tool_result"`) {
+		t.Errorf("empty tool_result block was forwarded: %s", s)
+	}
+	if !strings.Contains(s, `"content":"hi"`) || !strings.Contains(s, `"content":"next"`) {
+		t.Errorf("non-empty messages must survive: %s", s)
+	}
+}
+
+// Tool args over bufio's 64 KiB cap must not abort the turn.
+func TestAnthropicStream_LargeToolArgumentScannerCap(t *testing.T) {
+	big := strings.Repeat("x", 100*1024)
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseLine(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t0","name":"file_write"}}`))
+		payload, _ := json.Marshal(map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"content":"` + big + `"}`},
+		})
+		fmt.Fprint(w, sseLine(string(payload)))
+		fmt.Fprint(w, sseLine(`{"type":"content_block_stop","index":0}`))
+		fmt.Fprint(w, sseLine(`{"type":"message_stop"}`))
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	ch, _ := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "go"}}, nil)
+
+	var calls []ToolCall
+	var gotErr error
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+	if gotErr != nil {
+		t.Fatalf("large tool argument must not abort the stream: %v", gotErr)
+	}
+	if len(calls) != 1 || len(calls[0].Args) < 100*1024 {
+		t.Errorf("expected the full large argument, got %d calls, args len %d", len(calls), lenOfArgs(calls))
+	}
+}
+
+func lenOfArgs(calls []ToolCall) int {
+	if len(calls) == 0 {
+		return 0
+	}
+	return len(calls[0].Args)
+}
+
+// stop_reason max_tokens must surface, not store truncated answer as complete.
+func TestAnthropicStream_MaxTokensStopReasonTruncates(t *testing.T) {
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseLine(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}`))
+		fmt.Fprint(w, sseLine(`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`))
+		fmt.Fprint(w, sseLine(`{"type":"message_stop"}`))
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	ch, _ := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "go"}}, nil)
+
+	var gotErr error
+	var gotFinish string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+		if chunk.FinishReason != "" {
+			gotFinish = chunk.FinishReason
+		}
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "max_tokens") {
+		t.Errorf("expected truncation error mentioning max_tokens, got %v", gotErr)
+	}
+	if gotFinish != "max_tokens" {
+		t.Errorf("expected FinishReason max_tokens, got %q", gotFinish)
+	}
+}
+
 func TestAnthropicStream_IgnoresCommentsAndBlankLines(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -205,8 +331,37 @@ func TestAnthropicStream_IgnoresCommentsAndBlankLines(t *testing.T) {
 	}
 }
 
-// The x-api-key header and anthropic-version must be present, since the native
-// Anthropic API rejects requests without them.
+// Nil schema must default, not forward "input_schema":null which fails the request.
+func TestAnthropicStream_NullToolSchemaDefaulted(t *testing.T) {
+	var body []byte
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseLine(`{"type":"message_stop"}`))
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	ch, _ := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "go"}}, []ToolSpec{{Name: "t", Description: "d", Parameters: nil}})
+	for range ch {
+	}
+	if strings.Contains(string(body), `"input_schema":null`) {
+		t.Errorf("null input_schema was forwarded: %s", body)
+	}
+	if !strings.Contains(string(body), `"input_schema":{"type":"object"`) {
+		t.Errorf("expected defaulted input_schema, got %s", body)
+	}
+}
+
+func TestMaxTokensForModel(t *testing.T) {
+	if got := maxTokensForModel("claude-3-opus-20240229"); got != 4096 {
+		t.Errorf("claude-3-opus must request at most 4096, got %d", got)
+	}
+	if got := maxTokensForModel("claude-sonnet-4-20250514"); got != 8192 {
+		t.Errorf("other models keep the 8192 default, got %d", got)
+	}
+}
+
+// Native API rejects requests without x-api-key and anthropic-version.
 func TestAnthropicStream_SendsRequiredHeaders(t *testing.T) {
 	var gotKey, gotVersion string
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {

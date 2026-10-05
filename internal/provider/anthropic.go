@@ -32,6 +32,8 @@ func NewAnthropicProvider(cfg config.GatewayConfig) *AnthropicProvider {
 		cfg:  cfg,
 		client: &http.Client{
 			Transport: NewRetryTransport(baseTransport),
+			// Ceiling so a stalled gateway can't hold a turn forever.
+			Timeout: 10 * time.Minute,
 		},
 	}
 }
@@ -101,12 +103,25 @@ type anthropicStreamEvent struct {
 		ID   string `json:"id,omitempty"`
 		Name string `json:"name,omitempty"`
 	} `json:"content_block,omitempty"`
+	// Error is the in-band {"type":"error","error":{...}} payload.
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type anthropicDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
+}
+
+// Caps max_tokens per model; claude-3-opus rejects >4096 with "Invalid max_tokens".
+func maxTokensForModel(model string) int {
+	if strings.HasPrefix(model, "claude-3-opus") {
+		return 4096
+	}
+	return 8192
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []Message, tools []ToolSpec) (<-chan StreamChunk, error) {
@@ -127,6 +142,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 	for _, msg := range convMessages {
 		switch msg.Role {
 		case "user":
+			if strings.TrimSpace(msg.Content) == "" {
+				// Empty user turns marshal as "content":"" which the API rejects.
+				continue
+			}
 			content, _ := json.Marshal(msg.Content)
 			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
 				Role:    "user",
@@ -149,6 +168,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 					Input: tc.Args,
 				})
 			}
+			if len(blocks) == 0 {
+				// Empty assistant turns marshal as "content":[] which the API rejects; drop to keep history sendable.
+				continue
+			}
 			content, _ := json.Marshal(blocks)
 			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
 				Role:    "assistant",
@@ -156,6 +179,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 			})
 
 		case "tool":
+			if strings.TrimSpace(msg.Content) == "" {
+				// Empty tool_result blocks are rejected; drop to keep history sendable.
+				continue
+			}
 			blocks := []anthropicContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: msg.ToolCallID,
@@ -171,7 +198,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 
 	reqBody := anthropicRequest{
 		Model:     model,
-		MaxTokens: 8192,
+		MaxTokens: maxTokensForModel(model),
 		System:    systemPrompt,
 		Messages:  anthropicMsgs,
 		Stream:    true,
@@ -183,7 +210,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 			anthropicTools = append(anthropicTools, anthropicTool{
 				Name:        ts.Name,
 				Description: ts.Description,
-				InputSchema: ts.Parameters,
+				InputSchema: validOrDefaultToolSchema(ts.Parameters),
 			})
 		}
 		reqBody.Tools = anthropicTools
@@ -216,6 +243,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 		return nil, fmt.Errorf("provider %q returned status %d: %s", p.name, resp.StatusCode, string(body))
 	}
 
+	if check := checkEventStreamContentType(resp, p.name); check != nil {
+		return nil, check
+	}
+
 	ch := make(chan StreamChunk, 64)
 
 	go func() {
@@ -223,6 +254,8 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 		defer close(ch)
 
 		scanner := bufio.NewScanner(resp.Body)
+		// Match OpenAI path's cap; large tool args otherwise abort with "token too long".
+		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 		type pendingToolCall struct {
 			id   string
@@ -230,6 +263,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 			args strings.Builder
 		}
 		pendingTools := make(map[int]*pendingToolCall)
+		var stopReason string
 
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -268,7 +302,9 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 				switch delta.Type {
 				case "text_delta":
 					if delta.Text != "" {
-						ch <- StreamChunk{Delta: delta.Text}
+						if !emitChunk(ctx, ch, StreamChunk{Delta: delta.Text}) {
+							return
+						}
 					}
 				case "input_json_delta":
 					if pt, ok := pendingTools[event.Index]; ok {
@@ -282,31 +318,57 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 					if strings.TrimSpace(argsStr) == "" {
 						argsStr = "{}"
 					}
-					ch <- StreamChunk{
+					if !emitChunk(ctx, ch, StreamChunk{
 						ToolCalls: []ToolCall{{
 							ID:   pt.id,
 							Name: pt.name,
 							Args: json.RawMessage(argsStr),
 						}},
+					}) {
+						return
 					}
 					delete(pendingTools, event.Index)
 				}
 
+			case "message_delta":
+				// stop_reason travels here, before message_stop.
+				var delta struct {
+					StopReason string `json:"stop_reason"`
+				}
+				if err := json.Unmarshal(event.Delta, &delta); err == nil && delta.StopReason != "" {
+					stopReason = delta.StopReason
+				}
+
 			case "message_stop":
-				ch <- StreamChunk{Done: true}
+				if isTruncationFinish(stopReason) {
+					emitChunk(ctx, ch, StreamChunk{
+						Err:          fmt.Errorf("response truncated: provider stopped at the token limit (stop_reason %q)", stopReason),
+						Done:         true,
+						FinishReason: stopReason,
+					})
+					return
+				}
+				emitChunk(ctx, ch, StreamChunk{Done: true, FinishReason: stopReason})
 				return
 
 			case "error":
-				ch <- StreamChunk{
-					Err:  fmt.Errorf("anthropic stream error: %s", string(event.Delta)),
-					Done: true,
+				msg := ""
+				if event.Error != nil {
+					msg = strings.TrimSpace(event.Error.Type + ": " + event.Error.Message)
 				}
+				if msg == "" || msg == ":" {
+					msg = string(event.Delta)
+				}
+				emitChunk(ctx, ch, StreamChunk{
+					Err:  fmt.Errorf("anthropic stream error: %s", msg),
+					Done: true,
+				})
 				return
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
-			ch <- StreamChunk{Err: fmt.Errorf("error reading stream from anthropic: %w", err), Done: true}
+			emitChunk(ctx, ch, StreamChunk{Err: fmt.Errorf("error reading stream from anthropic: %w", err), Done: true})
 		}
 	}()
 

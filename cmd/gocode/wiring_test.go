@@ -11,9 +11,7 @@ import (
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
-// guardConfigFor mirrors the wiring in runAgent. It exists as a function so
-// the mapping from config to LoopGuardConfig is testable, which is the seam
-// where a renamed config key would otherwise silently disable the turn guard.
+// guardConfigFor mirrors runAgent wiring so config-to-guard mapping stays testable.
 func guardConfigFor(cfg config.Config) agent.LoopGuardConfig {
 	return agent.LoopGuardConfig{
 		MaxIterations:    cfg.Tools.MaxToolIterations,
@@ -78,8 +76,7 @@ func TestConfiguredLimitBoundsTheTurn(t *testing.T) {
 	}
 }
 
-// session.persist=false must prevent the store from being created. This is the
-// helper runAgent uses, so the behaviour is asserted rather than described.
+// persist=false must prevent store creation.
 func TestPersistDisabledMeansNoStore(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 
@@ -112,9 +109,7 @@ func TestPersistEnabledCreatesStore(t *testing.T) {
 	}
 }
 
-// A store that cannot be opened must be non-fatal: GoCode still works without
-// history, so the error is returned but the store is nil, never a half-open
-// handle.
+// An unopenable store must be non-fatal: the store stays nil, never half-open.
 func TestPersistEnabledToleratesUnwritablePath(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {

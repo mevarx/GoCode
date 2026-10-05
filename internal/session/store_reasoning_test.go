@@ -10,11 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Reasoning must survive a round trip through the store: providers such as
-// MiniMax and DeepSeek need the full assistant reasoning chain replayed into
-// history on the next turn, so losing it on save or load breaks multi-turn
-// tool calling after a restart.
-// legacyDB is a bare SQLite handle used to build a pre-v0.5.2 database by hand.
+// Reasoning must round-trip: some providers need it replayed into history, or multi-turn breaks after restart.
 type legacyDB struct {
 	db *sql.DB
 }
@@ -109,13 +105,10 @@ func TestReasoningContentSurvivesSaveSession(t *testing.T) {
 	}
 }
 
-// A database created before reasoning_content existed must be migrated in
-// place, not fail to open. CREATE TABLE IF NOT EXISTS does not add columns to
-// an existing table, so an explicit migration is required.
+// A pre-reasoning database must migrate in place; CREATE TABLE IF NOT EXISTS alone cannot add columns.
 func TestExistingDatabaseIsMigrated(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 
-	// Build a database with the pre-v0.5.2 schema by hand.
 	legacy := newLegacyStore(t, path)
 	if err := legacy.exec(`
 		CREATE TABLE sessions (
@@ -144,7 +137,6 @@ func TestExistingDatabaseIsMigrated(t *testing.T) {
 	}
 	legacy.close()
 
-	// Opening it with the current code must succeed and keep the old data.
 	store, err := NewStore(path)
 	if err != nil {
 		t.Fatalf("opening a pre-existing database must not fail: %v", err)

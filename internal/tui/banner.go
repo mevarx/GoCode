@@ -5,12 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// renderBanner draws the startup hero: mascot, name, tagline and session chips.
-// The mascot leads because it is what animates all session, so the user learns
-// to read it before needing the name.
+// Mascot leads so the user learns to read it before needing the name.
 func renderBanner(providerName, modelName, version string, termWidth int) string {
 	if termWidth > 0 && termWidth < mascotHeroWidth+4 {
 		return renderCompactBanner(providerName, modelName, version, termWidth)
@@ -21,8 +19,7 @@ func renderBanner(providerName, modelName, version string, termWidth int) string
 	title := bannerTitleStyle.Render("GoCode")
 	tagline := bannerTaglineStyle.Render("terminal coding agent")
 
-	// Name and tagline align with the mascot's face, not its antenna, so the
-	// pair reads as one unit rather than as text floating above a creature.
+	// Align name/tagline with the face so the pair reads as one unit.
 	meta := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		lipgloss.NewStyle().Width(mascotHeroWidth+2).Render(hero),
@@ -48,11 +45,9 @@ func renderBanner(providerName, modelName, version string, termWidth int) string
 	return block
 }
 
-// mascotHeroWidth is the mascot's rendered width, including its indent.
 var mascotHeroWidth = lipgloss.Width(stripANSI(mascotFaceStyles.body.Render("  ╭─────╮")))
 
-// renderSessionChips shows the active provider and model. Naming the endpoint
-// here is cheaper than having the user discover the wrong one mid-task.
+// Naming the endpoint here avoids discovering the wrong one mid-task.
 func renderSessionChips(providerName, modelName, version string) string {
 	chip := func(style lipgloss.Style, label, value string) string {
 		if value == "" {
@@ -68,14 +63,12 @@ func renderSessionChips(providerName, modelName, version string) string {
 	}, " ")
 }
 
-// renderBannerHints lists the first things worth knowing. Kept to one line so
-// it cannot wrap into the viewport and push the input box off screen.
+// Kept to one line so it can't wrap and push the input box off screen.
 func renderBannerHints() string {
 	return bannerHintStyle.Render("  /help commands · Ctrl+L switch model · Ctrl+C quit")
 }
 
-// renderCompactBanner is the narrow-terminal fallback: no mascot, since a
-// creature squeezed into 30 columns is noise rather than character.
+// Narrow-terminal fallback: no mascot, squeezed into 30 columns it's noise.
 func renderCompactBanner(providerName, modelName, version string, termWidth int) string {
 	center := lipgloss.NewStyle().Align(lipgloss.Center).Width(termWidth)
 

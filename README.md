@@ -8,7 +8,7 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/mevarx/GoCode)](https://goreportcard.com/report/github.com/mevarx/GoCode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go 1.22+](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev/)
+[![Go 1.26+](https://img.shields.io/badge/go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/mevarx/GoCode)](https://github.com/mevarx/GoCode/releases)
 
 [Overview](#overview) •
@@ -69,8 +69,8 @@ Corrections to v0.6.0, found by independent review and by measuring rendered out
 - **A Mascot** — GoCode now has a character. It sits in the status bar as a fixed-width sprite and appears in the startup banner as a full portrait, with an antenna, a face, and five expressions tied to what the agent is actually doing: `idle`, `thinking` (prompt sent, no tokens yet), `working` (streaming), `done`, and `error`. A cancelled turn relaxes to idle rather than showing a failure face, because interrupting is a user action, not a failure.
 - **Spring Physics, Not Keyframes** — Motion is driven by `charmbracelet/harmonica` damped springs chasing a shaped oscillator. A spring accelerates and decelerates on its own, so retargeting mid-flight produces natural movement with no easing curve to tune. The bob spring is deliberately under-damped (0.55) so it overshoots once and settles — at critical damping it reads as a machine.
 - **The Drive Rate Is Measured, Not Guessed** — A spring cannot follow a drive faster than its own natural frequency, and the mascot shipped completely motionless because the oscillator ran at 4.4Hz against a spring rated for ~0.8Hz: the signal attenuated to 0.06 cells and rounded to zero every frame. Every test still passed — nothing had checked whether the mascot moved at all. The rate is now 0.03 cycles/frame, where the spring tracks at 89% of the requested amplitude, and states differ by amplitude rather than by rate. `TestBobActuallyMovesEnoughToQuantize` measures peak displacement per state so this cannot regress silently.
-- **Animations That Cost Nothing When Idle** — The frame ticker runs at 20fps while a turn is active and 5fps when idle, and stops entirely when no turn is running. A parked session redraws zero frames rather than burning a core animating a mascot nobody is watching.
-- **Blinks** — The mascot blinks on a 4s cycle. This was a real bug caught during the rework: the blink was armed only by a state transition, which no-ops when the state is unchanged, so a session that stayed idle from startup never blinked once.
+- **Animations That Cost Nothing When Idle** — The frame ticker runs at 20fps while streaming and 10fps while the model is thinking, and stops entirely when no turn is running. A parked session redraws zero frames rather than burning a core animating a mascot nobody is watching.
+- **Blinks** — While a turn is running, the mascot blinks on a 4s cycle. A parked session freezes its pose rather than running a ticker nobody is watching.
 - **Design Tokens in One Place** — `internal/tui/styles.go` is now the single source of truth for the visual language: no call site writes a hex value. Colour is `AdaptiveColor` throughout, so light terminals get darkened light values rather than merely lightened ones. The direction is **cool chrome, warm content** — surfaces and interactive elements are azure/slate, anything the agent *did* is amber/red, so a glance at colour alone tells you whether you are reading UI or reading output.
 - **Context-Aware Help Line** — The hint under the input box now lists the keys that work *right now*. Mid-turn it says interrupting is the only useful action instead of listing keys that currently do nothing, and it collapses progressively on narrow terminals.
 - **Startup Banner Reworked** — The `GOCODE` wordmark is replaced by the mascot, with the session's provider and model shown as chips. Below roughly 40 columns it falls back to a text-only layout, because a creature squeezed into 30 columns is noise rather than character.
@@ -150,7 +150,7 @@ Correctness and safety fixes, each verified against the real binary:
 
 ### Prerequisites
 
-- **Go 1.22+** installed (if building from source)
+- **Go 1.26+** installed (if building from source)
 - An active AI provider: **Ollama** for local execution, or an API key for cloud providers
 
 ### Installation
@@ -598,7 +598,7 @@ gocode/
 | **Open Source** | MIT | Proprietary | Apache-2.0 | Proprietary |
 | **Language & Runtime** | Native Go Binary | Electron / TS | Python Runtime | Node.js / CLI |
 | **Local LLM Support** | Built-in | Limited | Yes | Cloud-only |
-| **Cloud Providers** | 9 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
+| **Cloud Providers** | 20 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
 | **Human Approval Control** | Explicit Gate | Semi-auto | Auto/Prompt | Auto |
 | **Session Persistence** | SQLite | Yes | No | No |
 | **MCP Support** | stdio | Yes | Yes | No |
@@ -622,7 +622,7 @@ Unlike Cursor (which is an Electron IDE extension) or Aider (which runs on Pytho
 
 ### Which LLM API providers does GoCode support?
 
-GoCode supports 9 built-in provider gateways plus custom OpenAI-compatible endpoints: Google Gemini, Anthropic Claude, OpenAI, Groq, OpenRouter, Qwen (Aliyun DashScope), Kimi (Moonshot AI), local Ollama, OmniRoute proxies, llama.cpp, and OpenCode Zen.
+GoCode supports 20 built-in provider gateways plus custom OpenAI-compatible endpoints: Ollama, OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, Qwen (Aliyun DashScope), Kimi (Moonshot AI), Mistral, MiniMax, DeepSeek, xAI, OmniRoute, Hermes Agent, and GitHub Copilot.
 
 ### Is GoCode free to use?
 

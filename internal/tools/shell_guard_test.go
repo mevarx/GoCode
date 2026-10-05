@@ -17,14 +17,7 @@ func newTestGuard(t *testing.T) *ShellGuard {
 	return &ShellGuard{SensitiveMatcher: m, RedactSecretOutput: true}
 }
 
-// Test credentials are assembled at runtime from these fragments.
-//
-// Writing the literals inline made secret scanners flag every commit: strings
-// beginning with a provider prefix and followed by enough alphanumerics look
-// exactly like live credentials to a detector, even when the body is obviously
-// fake. Building them here keeps the suite honest without shipping anything
-// that trips a scanner on every push. These are not real credentials and are
-// not derived from any.
+// Test credentials are runtime-assembled fragments to avoid tripping secret scanners. They are not real.
 var (
 	fragAnthropic = "sk" + "-ant-" + strings.Repeat("A", 24)
 	fragOpenAI    = "sk" + "-" + strings.Repeat("B", 32)
@@ -181,8 +174,7 @@ func TestShellGuardDescribeHelpers(t *testing.T) {
 	}
 }
 
-// TestShellExecRedactsRealCommandOutput exercises the guard end-to-end through
-// the tool itself, using a real command rather than a stub.
+// Exercises the guard end-to-end with a real command.
 func TestShellExecRedactsRealCommandOutput(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("requires POSIX shell")
@@ -207,8 +199,7 @@ func TestShellExecRedactsRealCommandOutput(t *testing.T) {
 	}
 }
 
-// TestShellExecPreviewWarnsOnSensitiveCommand proves the advisory warning is
-// surfaced at approval time, which is the only real protection the shell has.
+// SECURITY: the approval warning is the shell's only protection for sensitive paths.
 func TestShellExecPreviewWarnsOnSensitiveCommand(t *testing.T) {
 	dir := t.TempDir()
 	guard := &ShellGuard{SensitiveMatcher: ignore.NewSensitiveMatcher(nil, nil), RedactSecretOutput: true}
@@ -224,8 +215,7 @@ func TestShellExecPreviewWarnsOnSensitiveCommand(t *testing.T) {
 	}
 }
 
-// TestShellExecNilGuardStillWorks ensures the guard is genuinely optional and
-// does not change existing behaviour when absent.
+// The guard is optional and must not change behaviour when absent.
 func TestShellExecNilGuardStillWorks(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("requires POSIX shell")

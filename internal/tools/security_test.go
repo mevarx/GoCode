@@ -13,8 +13,6 @@ import (
 	"github.com/mevarx/GoCode/internal/ignore"
 )
 
-// TestSecurity_PathTraversalPrevention verifies that all tools block path traversal
-// attempts that would access or modify files outside the workspace root.
 func TestSecurity_PathTraversalPrevention(t *testing.T) {
 	wsDir := t.TempDir()
 	outsideDir := t.TempDir()
@@ -24,7 +22,6 @@ func TestSecurity_PathTraversalPrevention(t *testing.T) {
 
 	matcher := ignore.NewSensitiveMatcher(nil, nil)
 
-	// 1. file_read
 	readTool := &FileReadTool{
 		WorkspaceRoot:    wsDir,
 		SensitiveMatcher: matcher,
@@ -38,7 +35,6 @@ func TestSecurity_PathTraversalPrevention(t *testing.T) {
 		t.Errorf("expected file_read to block traversal, got error: %q", rRes.Error)
 	}
 
-	// 2. file_write
 	writeTool := &FileWriteTool{
 		WorkspaceRoot:    wsDir,
 		SensitiveMatcher: matcher,
@@ -55,7 +51,6 @@ func TestSecurity_PathTraversalPrevention(t *testing.T) {
 		t.Errorf("expected file_write to block traversal, got error: %q", wRes.Error)
 	}
 
-	// 3. file_patch
 	patchTool := &FilePatchTool{
 		WorkspaceRoot:    wsDir,
 		SensitiveMatcher: matcher,
@@ -73,7 +68,6 @@ func TestSecurity_PathTraversalPrevention(t *testing.T) {
 		t.Errorf("expected file_patch to block traversal, got error: %q", pRes.Error)
 	}
 
-	// 4. code_search
 	searchTool := &CodeSearchTool{
 		WorkspaceRoot:    wsDir,
 		SensitiveMatcher: matcher,
@@ -91,7 +85,6 @@ func TestSecurity_PathTraversalPrevention(t *testing.T) {
 	}
 }
 
-// TestSecurity_SensitiveFilesDenied verifies that credentials and secret files are denied.
 func TestSecurity_SensitiveFilesDenied(t *testing.T) {
 	wsDir := t.TempDir()
 
@@ -138,8 +131,7 @@ func TestSecurity_SensitiveFilesDenied(t *testing.T) {
 	}
 }
 
-// TestSecurity_ApprovalBeforeExecution verifies that preview does not execute,
-// and user denial leaves filesystem intact.
+// Preview must not execute; denial must leave the filesystem intact.
 func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 	wsDir := t.TempDir()
 	targetFile := filepath.Join(wsDir, "target.txt")
@@ -149,7 +141,6 @@ func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 	matcher := ignore.NewSensitiveMatcher(nil, nil)
 	writeTool := &FileWriteTool{WorkspaceRoot: wsDir, SensitiveMatcher: matcher}
 
-	// 1. Preview generates a diff preview without changing file
 	previewArgs, _ := json.Marshal(fileWriteArgs{Path: "target.txt", Content: "overwritten content"})
 	prev, err := writeTool.Preview(context.Background(), previewArgs)
 	if err != nil {
@@ -164,7 +155,6 @@ func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 		t.Fatalf("preview modified the file! content=%q", string(dataAfterPreview))
 	}
 
-	// 2. Denied via approval gate
 	gate := NewApprovalGate()
 	gate.OnPresent = func(toolName string, args json.RawMessage, preview string) (bool, error) {
 		return false, nil // Denied!
@@ -184,8 +174,6 @@ func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 	}
 }
 
-// TestSecurity_ShellExecutionBounded verifies shell execution runs inside workspace
-// and is constrained by timeout and output limits.
 func TestSecurity_ShellExecutionBounded(t *testing.T) {
 	wsDir := t.TempDir()
 	shellTool := &ShellExecTool{
@@ -194,7 +182,6 @@ func TestSecurity_ShellExecutionBounded(t *testing.T) {
 		MaxOutputBytes: 100,
 	}
 
-	// Check CWD
 	var cmd string
 	if runtime.GOOS == "windows" {
 		cmd = "cd"
@@ -210,7 +197,6 @@ func TestSecurity_ShellExecutionBounded(t *testing.T) {
 		t.Errorf("expected CWD %q, got output: %q", wsDir, res.Output)
 	}
 
-	// Check output truncation
 	argsLong, _ := json.Marshal(shellExecArgs{Command: "echo " + strings.Repeat("A", 500)})
 	resLong, _ := shellTool.Execute(context.Background(), argsLong)
 	if !strings.Contains(resLong.Output, "truncated") {

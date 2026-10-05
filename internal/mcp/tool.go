@@ -33,8 +33,14 @@ func (m *MCPTool) Spec() tools.ToolSpec {
 	// Guard the prefix, or a server that already namespaces its tools
 	// yields "srv_srv_foo".
 	name := m.toolName
-	if m.serverName != "" && !strings.HasPrefix(name, m.serverName+"_") {
-		name = fmt.Sprintf("%s_%s", m.serverName, m.toolName)
+	if m.serverName != "" {
+		if !strings.HasPrefix(name, m.serverName+"_") {
+			name = fmt.Sprintf("%s_%s", m.serverName, m.toolName)
+		}
+	}
+	// Reserved prefix: an MCP server can never shadow a built-in tool name.
+	if !strings.HasPrefix(name, "mcp_") {
+		name = "mcp_" + name
 	}
 	return tools.ToolSpec{
 		Name:        name,

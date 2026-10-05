@@ -5,12 +5,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
-// A frame belonging to a finished turn must not re-arm the ticker. Gating only
-// on m.animating let a tick in flight at a turn boundary re-arm under the next
-// turn, and every turn after that added another live chain.
+// Stale frames must not re-arm the ticker or chains accumulate.
 func TestStaleFrameDoesNotRearmTicker(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 
@@ -31,7 +29,6 @@ func TestStaleFrameDoesNotRearmTicker(t *testing.T) {
 	}
 }
 
-// The live turn's own frames must still keep the animation running.
 func TestCurrentFrameRearmsTicker(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 	m.animating = true
@@ -43,7 +40,7 @@ func TestCurrentFrameRearmsTicker(t *testing.T) {
 	}
 }
 
-// An idle session must not tick at all: no frame, no redraw, no CPU.
+// Idle must not tick: no frame, no redraw, no CPU.
 func TestIdleFrameDoesNotRearmTicker(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 	m.animating = false
@@ -55,14 +52,13 @@ func TestIdleFrameDoesNotRearmTicker(t *testing.T) {
 	}
 }
 
-// Every turn must advance the epoch, or a stale frame could match a later turn.
+// Every turn must advance epoch or stale frames match later turns.
 func TestEnterAdvancesEpoch(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 	m.textarea.SetValue("do a thing")
 	before := m.animEpoch
 
-	// Update takes the model by value, so the updated copy must be kept.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(Model)
 
 	if m.animEpoch == before {
@@ -76,7 +72,6 @@ func TestEnterAdvancesEpoch(t *testing.T) {
 	}
 }
 
-// Finishing a turn stops the ticker.
 func TestDoneStopsAnimation(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 	m.animating = true
@@ -94,7 +89,7 @@ func TestDoneStopsAnimation(t *testing.T) {
 	}
 }
 
-// A cancelled turn is a user action, so it must not look like a failure.
+// Cancelled turn is user action, not failure.
 func TestCancelledTurnIsNotAnError(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 	m.animating = true

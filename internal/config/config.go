@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -44,20 +45,12 @@ type ProviderConfig struct {
 }
 
 // CopilotConfig configures GitHub Copilot.
-//
-// Copilot is not a plain bearer-token API. It needs a long-lived GitHub OAuth
-// token, which is exchanged for a short-lived Copilot JWT that also carries a
-// dynamic API base URL. Both layers are modelled here; see
-// internal/provider/copilot.go for the exchange.
+// Uses a long-lived GitHub OAuth token exchanged for a short-lived JWT; see internal/provider/copilot.go.
 type CopilotConfig struct {
-	// OAuthTokenEnv names the environment variable holding a GitHub OAuth
-	// token (the `ghu_...` form produced by `gocode auth copilot`). The token
-	// itself is never written into config.toml.
+	// OAuthTokenEnv names the env var holding the GitHub OAuth token, never written into config.toml.
 	OAuthTokenEnv string `toml:"oauth_token_env"`
 	DefaultModel  string `toml:"default_model"`
-	// EditorVersion and EditorPluginVersion are sent as the Copilot
-	// integration headers. Copilot rejects requests whose headers do not look
-	// like a real editor client.
+	// EditorVersion and EditorPluginVersion are sent as Copilot headers; requests without them are rejected.
 	EditorVersion       string `toml:"editor_version"`
 	EditorPluginVersion string `toml:"editor_plugin_version"`
 }
@@ -97,9 +90,7 @@ type MCPServerConfig struct {
 
 // SessionConfig specifies session settings.
 type SessionConfig struct {
-	// Persist controls whether conversations are written to the SQLite
-	// store. It was previously parsed and then ignored, so `persist = false`
-	// had no effect while the documentation implied it did.
+	// Persist controls whether conversations are written to the SQLite store.
 	Persist bool `toml:"persist"`
 }
 
@@ -111,6 +102,8 @@ type ToolsConfig struct {
 	// MaxRepeatedToolCalls caps identical tool calls (same name and same
 	// arguments) within one turn. Zero or negative uses the built-in default.
 	MaxRepeatedToolCalls int `toml:"max_repeated_tool_calls"`
+	// MaxContextTokens bounds history sent to the provider; zero or negative uses the built-in default.
+	MaxContextTokens int `toml:"max_context_tokens"`
 }
 
 type ShellConfig struct {
@@ -167,9 +160,7 @@ func DefaultConfig() Config {
 				APIKeyEnv:    "MOONSHOT_API_KEY",
 				DefaultModel: "moonshot-v1-8k",
 			},
-			// Hermes exposes itself as an OpenAI-compatible endpoint on
-			// 127.0.0.1:8642, gated by API_SERVER_KEY. This makes a running
-			// Hermes gateway usable as a GoCode backend (and vice versa).
+			// Hermes gateway on 127.0.0.1:8642, gated by API_SERVER_KEY.
 			Hermes: GatewayConfig{
 				BaseURL:      "http://127.0.0.1:8642/v1",
 				APIKeyEnv:    "HERMES_API_SERVER_KEY",
@@ -242,6 +233,7 @@ func DefaultConfig() Config {
 				MaxOutputBytes: 1024 * 1024,
 				RedactSecrets:  true,
 			},
+			MaxContextTokens: 65536,
 		},
 		MCP: MCPConfig{
 			Servers: make(map[string]MCPServerConfig),
@@ -262,8 +254,8 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	if err := decodeConfig(data, &cfg, path); err != nil {
+		return cfg, err
 	}
 
 	if cfg.MCP.Servers == nil {
@@ -285,8 +277,8 @@ func LoadFromPath(path string) (Config, error) {
 		return cfg, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("failed to parse config file %s: %w", path, err)
+	if err := decodeConfig(data, &cfg, path); err != nil {
+		return cfg, err
 	}
 
 	if cfg.MCP.Servers == nil {
@@ -297,6 +289,23 @@ func LoadFromPath(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// decodeConfig parses TOML and rejects unknown keys; a misspelled key would
+// otherwise silently keep the default and disable a control the user set.
+func decodeConfig(data []byte, cfg *Config, path string) error {
+	md, err := toml.Decode(string(data), cfg)
+	if err != nil {
+		return fmt.Errorf("failed to parse config file %s: %w", path, err)
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, k := range undecoded {
+			keys = append(keys, k.String())
+		}
+		return fmt.Errorf("config file %s contains unknown keys: %s", path, strings.Join(keys, ", "))
+	}
+	return nil
 }
 
 // Save writes the configuration to the config.toml file.

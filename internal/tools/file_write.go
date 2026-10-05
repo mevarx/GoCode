@@ -48,8 +48,7 @@ func (f *FileWriteTool) RequiresApproval() bool {
 	return true
 }
 
-// Preview generates a diff preview of the proposed change WITHOUT modifying
-// any files. This is called before approval.
+// Preview shows a diff preview without modifying files.
 func (f *FileWriteTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
 	a, path, err := f.validateArgs(args)
 	if err != nil {
@@ -70,7 +69,7 @@ func (f *FileWriteTool) Preview(ctx context.Context, args json.RawMessage) (Prev
 	}, nil
 }
 
-// Execute writes the file. This is called ONLY after approval.
+// Execute writes the file. Called only after approval.
 func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
 	a, path, err := f.validateArgs(args)
 	if err != nil {
@@ -114,7 +113,6 @@ func (f *FileWriteTool) validateArgs(args json.RawMessage) (fileWriteArgs, strin
 		return a, "", fmt.Errorf("path cannot be empty")
 	}
 
-	// Workspace confinement.
 	var path string
 	if f.WorkspaceRoot != "" {
 		validatedPath, err := ValidatePath(f.WorkspaceRoot, a.Path)
@@ -126,10 +124,21 @@ func (f *FileWriteTool) validateArgs(args json.RawMessage) (fileWriteArgs, strin
 		path = filepath.Clean(a.Path)
 	}
 
-	// Check sensitive file protection.
 	if f.SensitiveMatcher != nil {
-		if blocked, reason := f.SensitiveMatcher.ShouldBlock(path, false); blocked {
+		blocked, reason, err := CheckSensitiveFile(f.SensitiveMatcher, path, false)
+		if err != nil {
+			return a, "", err
+		}
+		if blocked {
 			return a, "", fmt.Errorf("%s: %s", path, reason)
+		}
+		// SECURITY: hardlink aliases share inodes with sensitive files.
+		if f.WorkspaceRoot != "" {
+			if info, statErr := os.Stat(path); statErr == nil && !info.IsDir() {
+				if IsBlockedByIdentity(SensitiveIdentitySet(f.WorkspaceRoot, f.SensitiveMatcher), info) {
+					return a, "", fmt.Errorf("%s: access denied: matches a sensitive file (hardlink alias)", path)
+				}
+			}
 		}
 	} else if f.IgnoreMatcher != nil && f.IgnoreMatcher.IsIgnored(path, false) {
 		return a, "", fmt.Errorf("file %s is ignored by ignore rules (.gocodeignore/.gitignore)", path)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,7 +114,6 @@ func TestRetryTransport_MaxRetriesExceeded(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", resp.StatusCode)
 	}
-	// Initial attempt + 2 retries = 3 total attempts
 	if atomic.LoadInt32(&attempts) != 3 {
 		t.Errorf("expected 3 attempts (1 initial + 2 retries), got %d", attempts)
 	}
@@ -139,6 +139,98 @@ func TestRetryTransport_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRetryTransport_FinalAttemptBodyReadable(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("quota exceeded for this account, retry later"))
+	}))
+	defer server.Close()
+
+	rt := NewRetryTransport(nil)
+	rt.MaxRetries = 2
+	rt.InitialDelay = 5 * time.Millisecond
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("final body must be readable, got read error: %v", err)
+	}
+	if !strings.Contains(string(body), "quota exceeded") {
+		t.Errorf("expected provider error detail in final body, got %q", string(body))
+	}
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestRetryTransport_RetryAfterClamped(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	rt := NewRetryTransport(nil)
+	rt.MaxRetries = 2
+	rt.InitialDelay = 10 * time.Millisecond
+	rt.MaxDelay = 100 * time.Millisecond
+	client := &http.Client{Transport: rt}
+
+	start := time.Now()
+	resp, err := client.Get(server.URL)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("Retry-After must be clamped to MaxDelay, elapsed %v", elapsed)
+	}
+}
+
+func TestRetryTransport_PostNotRetried(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("server error detail"))
+	}))
+	defer server.Close()
+
+	rt := NewRetryTransport(nil)
+	rt.MaxRetries = 3
+	rt.InitialDelay = time.Millisecond
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Post(server.URL, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Errorf("POST must not be retried, got %d attempts", attempts)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "server error detail") {
+		t.Errorf("POST response body must be intact, got %q", string(body))
+	}
+}
+
 func TestRetryTransport_RequestBodyReplayed(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +251,7 @@ func TestRetryTransport_RequestBodyReplayed(t *testing.T) {
 	rt.InitialDelay = 5 * time.Millisecond
 	client := &http.Client{Transport: rt}
 
-	req, _ := http.NewRequest("POST", server.URL, http.NoBody)
+	req, _ := http.NewRequest("PUT", server.URL, http.NoBody)
 	req.Body = io.NopCloser(bytesNewBufferString("test-payload"))
 
 	resp, err := client.Do(req)

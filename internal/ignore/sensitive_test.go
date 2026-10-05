@@ -25,7 +25,6 @@ func TestSensitiveMatcher_DefaultPatterns(t *testing.T) {
 		{".netrc", true},
 		{"secret.secret", true},
 
-		// Safe files should not be blocked.
 		{"main.go", false},
 		{"README.md", false},
 		{"config.toml", false},
@@ -92,7 +91,6 @@ func TestSensitiveMatcher_ShouldBlock(t *testing.T) {
 	inner := &dummyMatcher{ignoredPaths: map[string]bool{"ignored.txt": true}}
 	m := NewSensitiveMatcher(inner, nil)
 
-	// Ignored by inner matcher.
 	blocked, reason := m.ShouldBlock("ignored.txt", false)
 	if !blocked {
 		t.Error("expected ignored.txt to be blocked")
@@ -101,7 +99,6 @@ func TestSensitiveMatcher_ShouldBlock(t *testing.T) {
 		t.Error("expected non-empty reason")
 	}
 
-	// Sensitive file.
 	blocked, reason = m.ShouldBlock(".env", false)
 	if !blocked {
 		t.Error("expected .env to be blocked")
@@ -110,7 +107,6 @@ func TestSensitiveMatcher_ShouldBlock(t *testing.T) {
 		t.Error("expected non-empty reason for sensitive file")
 	}
 
-	// Normal file.
 	blocked, _ = m.ShouldBlock("main.go", false)
 	if blocked {
 		t.Error("expected main.go to NOT be blocked")

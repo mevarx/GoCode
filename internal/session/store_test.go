@@ -2,7 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mevarx/GoCode/internal/provider"
@@ -98,5 +100,66 @@ func TestSessionStore(t *testing.T) {
 	}
 	if deleted != nil {
 		t.Errorf("expected deleted session to be nil, got %+v", deleted)
+	}
+}
+
+// MEDIUM-33: transcripts may hold file contents, so DB must be 0600 and its dir 0700; skipped on Windows (ACLs apply).
+func TestSessionStoreFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Go mode bits are ignored on Windows; ACL inheritance applies instead")
+	}
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sub", "sessions.db")
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	fi, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("database file mode = %04o, want 0600", perm)
+	}
+
+	dirFi, err := os.Stat(filepath.Dir(dbPath))
+	if err != nil {
+		t.Fatalf("stat dir failed: %v", err)
+	}
+	if perm := dirFi.Mode().Perm(); perm != 0o700 {
+		t.Errorf("session dir mode = %04o, want 0700", perm)
+	}
+}
+
+// MEDIUM-26/MEDIUM-27: busy_timeout, foreign_keys, WAL, and single-connection pool must hold (pragmas are per-connection).
+func TestSessionStorePragmasAndPool(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1", got)
+	}
+
+	query := func(pragma string) string {
+		var v string
+		if err := store.db.QueryRow("PRAGMA " + pragma).Scan(&v); err != nil {
+			t.Fatalf("PRAGMA %s failed: %v", pragma, err)
+		}
+		return v
+	}
+	if got := query("busy_timeout"); got != "5000" {
+		t.Errorf("busy_timeout = %q, want 5000", got)
+	}
+	if got := query("foreign_keys"); got != "1" {
+		t.Errorf("foreign_keys = %q, want 1", got)
+	}
+	if got := query("journal_mode"); got != "wal" {
+		t.Errorf("journal_mode = %q, want wal", got)
 	}
 }

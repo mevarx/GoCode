@@ -4,19 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// renderStatusBar used to fall back to a plain "GoCode │ provider │ model" line
-// whenever the full bar did not fit. That fallback dropped the mascot, so on
-// any terminal narrower than 80 columns the mascot never appeared at all — the
-// one feature the bar exists to show, removed the moment it was needed most.
-//
-// The mascot is the only element with no textual fallback, so it is now the
-// last thing that may be dropped; the model id absorbs the squeeze instead.
+// Mascot has no textual fallback, so it's dropped last; model id absorbs squeeze.
 func TestStatusBarAlwaysShowsTheMascot(t *testing.T) {
-	// A realistic Hugging Face repo id, which is long enough to have triggered
-	// the old fallback at ordinary terminal widths.
+	// Long HF id that triggered old fallback at ordinary widths.
 	const model = "hf.co/dealignai/Ornith-1.5-9B-UNCENSORED-GGUF:Q4_K_M"
 
 	widths := []int{40, 50, 60, 70, 76, 80, 100, 120}
@@ -41,7 +34,6 @@ func TestStatusBarAlwaysShowsTheMascot(t *testing.T) {
 	}
 }
 
-// The bar must never exceed the terminal width it was sized for.
 func TestStatusBarFitsItsWidth(t *testing.T) {
 	const model = "hf.co/dealignai/Ornith-1.5-9B-UNCENSORED-GGUF:Q4_K_M"
 	for _, w := range []int{40, 60, 80, 120} {
@@ -55,8 +47,7 @@ func TestStatusBarFitsItsWidth(t *testing.T) {
 	}
 }
 
-// When the bar cannot fit the model id it drops the id, not the provider or the
-// streaming state: an operator needs to know which model is answering.
+// Narrow bar drops id, not provider or streaming state.
 func TestStatusBarKeepsTheStreamingState(t *testing.T) {
 	const model = "hf.co/dealignai/Ornith-1.5-9B-UNCENSORED-GGUF:Q4_K_M"
 	m := &Model{width: 44, providerName: "ollama", modelName: model, streaming: true}

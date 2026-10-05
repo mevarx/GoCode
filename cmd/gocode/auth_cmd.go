@@ -16,16 +16,13 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
-// GitHub's OAuth device-flow endpoints. Device flow is used because Copilot
-// has no copy-paste API key: the only way to obtain a usable token is to
-// authorize an OAuth app as a user.
+// GitHub OAuth device-flow endpoints; device flow is the only way to obtain a Copilot-usable token.
 const (
 	githubDeviceCodeURL  = "https://github.com/login/device/code"
 	githubAccessTokenURL = "https://github.com/login/oauth/access_token"
 	githubOAuthScope     = "read:user"
 )
 
-// deviceCodeResponse is GitHub's device-code grant initiation payload.
 type deviceCodeResponse struct {
 	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`
@@ -35,8 +32,7 @@ type deviceCodeResponse struct {
 	Error           string `json:"error"`
 }
 
-// accessTokenResponse is GitHub's token-exchange payload. Errors come back as
-// HTTP 200 with an `error` field, so the status code alone is not enough.
+// Errors arrive as HTTP 200 with an error field.
 type accessTokenResponse struct {
 	AccessToken      string `json:"access_token"`
 	TokenType        string `json:"token_type"`
@@ -69,12 +65,8 @@ func newAuthCommand() *cobra.Command {
 	return cmd
 }
 
-// runCopilotLogin walks the user through GitHub's device flow and stores the
-// resulting OAuth token for the copilot provider to exchange.
-//
-// The token is written to the OS config dir with owner-only permissions and
-// exported into $GITHUB_COPILOT_TOKEN for the current shell is NOT possible
-// from a child process, so we persist it to a file the provider reads.
+// runCopilotLogin walks the device flow and stores the token; a child process cannot export env vars, so it persists to a file.
+// The token is written with owner-only permissions.
 func runCopilotLogin(cmd *cobra.Command, clientID string, timeout time.Duration) error {
 	if clientID == "" {
 		return fmt.Errorf("--client-id is required: register an OAuth App at https://github.com/settings/developers and copy its client id")
@@ -106,15 +98,12 @@ func runCopilotLogin(cmd *cobra.Command, clientID string, timeout time.Duration)
 	}
 
 	fmt.Fprintf(out, "✓ GitHub Copilot authorized. Token saved to %s\n", path)
-	// Do not tell the user to export it: the provider reads this file
-	// automatically, and exporting a live credential into every shell is
-	// strictly worse than leaving it in one 0600 file.
+	// The provider reads this file automatically; exporting a live credential into every shell is worse than one 0600 file.
 	fmt.Fprintf(out, "  It is picked up automatically. Run: gocode --provider copilot\n")
 	fmt.Fprintf(out, "  (%s takes precedence if you prefer to set it.)\n", "GITHUB_COPILOT_TOKEN")
 	return nil
 }
 
-// requestDeviceCode starts the device grant.
 func requestDeviceCode(ctx context.Context, client *http.Client, clientID string) (*deviceCodeResponse, error) {
 	form := url.Values{}
 	form.Set("client_id", clientID)
@@ -154,8 +143,7 @@ func requestDeviceCode(ctx context.Context, client *http.Client, clientID string
 	return &parsed, nil
 }
 
-// pollForToken exchanges the device code for an access token, honouring
-// GitHub's required polling interval.
+// pollForToken exchanges the device code, honouring GitHub's polling interval.
 func pollForToken(ctx context.Context, client *http.Client, clientID string, device *deviceCodeResponse) (string, error) {
 	interval := time.Duration(device.Interval) * time.Second
 	if interval <= 0 {
@@ -226,8 +214,7 @@ func pollForToken(ctx context.Context, client *http.Client, clientID string, dev
 	}
 }
 
-// saveCopilotToken writes the token with owner-only permissions. The token is
-// a live credential, so the file mode matters as much as the contents.
+// saveCopilotToken writes the live credential with owner-only permissions.
 func saveCopilotToken(token string) (string, error) {
 	if err := os.MkdirAll(config.ConfigDir(), 0o700); err != nil {
 		return "", fmt.Errorf("failed to create config directory: %w", err)
