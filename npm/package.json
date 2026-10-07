@@ -1,0 +1,16 @@
+{
+  "name": "gocode",
+  "version": "0.7.0",
+  "description": "Open-source AI terminal coding agent (Go binary, distributed via npm shim)",
+  "license": "MIT",
+  "homepage": "https://github.com/mevarx/GoCode",
+  "repository": { "type": "git", "url": "https://github.com/mevarx/GoCode" },
+  "bin": { "gocode": "bin/gocode.js" },
+  "os": ["linux", "darwin", "win32"],
+  "cpu": ["x64", "arm64"],
+  "files": ["bin/", "vendor/"],
+  "scripts": {
+    "fetch-binaries": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-binaries.ps1",
+    "prepack": "npm run fetch-binaries"
+  }
+}

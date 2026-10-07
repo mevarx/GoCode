@@ -5,3 +5,5 @@ bin/
 config.local.toml
 dist/
 coverage.out
+
+npm/vendor/
