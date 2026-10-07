@@ -1,7 +1,20 @@
+param([string]$Version)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $vendor = Join-Path $root 'vendor'
-$version = (Get-Content (Join-Path $root 'package.json') | ConvertFrom-Json).version
+if (-not $Version) {
+  $Version = (& gh release view --json tagName -q .tagName 2>$null).TrimStart('v')
+  if (-not $Version) {
+    $Version = (& gh api repos/mevarx/GoCode/releases/latest -q .tag_name).TrimStart('v')
+  }
+}
+if (-not $Version) { throw "could not resolve release version; pass -Version" }
+# keep package.json in lockstep with the fetched binaries
+$pkgPath = Join-Path $root 'package.json'
+$pkg = Get-Content $pkgPath | ConvertFrom-Json
+$pkg.version = $Version
+$pkg | ConvertTo-Json -Depth 10 | Set-Content $pkgPath
+$version = $Version
 $base = "https://github.com/mevarx/GoCode/releases/download/v$version"
 
 $assets = @{

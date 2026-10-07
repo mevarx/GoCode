@@ -41,3 +41,18 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish npm shim (gocode-cli)
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        working-directory: npm
+        run: |
+          pwsh -NoProfile -File scripts/fetch-binaries.ps1 -Version ${GITHUB_REF_NAME#v}
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
