@@ -43,6 +43,26 @@ GoCode is **provider-agnostic** and **local-first**: run completely offline with
 - **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
 - **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
 
+### v0.7.0
+
+A security-and-robustness release: the entire CODEBASE-ANALYSIS audit applied (34 items), the TUI migrated to Bubble Tea v2, and every tool call now renders as a live card.
+
+- **Bubble Tea v2 Migration** — the TUI is rebuilt on `charm.land/bubbletea/v2`, `charm.land/bubbles/v2` and `charm.land/lipgloss/v2`. Key messages arrive as `tea.KeyPressMsg`, the alternate screen and mouse mode are declared by the model's `View`, and layout geometry is measured from rendered output instead of hardcoded rows, so the frame no longer drifts a row taller than the terminal.
+- **Adaptive Palette Without `AdaptiveColor`** — v2 removed that type, so the palette is now resolved once at startup in `internal/tui/theme.go` via `lipgloss.LightDark`, with `GOCODE_THEME=light|dark` as an override. `internal/tui/capability.go` additionally detects NO_COLOR, CLICOLOR_FORCE, dumb terminals, non-TTY output and reduced-motion requests so the UI can degrade rather than spray escape codes into a pipe.
+- **Live Tool Cards** — the agent loop now emits `EventToolStart` (with the raw arguments) the moment a call is announced, so the TUI opens a `running…` card before approval or execution, and the matching result replaces that card in place. Diffs produced by `file_write`/`file_patch` travel as their own field and render with green/red line fills instead of being flattened into the text summary.
+- **Security: Sensitive-File Protection Closed** — the sensitive-file check now canonicalizes before comparing: case-folded on Windows/macOS, and trailing-space, trailing-dot and NTFS alternate-stream (`::$DATA`) forms are rejected outright in `ValidatePath`. `code_search` now resolves each candidate through `EvalSymlinks`, re-confines it to the workspace, runs the same canonical sensitive check, and skips hardlink aliases by `os.SameFile` identity — closing the hole where the alias read through a name `file_read` already blocked.
+- **Security: Tool Namespace and MCP Registry** — `Registry.Register` refuses duplicate names instead of silently overwriting, and MCP tools are unconditionally namespaced as `mcp_<server>_<tool>`, so a server can never shadow a built-in or inherit its auto-approval entry.
+- **Session Integrity on Interrupt** — guard-stops and mid-batch cancellations now write synthetic `tool_result` messages for every unanswered call id before the turn returns, so the session no longer wedges with "400 on every later turn" after a single Esc. A parked interrupt is drained between turns so it cannot cancel the next message.
+- **Provider Robustness** — exhausted retries now return a readable body (the provider's actual error, not an empty 429), `Retry-After` is clamped, only idempotent methods are retried, in-band `{"error": …}` payloads and non-SSE 200s surface as errors, Anthropic scanner cap raised to 8 MiB, truncation stop-reasons become explicit errors instead of silently stored "complete" answers, and the Copilot JWT is re-exchanged on 401/403.
+- **Terminal-Size Safety** — the approval modal clamps to the terminal width and height and is composited over the live frame instead of replacing it; at minimum viable widths the transcript and input box stay visible.
+- **`/commit` Works in the TUI** — `engine.AskApproval` is backed by the real approval modal, and the git invocation uses `--` and a pathspec so a crafted path cannot inject flags and the commit cannot sweep unrelated staged changes.
+- **`/model` Fails Closed** — validation errors from `Models()` now abort the switch instead of silently accepting the unvalidated name, and the status bar re-syncs from the engine's actual provider/model after every turn.
+- **MCP Client Hardening** — a 16 MiB message ceiling, a 60s per-request deadline, stdin writes moved out of the call mutex, and startup failures are printed and returned rather than silently swallowed.
+- **Session Store Hardening** — `busy_timeout` is applied before `journal_mode`, the pool is pinned to one connection, the database file is created `0600`, open failures surface a warning, and all row scans check `rows.Err()`.
+- **Loop Guard** — repeated-call detection now keys on canonicalized arguments (JSON key order and whitespace no longer reset it) and counts consecutive repeats only, using the previously dead counter.
+- **Config Strictness** — unknown keys in `config.toml` are now an error naming the typo, instead of being silently ignored and disabling the control they meant to set.
+- **`make test` Degrades Gracefully** — `-race` runs when gcc/cgo is available and is skipped with a printed note where it cannot run, instead of failing outright on Windows.
+
 ### v0.6.2 Fixes
 
 The mascot had shipped looking finished and moving like a still image. Both defects were only visible by driving a real turn and rendering the screen, because every test up to that point checked the mascot in isolation.
@@ -71,7 +91,7 @@ Corrections to v0.6.0, found by independent review and by measuring rendered out
 - **The Drive Rate Is Measured, Not Guessed** — A spring cannot follow a drive faster than its own natural frequency, and the mascot shipped completely motionless because the oscillator ran at 4.4Hz against a spring rated for ~0.8Hz: the signal attenuated to 0.06 cells and rounded to zero every frame. Every test still passed — nothing had checked whether the mascot moved at all. The rate is now 0.03 cycles/frame, where the spring tracks at 89% of the requested amplitude, and states differ by amplitude rather than by rate. `TestBobActuallyMovesEnoughToQuantize` measures peak displacement per state so this cannot regress silently.
 - **Animations That Cost Nothing When Idle** — The frame ticker runs at 20fps while streaming and 10fps while the model is thinking, and stops entirely when no turn is running. A parked session redraws zero frames rather than burning a core animating a mascot nobody is watching.
 - **Blinks** — While a turn is running, the mascot blinks on a 4s cycle. A parked session freezes its pose rather than running a ticker nobody is watching.
-- **Design Tokens in One Place** — `internal/tui/styles.go` is now the single source of truth for the visual language: no call site writes a hex value. Colour is `AdaptiveColor` throughout, so light terminals get darkened light values rather than merely lightened ones. The direction is **cool chrome, warm content** — surfaces and interactive elements are azure/slate, anything the agent *did* is amber/red, so a glance at colour alone tells you whether you are reading UI or reading output.
+- **Design Tokens in One Place** — `internal/tui/styles.go` and `internal/tui/theme.go` are the single source of truth for the visual language: no call site writes a hex value. The palette adapts to the resolved terminal background (`GOCODE_THEME` overrides detection), so light terminals get darkened light values rather than merely lightened ones. The direction is **cool chrome, warm content** — surfaces and interactive elements are azure/slate, anything the agent *did* is amber/red, so a glance at colour alone tells you whether you are reading UI or reading output.
 - **Context-Aware Help Line** — The hint under the input box now lists the keys that work *right now*. Mid-turn it says interrupting is the only useful action instead of listing keys that currently do nothing, and it collapses progressively on narrow terminals.
 - **Startup Banner Reworked** — The `GOCODE` wordmark is replaced by the mascot, with the session's provider and model shown as chips. Below roughly 40 columns it falls back to a text-only layout, because a creature squeezed into 30 columns is noise rather than character.
 
@@ -652,7 +672,7 @@ GoCode is licensed under the **MIT License** — see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) • Powered by Go**
+**Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) v2 • Powered by Go**
 
 Made with ❤️ by [mevarx](https://github.com/mevarx)
 
