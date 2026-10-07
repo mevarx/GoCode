@@ -60,12 +60,12 @@ See [CHANGES.md](CHANGES.md) for the full per-version history, starting with v0.
 
 ```bash
 # One-shot, no install
-npx gocode
-bunx gocode
+npx gocode-cli
+bunx gocode-cli
 
 # Or install globally
-npm install -g gocode
-bun install -g gocode
+npm install -g gocode-cli
+bun install -g gocode-cli
 ```
 
 #### Option 2: Install via `go install`
