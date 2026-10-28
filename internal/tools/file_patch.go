@@ -78,7 +78,7 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	diff := generateUnifiedDiff(path, oldContent, newContent)
 
-	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+	if err := writeToolFile(path, []byte(newContent), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
 	}
 

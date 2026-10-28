@@ -89,7 +89,7 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		return Result{Error: fmt.Sprintf("cannot create directory %s: %v", dir, err)}, nil
 	}
 
-	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
+	if err := writeToolFile(path, []byte(a.Content), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
 	}
 
