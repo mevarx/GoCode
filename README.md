@@ -1,271 +1,162 @@
 <div align="center">
 
+<img src="assets/gocode-banner.png" alt="GoCode: Write, Build, Grow. An open-source AI coding agent for your terminal." width="100%">
+
 # GoCode
 
-### Open-Source AI Terminal Coding Agent
+**A native Go AI coding agent for your terminal.**
 
-**A high-performance, Go-native, local-first AI coding agent for your command line.**
-
+[![CI](https://github.com/mevarx/GoCode/actions/workflows/ci.yml/badge.svg)](https://github.com/mevarx/GoCode/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mevarx/GoCode)](https://goreportcard.com/report/github.com/mevarx/GoCode)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go 1.26+](https://img.shields.io/badge/go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/mevarx/GoCode)](https://github.com/mevarx/GoCode/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Overview](#overview) •
-[Features](#features) •
 [Quick Start](#quick-start) •
+[Features](#features) •
+[Security](#security) •
 [Configuration](#configuration) •
-[FAQ](#faq)
+[Contributing](#contributing)
 
 </div>
 
----
-
-## Overview
-
-**GoCode** is a lightweight, open-source AI terminal coding agent written in Go. It turns your command line into an interactive pair programming environment capable of reading project files, editing code via structured patches, executing shell commands, and debugging errors in real time—all with strict human-in-the-loop approval.
-
-Unlike heavy Python-based or Node.js-based AI CLI tools, GoCode compiles into a **single, zero-dependency binary** with instant startup latency and minimal memory footprint.
-
-GoCode is **provider-agnostic** and **local-first**: run completely offline with local LLMs via **Ollama** or **llama.cpp**, or connect seamlessly to leading cloud AI models from **Google Gemini**, **Anthropic Claude**, **OpenAI**, **Groq**, **OpenRouter**, **Qwen**, **Kimi**, **OpenCode Zen**, and more.
+<!--
+  TODO: add a real terminal demo here (GIF or video, ~20-30 seconds).
+  Show: ask GoCode to inspect a project -> it proposes a patch -> approval prompt -> task runs.
+  Example: <p align="center"><img src="assets/demo.gif" alt="GoCode demo" width="800"></p>
+-->
 
 ---
 
-## Features
+GoCode helps you explore, write, refactor, and debug code from your command line. Connect your preferred AI provider, use a local model, and keep control over file changes and shell commands through explicit approval.
 
-### Core Capabilities
+- **Native Go CLI**: a self-contained executable with no separate Python or Node.js runtime required.
+- **Your choice of models**: 20 built-in provider gateways, any OpenAI-compatible endpoint, or a local backend such as Ollama or llama.cpp.
+- **Controlled execution**: review diffs and approve commands before they run.
+- **Persistent sessions**: SQLite-backed history that resumes where you left off.
+- **Extensible**: add external tools through the Model Context Protocol (MCP).
 
-- **Single Native Go Binary** — Fast startup, low resource usage, zero Python or Node.js dependencies
-- **Local-First & Privacy-Focused** — Runs 100% offline with local models via Ollama or llama.cpp
-- **20 Built-in Provider Gateways** — Ollama, OpenAI, Gemini, Claude, GitHub Copilot, xAI (SpaceXAI), Mistral, MiniMax, DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, Qwen, Kimi, Hermes Agent, and OmniRoute
-- **Custom API Endpoints** — add any OpenAI Chat Completions-compatible service, including local llama.cpp, with its own base URL and API-key environment variable
-- **Human-in-the-Loop Approval Gate** — Explicit confirmation before executing commands or modifying files
-- **Enforced Workspace Boundary (file tools)** — `file_read`/`file_write`/`file_patch`/`code_search` are confined to the workspace, traversal- and symlink-proof, and blocked from sensitive files. `shell_exec` is **not** confined — see [What is actually enforced](#tools--security-architecture)
-- **On-the-Fly Switching** — Switch providers or models dynamically with `/provider` and `/model` commands
-
-### Changelog
-
-See [CHANGES.md](CHANGES.md) for the full per-version history, starting with v0.7.0.
+---
 
 ## Quick Start
 
-### Prerequisites
+### 1. Install
 
-- **Go 1.26+** installed (if building from source)
-- An active AI provider: **Ollama** for local execution, or an API key for cloud providers
+```bash
+npm install -g gocode-cli
+```
 
-### Installation
-
-#### Option 1: npm / npx / bunx (Recommended)
+<details>
+<summary>Other install options</summary>
 
 ```bash
 # One-shot, no install
 npx gocode-cli
 bunx gocode-cli
 
-# Or install globally
-npm install -g gocode-cli
-bun install -g gocode-cli
-```
-
-#### Option 2: Install via `go install`
-
-```bash
+# Go toolchain
 go install github.com/mevarx/GoCode/cmd/gocode@latest
-```
 
-#### Option 3: Build from Source
-
-```bash
+# From source
 git clone https://github.com/mevarx/GoCode.git
 cd GoCode
 go build -o gocode ./cmd/gocode/
-./gocode
 ```
 
-#### Option 4: Download Binary
+Pre-built binaries are available on the [Releases page](https://github.com/mevarx/GoCode/releases).
 
-Download pre-built binaries from the [Releases page](https://github.com/mevarx/GoCode/releases).
+Building from source requires Go 1.26.8 or newer (see `go.mod`).
 
-### Basic Usage
+</details>
+
+### 2. Connect a provider
+
+**Cloud provider** (example: Gemini):
 
 ```bash
-# Auto-resume last session (default behavior)
+export GEMINI_API_KEY="your-key"
+gocode --provider gemini
+```
+
+**Local model** (example: Ollama):
+
+```bash
+ollama serve                 # in another terminal, with a model already pulled
+gocode --provider ollama
+```
+
+### 3. Start working
+
+```bash
 gocode
-
-# Start a fresh session
-gocode --new
-
-# Resume a specific session
-gocode --session sess_20260815190405_a1b2c3d4
-
-# Use a specific provider and current model
-gocode --provider openai --model gpt-6-astra
-
-# Plain terminal mode (no TUI)
-gocode --tui=false
-
-# Enable debug logging
-gocode -v
 ```
+
+Then ask for something concrete, such as *"Find where config is loaded and explain the precedence order."* GoCode asks for confirmation before it writes files or runs commands.
+
+### Common commands
+
+| Command | What it does |
+| :-- | :-- |
+| `gocode` | Launch and resume your last session |
+| `gocode --new` | Start a fresh session |
+| `gocode --provider <name> --model <id>` | Pick a provider and model for this run |
+| `gocode --tui=false` | Plain terminal mode, no TUI |
+| `gocode doctor` | Health-check configured providers |
+| `gocode logs --follow` | Follow live logs |
+| `/provider`, `/model` | Switch provider or model in-session |
+| `/sessions`, `/new`, `/clear` | List, start, or reset sessions |
+| `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
+| `/help` | Show all in-session commands |
+
+TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
 
 ---
 
-## Session Management
+## Features
 
-GoCode persists conversations to SQLite and auto-resumes the last session by default. Set `persist = false` under `[session]` to keep a conversation entirely in memory — nothing is written to disk and nothing is resumed on the next run.
+### File and shell tools
 
-```bash
-# List saved sessions
-/sessions
+| Tool | Purpose | Approval |
+| :-- | :-- | :-: |
+| `file_read` | Read files, with line offset and limit | Automatic |
+| `code_search` | Regex or plain-text search with context and glob filters | Automatic |
+| `file_write` | Create or overwrite files, with a unified diff preview | **Required** |
+| `file_patch` | Targeted edits, with a unified diff preview | **Required** |
+| `shell_exec` | Run a terminal command in the workspace directory | **Required** |
 
-# Resume a specific session
-/sessions <id>
-/resume <id>
+Change which tools need approval with the `[permissions]` section of `config.toml`. See [Security](#security) before auto-approving anything.
 
-# Start a fresh session
-/new
-```
+### Providers
 
-Sessions are stored in `~/.local/share/gocode/sessions/sessions.db` (Linux/macOS) or `%LOCALAPPDATA%\gocode\sessions\sessions.db` (Windows).
+Switch providers and models at any time with `/provider` and `/model`. GoCode ships with gateways for:
 
----
+Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, MiniMax, DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, Qwen, Kimi, Hermes Agent, and OmniRoute.
 
-## Model Context Protocol (MCP)
+| Provider | `--provider` | API key variable |
+| :-- | :-- | :-- |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` |
+| Anthropic Claude | `anthropic` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `OPENAI_API_KEY` |
+| GitHub Copilot | `copilot` | `GITHUB_COPILOT_TOKEN` (or `gocode auth copilot`) |
+| xAI | `xai` | `XAI_API_KEY` |
+| Mistral | `mistral` | `MISTRAL_API_KEY` |
+| MiniMax | `minimax` | `MINIMAX_API_KEY` |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| Groq | `groq` | `GROQ_API_KEY` |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
+| Together | `together` | `TOGETHER_API_KEY` |
+| Fireworks | `fireworks` | `FIREWORKS_API_KEY` |
+| Cerebras | `cerebras` | `CEREBRAS_API_KEY` |
+| Zhipu (GLM) | `zhipu` | `ZHIPU_API_KEY` |
+| NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` |
+| Qwen (DashScope) | `qwen` | `DASHSCOPE_API_KEY` |
+| Kimi (Moonshot) | `kimi` | `MOONSHOT_API_KEY` |
+| Hermes Agent | `hermes` | `HERMES_API_SERVER_KEY` |
+| OmniRoute | `omniroute` | `OMNIROUTE_API_KEY` |
+| Ollama (local) | `ollama` | none |
 
-Extend GoCode with any external MCP server over `stdio` JSON-RPC 2.0:
+Model catalogs change often. Use `/providers` to list the models a provider currently exposes and `/model <id>` to select one. Availability still depends on your account, region, and plan.
 
-```bash
-# Add an MCP server
-gocode mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /path/to/repo
-
-# List configured MCP servers
-gocode mcp list
-
-# Remove an MCP server
-gocode mcp remove filesystem
-```
-
-MCP tools are automatically registered into the agent's tool catalog upon startup.
-
-Server commands routinely take their own flags, so everything from the first
-non-flag token onward belongs to the server. Put GoCode's own flags before the
-server name:
-
-```bash
-gocode --config /path/to/config.toml mcp add filesystem npx -y @scope/server .
-```
-
-If you need `--config` after the command, separate the sections with `--`:
-
-```bash
-gocode mcp add filesystem npx -y @scope/server . -- --config /path/to/config.toml
-```
-
-A `--config` that appears after the server command without a `--` separator is
-treated as the server's own flag.
-
----
-
-## Project & Global Context
-
-### Project Context (`AGENTS.md`)
-
-When launching in any workspace, GoCode automatically traverses the current directory and all parent folders searching for:
-
-- `AGENTS.md`
-- `.gocode/AGENTS.md`
-- `docs/AGENTS.md`
-
-If found, its instructions are injected under `## Project Context` in the system prompt.
-
-### Global Context (`CONTEXT.md`)
-
-Create `~/.config/gocode/CONTEXT.md` (or `%APPDATA%\gocode\CONTEXT.md` on Windows) for global rules across all repositories (e.g., coding preferences, language versions).
-
----
-
-## `.gocodeignore` File Filtering
-
-Create a `.gocodeignore` file in your repository root to prevent GoCode tools from reading, writing, or listing sensitive files:
-
-```gitignore
-# .gocodeignore
-.env*
-secrets/
-*.pem
-*.key
-credentials.json
-```
-
-If `.gocodeignore` is absent, GoCode automatically falls back to `.gitignore`.
-
----
-
-## Supported AI Providers
-
-| Provider | `--provider` | Environment Variable | Current model example | Base URL |
-| :-- | :-- | :-- | :-- | :-- |
-| **Google Gemini** | `gemini` | `GEMINI_API_KEY` | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| **Anthropic Claude** | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | `https://api.anthropic.com/v1` |
-| **OpenAI** | `openai` | `OPENAI_API_KEY` | `gpt-6-astra` | `https://api.openai.com/v1` |
-| **GitHub Copilot** | `copilot` | `GITHUB_COPILOT_TOKEN` | `gpt-4.1` | _dynamic, see below_ |
-| **xAI (SpaceXAI)** | `xai` | `XAI_API_KEY` | `grok-code-fast-1` | `https://api.x.ai/v1` |
-| **Mistral** | `mistral` | `MISTRAL_API_KEY` | `mistral-large-latest` | `https://api.mistral.ai/v1` |
-| **MiniMax** | `minimax` | `MINIMAX_API_KEY` | `MiniMax-M2.5` | `https://api.minimax.io/v1` |
-| **DeepSeek** | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | `https://api.deepseek.com/v1` |
-| **Groq** | `groq` | `GROQ_API_KEY` | _List with `/models`_ | `https://api.groq.com/openai/v1` |
-| **OpenRouter** | `openrouter` | `OPENROUTER_API_KEY` | _List with `/models`_ | `https://openrouter.ai/api/v1` |
-| **Together** | `together` | `TOGETHER_API_KEY` | `Qwen/Qwen3-Coder-480B-A35B-Instruct` | `https://api.together.xyz/v1` |
-| **Fireworks** | `fireworks` | `FIREWORKS_API_KEY` | _List with `/models`_ | `https://api.fireworks.ai/inference/v1` |
-| **Cerebras** | `cerebras` | `CEREBRAS_API_KEY` | `qwen-3-coder-480b` | `https://api.cerebras.ai/v1` |
-| **Zhipu (GLM)** | `zhipu` | `ZHIPU_API_KEY` | `glm-4.6` | `https://open.bigmodel.cn/api/paas/v4` |
-| **NVIDIA NIM** | `nvidia` | `NVIDIA_API_KEY` | `qwen/qwen3-coder-480b-a35b-instruct` | `https://integrate.api.nvidia.com/v1` |
-| **Qwen (DashScope)** | `qwen` | `DASHSCOPE_API_KEY` | _List with `/models`_ | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| **Kimi (Moonshot)** | `kimi` | `MOONSHOT_API_KEY` | _List with `/models`_ | `https://api.moonshot.cn/v1` |
-| **Hermes Agent** | `hermes` | `HERMES_API_SERVER_KEY` | `hermes-agent` | `http://127.0.0.1:8642/v1` |
-| **OmniRoute Proxy** | `omniroute` | `OMNIROUTE_API_KEY` | `auto` | `http://localhost:20128/v1` |
-| **Ollama (Local)** | `ollama` | _None_ | _Auto-detected_ | `http://localhost:11434` |
-
-Model catalogs change frequently. Use `/providers` to list the models currently exposed by a provider and `/model <id>` to select one. The examples above are current recommended identifiers, not guarantees of account access; provider quotas, regions, and plan availability still apply.
-
-### GitHub Copilot
-
-Copilot is not a plain bearer-token API, so it has its own provider. It uses two layers: a long-lived GitHub OAuth token is exchanged for a short-lived Copilot JWT, and that exchange also returns the API address to use. The JWT is cached and refreshed shortly before it expires.
-
-Log in once with GitHub's device flow, using a client id from an OAuth App you register at [github.com/settings/developers](https://github.com/settings/developers):
-
-```bash
-gocode auth copilot --client-id <your-oauth-app-client-id>
-gocode --provider copilot
-```
-
-The token is written to `<config-dir>/copilot_token` with owner-only permissions and read automatically; `GITHUB_COPILOT_TOKEN` takes precedence when set. A device flow is required because Copilot has no copy-paste API key — you cannot use a plain PAT here. An active Copilot subscription is required; the exchange returns a clear error when the account has none.
-
-The token exchange endpoint and the `Editor-Version` headers are reverse-engineered from GitHub's own VS Code extension and are **not documented by GitHub**. They can change or be removed without notice, so treat Copilot support as best-effort.
-
-### Connect to a Hermes Agent instance
-
-If you run Hermes Agent, its API server speaks the OpenAI Chat Completions API on `127.0.0.1:8642`, so it can serve as GoCode's backend — and GoCode as Hermes'. Enable it in Hermes first:
-
-```bash
-# in ~/.hermes/.env
-API_SERVER_ENABLED=true
-API_SERVER_KEY=change-me-local-dev
-```
-
-Then point GoCode at it:
-
-```bash
-export HERMES_API_SERVER_KEY="change-me-local-dev"
-gocode --provider hermes
-```
-
-The model is `hermes-agent` by default (a Hermes profile advertises its profile name instead). Use `--model` to override.
-
-### Add another API endpoint
-
-Use a named custom provider for a company gateway or any other service that implements the OpenAI Chat Completions API but is not built in:
+**Add any OpenAI-compatible endpoint** (company gateways, llama.cpp, OpenCode Zen, and others):
 
 ```bash
 gocode provider add my-gateway \
@@ -275,298 +166,195 @@ gocode provider add my-gateway \
 
 export MY_GATEWAY_KEY="your-key"
 gocode --provider my-gateway
-gocode provider list
 ```
 
-Provider configuration stores the environment-variable name, not the key. Custom endpoints can also be managed with `gocode provider remove <name>` and live in `[provider.custom.<name>]` in `config.toml`. To make one the default, set `default = "my-gateway"` in `[provider]`; otherwise select it with `gocode --provider my-gateway`. The endpoint must support OpenAI Chat Completions; use the built-in `anthropic` provider for Anthropic's native API.
+Only the environment-variable *name* is stored, never the key. Manage endpoints with `gocode provider list` and `gocode provider remove <name>`. Setup guides for Copilot, Hermes, llama.cpp, and OpenCode Zen are in [docs/providers.md](docs/providers.md).
 
-A custom provider you added earlier keeps working even if its name has since become a built-in — your saved endpoint wins over the built-in default rather than being silently replaced.
+### Local models
 
-### Connect a llama.cpp server
+GoCode supports offline workflows when a local model and its backend (Ollama or a llama.cpp `llama-server`) are installed, running, and configured. Nothing is sent to a cloud provider unless you select one.
 
-`llama-server` exposes an OpenAI-compatible API, so connect it as a custom provider. Start the server with the model you want to use:
+### Sessions
+
+Conversations are saved to SQLite and the last session resumes automatically.
 
 ```bash
-llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8080
+/sessions            # list saved sessions
+/sessions <id>       # switch to a session (alias: /resume <id>)
+/new                 # start fresh
 ```
 
-Register the endpoint with GoCode (no API key is required for a local server):
+Sessions live at `~/.local/share/gocode/sessions/sessions.db` on Linux and macOS, and `%LOCALAPPDATA%\gocode\sessions\sessions.db` on Windows. Set `persist = false` under `[session]` to keep a conversation in memory only, with nothing written to disk.
+
+### Project and global context
+
+GoCode searches the current directory and its parents for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md` and injects it into the system prompt under `## Project Context`.
+
+For rules that apply to every repository, create `~/.config/gocode/CONTEXT.md` (`%APPDATA%\gocode\CONTEXT.md` on Windows).
+
+### Ignore rules: `.gocodeignore`
+
+Keep sensitive files away from GoCode's file tools by adding a `.gocodeignore` to your repository root:
+
+```gitignore
+.env*
+secrets/
+*.pem
+*.key
+credentials.json
+```
+
+If `.gocodeignore` is missing, GoCode falls back to `.gitignore`. On case-insensitive filesystems (Windows and macOS), patterns match regardless of letter case, so `.ENV` is treated the same as `.env`. On Linux, matching stays case-sensitive.
+
+### MCP servers
+
+Extend GoCode with any MCP server over `stdio`:
 
 ```bash
-gocode provider add llama-cpp \
-  --base-url http://127.0.0.1:8080/v1 \
-  --model <model-id-from-v1-models>
-
-gocode --provider llama-cpp
+gocode mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /path/to/repo
+gocode mcp list
+gocode mcp remove filesystem
 ```
 
-The model ID must match the identifier returned by `GET http://127.0.0.1:8080/v1/models`; use that endpoint to discover the exact ID. For a server exposed on another machine, use HTTPS or a trusted reverse proxy rather than exposing an unauthenticated HTTP port to the internet.
-
-### Connect OpenCode Zen free models directly
-
-GoCode can call the OpenCode Zen gateway directly as an OpenAI-compatible provider. This avoids an unofficial third-party proxy. Create an API key in the [OpenCode console](https://opencode.ai/auth), then configure the official Zen endpoint:
+MCP tools are registered into the agent's tool catalog on startup. Everything after the server name belongs to the server, so put GoCode's own flags first:
 
 ```bash
-gocode provider add opencode-zen \
-  --base-url https://opencode.ai/zen/v1 \
-  --api-key-env OPENCODE_API_KEY \
-  --model deepseek-v4-flash-free
-
-export OPENCODE_API_KEY="your-opencode-api-key"
-gocode --provider opencode-zen
-gocode --provider opencode-zen --model mimo-v2.5-free
+gocode --config /path/to/config.toml mcp add filesystem npx -y @scope/server .
 ```
 
-Zen currently lists free models including `deepseek-v4-flash-free`, `mimo-v2.5-free`, `nemotron-3-ultra-free`, `north-mini-code-free`, and `big-pickle`. Free-model availability, limits, and IDs can change, so inspect the live catalog before selecting a model:
+To pass `--config` to the server instead, separate the sections with `--`:
 
 ```bash
-curl https://opencode.ai/zen/v1/models \
-  -H "Authorization: Bearer $OPENCODE_API_KEY"
+gocode mcp add filesystem npx -y @scope/server . -- --config /path/to/config.toml
 ```
-
-Use `/providers` in GoCode to list what the configured gateway currently returns. OpenCode Zen is a hosted service, not a local or guaranteed unlimited free tier; use the current [Zen model catalog](https://opencode.ai/docs/zen) for pricing and availability.
-
 
 ---
 
-## In-Session Slash Commands
+## Security
 
-| Command | Description |
-| :-- | :-- |
-| `/sessions` | List saved sessions with timestamps and message counts |
-| `/sessions <id>` | Switch to and resume an existing session |
-| `/new` | Start a fresh session and clear current context |
-| `/commit [message]` | Stage and commit modified files with `Assisted-by:` trailer |
-| `/providers` | View active provider and list all available models |
-| `/provider <name>` | Switch active provider |
-| `/model` | Show current active model |
-| `/model <name>` | Change model on the fly (validated against the active provider's model list) |
-| `/clear` | Clear conversation history while retaining system instructions |
-| `/help` | Display help and available commands |
-| `Ctrl+L` _(TUI)_ | Open interactive fuzzy model search picker |
-| `Ctrl+C` _(TUI)_ | Stop a running turn; press again (or when idle) to quit |
-| `Esc` _(TUI)_ | Stop a running turn, or clear the current input |
-| _(TUI status bar)_ | Shows the active provider, model, and workspace |
-| `exit`, `quit`, `/exit`, `/quit` | Exit the agent session |
+GoCode is built around human-in-the-loop approval: the agent cannot write files or run commands without your confirmation unless you explicitly auto-approve a tool.
+
+**File tools are confined.** `file_read`, `file_write`, `file_patch`, and `code_search` resolve every path through the workspace root, reject traversal, and re-check after resolving symlinks. Sensitive files (`.env*`, SSH keys, certificates, cloud credentials) and anything matched by your ignore rules are blocked.
+
+**The shell is not confined.** `shell_exec` uses the workspace as its *working directory*, which is not a sandbox. A command can read anything your user account can read. Static inspection cannot reliably prevent this, since command substitution, pipes, and interpreters defeat it. GoCode instead provides:
+
+- **Secret redaction**: credential-shaped values in command output are masked before reaching the model or your session transcript (`redact_secrets = false` disables it).
+- **Advisory warnings**: commands referencing known-sensitive paths are flagged in the approval prompt.
+- **The approval gate**: your real protection. Read each command before approving it.
+
+**Recommendations**
+
+- Keep `shell_exec` out of `auto_approve`, especially on machines that hold credentials.
+- For a hard boundary, deny the shell entirely:
+
+  ```toml
+  [permissions]
+  deny = ["shell_exec"]
+  ```
+
+- Run GoCode in a container or VM if you need real isolation.
+
+Details and the full threat model: [docs/SECURITY.md](docs/SECURITY.md).
 
 ---
 
 ## Configuration
 
-Configuration is stored at:
+Config file location:
 
 - **Linux / macOS**: `~/.config/gocode/config.toml`
 - **Windows**: `%APPDATA%\gocode\config.toml`
 
-### Comprehensive `config.toml` Example
+A minimal example:
 
 ```toml
 [provider]
 default = "gemini"
 
-[provider.ollama]
-host = "http://localhost:11434"
-default_model = ""
-
 [provider.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"
 default_model = "gemini-3.8-flash"
 
-[provider.anthropic]
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-opus-5-5"
-
-[provider.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-default_model = "gpt-6-astra"
-
-# GitHub Copilot uses two-layer auth: the OAuth token below is exchanged for a
-# short-lived JWT at request time. Set it with `gocode auth copilot`, which
-# writes to <config-dir>/copilot_token, or export it yourself.
-[provider.copilot]
-oauth_token_env = "GITHUB_COPILOT_TOKEN"
-default_model = "gpt-4.1"
-editor_version = "vscode/1.111.0"
-editor_plugin_version = "copilot-chat/0.40.0"
-
-# Every other built-in gateway is configured the same way. Only the section you
-# want to change needs to appear in your file; the rest come from defaults.
-# [provider.xai]
-# base_url = "https://api.x.ai/v1"
-# api_key_env = "XAI_API_KEY"
-# default_model = "grok-code-fast-1"
-
-# [provider.hermes]
-# base_url = "http://127.0.0.1:8642/v1"
-# api_key_env = "HERMES_API_SERVER_KEY"
-# default_model = "hermes-agent"
-
 [permissions]
-auto_approve = ["file_read", "code_search"]  # Tools that execute without confirmation
-deny = []                                    # Tools that are permanently blocked
-sensitive_patterns = ["*.vault", "custom.env"] # Additional patterns to block from AI access
+auto_approve = ["file_read", "code_search"]  # run without confirmation
+deny = []                                    # permanently blocked
+sensitive_patterns = ["*.vault"]             # extra patterns hidden from the AI
 
 [session]
-persist = true                # Set false to keep the conversation out of the SQLite store
+persist = true
 
 [tools]
-max_tool_iterations = 50      # Cap provider round-trips per turn
-max_repeated_tool_calls = 3   # Cap identical tool calls (same name + arguments) per turn
+max_tool_iterations = 50      # provider round-trips per turn
+max_repeated_tool_calls = 3   # identical tool calls per turn
 
 [tools.shell]
-timeout_seconds = 30      # Maximum seconds a shell command may run
-max_output_bytes = 1048576 # Cap captured stdout+stderr per command
-redact_secrets = true      # Mask credential-shaped values in command output
-
-[mcp.servers.filesystem]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+timeout_seconds = 30
+max_output_bytes = 1048576
+redact_secrets = true
 ```
+
+Only the sections you change need to appear; everything else comes from defaults. The full reference, including MCP servers, custom providers, and Copilot settings, is in [docs/configuration.md](docs/configuration.md).
 
 ---
 
-## Logs & Diagnostics
+## Platform support
 
-```bash
-# Diagnostic health check of all configured providers
-gocode doctor
-
-# View the last 50 log lines
-gocode logs --tail 50
-
-# Continuously follow live log output
-gocode logs --follow
-```
+Release builds are configured with GoReleaser for Linux, macOS, and Windows on AMD64 and ARM64. See the [CI workflow](https://github.com/mevarx/GoCode/actions) for current build and test status.
 
 ---
 
-## Tools & Security Architecture
-
-GoCode operates under a strict **Human-in-the-Loop Security Architecture**. The agent cannot mutate your workspace or run commands without explicit terminal authorization.
-
-| Tool Name | Purpose | Approval Gate |
-| :-- | :-- | :-: |
-| `file_read` | Inspect file contents and workspace context (with line offset/limit) | Automatic |
-| `code_search` | Search files via regex/plain text with context lines & glob filtering | Automatic |
-| `file_write` | Create new files or overwrite existing files (with unified diff preview) | **Requires Confirmation** |
-| `file_patch` | Perform target string replacements & targeted code edits (with unified diff preview) | **Requires Confirmation** |
-| `shell_exec` | Run terminal commands in the workspace working directory (**not confined** — see below) | **Requires Confirmation** |
-
-Tools can be auto-approved or denied via the `[permissions]` section in `config.toml`.
-
-### What is actually enforced
-
-Being precise about the boundary matters more than claiming the widest one, so here is exactly where each control applies.
-
-**The file tools are confined.** `file_read`, `file_write`, `file_patch` and `code_search` resolve every path through the workspace root, reject traversal, and re-verify after resolving symlinks. Protected patterns (`.env*`, SSH keys, certificates, cloud credentials) are unconditionally blocked from inspection by these tools.
-
-**The shell is not confined.** `shell_exec` runs a command string through your shell with the workspace as its *working directory*. A working directory is not a sandbox: a command can read any file your user account can read, anywhere on the machine. GoCode cannot reliably prevent this — command substitution, pipes and interpreters defeat any static inspection of a shell string.
-
-What GoCode does instead, for `shell_exec`:
-
-- **Secret redaction** — credential-shaped values in command output (API keys, tokens, private key blocks, AWS keys, JWTs, `KEY=value` secrets) are masked before the output reaches the model or is written to your session transcript. Disable with `redact_secrets = false`.
-- **Advisory warnings** — a command that references a known-sensitive path is flagged in the approval prompt so you can decline it.
-- **The approval gate** — the real protection. Keep `shell_exec` out of `auto_approve` and read the command before approving.
-
-If you need a hard boundary, either deny `shell_exec` outright:
-
-```toml
-[permissions]
-deny = ["shell_exec"]
-```
-
-…or treat the approval prompt as the trust boundary it actually is. Do not put `shell_exec` in `auto_approve` on a machine holding credentials.
-
----
-
-## Architecture
+## Project layout
 
 ```
-gocode/
-├── cmd/gocode/           # CLI entry point, flag parsing & subcommands
-├── internal/
-│   ├── agent/            # Core agent loop, session memory & slash commands
-│   ├── config/           # Platform directory management & TOML parser
-│   ├── provider/         # Unified provider registry (Ollama, OpenAI-compatible, Anthropic)
-│   ├── tools/            # Tool registry, shell execution, patch engine & approval gates
-│   ├── session/          # SQLite-backed session persistence
-│   ├── mcp/              # Model Context Protocol stdio client
-│   ├── ignore/           # .gocodeignore/.gitignore pattern matching
-│   └── tui/              # Interactive TUI (Bubble Tea model, styles & approval prompts)
-├── .github/workflows/    # GitHub Actions CI/CD
-├── .goreleaser.yaml      # GoReleaser release configuration
-├── Makefile              # Build, test, and release targets
-└── go.mod                # Module definition
+cmd/gocode/        CLI entry point, flags, subcommands
+internal/agent/    agent loop, session memory, slash commands
+internal/config/   platform directories, TOML parsing
+internal/provider/ provider registry (Ollama, OpenAI-compatible, Anthropic)
+internal/tools/    tool registry, shell execution, patch engine, approval gates
+internal/session/  SQLite session persistence
+internal/mcp/      MCP stdio client
+internal/ignore/   .gocodeignore / .gitignore matching
+internal/tui/      Bubble Tea interface
 ```
 
----
-
-## GoCode vs. Other AI Coding Agents
-
-| Feature | GoCode | Cursor | Aider | GitHub Copilot CLI |
-| :-- | :-: | :-: | :-: | :-: |
-| **Open Source** | MIT | Proprietary | Apache-2.0 | Proprietary |
-| **Language & Runtime** | Native Go Binary | Electron / TS | Python Runtime | Node.js / CLI |
-| **Local LLM Support** | Built-in | Limited | Yes | Cloud-only |
-| **Cloud Providers** | 20 Gateways | Proprietary | Various APIs | GitHub / OpenAI |
-| **Human Approval Control** | Explicit Gate | Semi-auto | Auto/Prompt | Auto |
-| **Session Persistence** | SQLite | Yes | No | No |
-| **MCP Support** | stdio | Yes | Yes | No |
-| **Memory Footprint** | Extremely Low (<20MB) | High | Moderate | Moderate |
+A deeper walkthrough is in [docs/architecture.md](docs/architecture.md).
 
 ---
 
 ## FAQ
 
-### What is GoCode used for?
+**Can I use GoCode without a cloud provider?**
+Yes. Configure Ollama or a llama.cpp server and select it with `--provider`. See [Local models](#local-models).
 
-GoCode is an open-source terminal AI coding assistant used for automated code generation, code refactoring, bug fixing, test writing, project directory inspection, and command-line automation.
+**Is it free?**
+GoCode is MIT-licensed and free. Cloud providers bill you under their own terms; local models have no API cost.
 
-### Can GoCode run completely offline?
+**How do I add tools?**
+Through MCP: `gocode mcp add <name> <command> [args...]`. See [MCP servers](#mcp-servers).
 
-Yes. GoCode connects natively to **Ollama** (`http://localhost:11434`) or a **llama.cpp** server (`http://localhost:8080/v1`). You can run open-weights models such as `llama3.3`, `deepseek-coder`, or `qwen-coder` with zero internet access and complete data privacy.
-
-### How does GoCode compare to Cursor or Aider?
-
-Unlike Cursor (which is an Electron IDE extension) or Aider (which runs on Python), GoCode is a compiled **Go binary** that runs directly in any terminal (Linux, macOS, Windows). It offers sub-millisecond startup, minimal memory consumption, and a human-in-the-loop approval gate for safe command execution.
-
-### Which LLM API providers does GoCode support?
-
-GoCode supports 20 built-in provider gateways plus custom OpenAI-compatible endpoints: Ollama, OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, Qwen (Aliyun DashScope), Kimi (Moonshot AI), Mistral, MiniMax, DeepSeek, xAI, OmniRoute, Hermes Agent, and GitHub Copilot.
-
-### Is GoCode free to use?
-
-Yes, GoCode is 100% free and open-source software licensed under the MIT License. When paired with local Ollama models, it is completely free to operate with no subscription or API costs.
-
-### How do I extend GoCode with new tools?
-
-GoCode supports the **Model Context Protocol (MCP)**. You can add any MCP server via `gocode mcp add <name> <command> [args...]` and its tools will be automatically available to the agent.
-
-### Where are sessions stored?
-
-Sessions are stored in a SQLite database at `~/.local/share/gocode/sessions.db` (Linux/macOS) or `%LOCALAPPDATA%\gocode\sessions.db` (Windows). Use `gocode --new` to start fresh or `/sessions` to list and resume past sessions.
+**Where are my sessions?**
+See [Sessions](#sessions). Use `gocode --new` or `/new` to start fresh.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the code of conduct and pull request process. Release history is in [CHANGES.md](CHANGES.md).
 
----
+```bash
+go build ./...
+go vet ./...
+go test ./...
+```
 
 ## License
 
-GoCode is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
 
 ---
 
 <div align="center">
 
-**Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) v2 • Powered by Go**
-
-Made with ❤️ by [mevarx](https://github.com/mevarx)
+Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) v2 • Made by [mevarx](https://github.com/mevarx)
 
 </div>
