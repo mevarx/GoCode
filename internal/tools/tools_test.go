@@ -426,6 +426,78 @@ func TestTools_IgnoreRules(t *testing.T) {
 	}
 }
 
+func TestTools_IgnoreRules_CaseInsensitiveBypassPrevented(t *testing.T) {
+	if !isCaseInsensitiveFS() {
+		t.Skip("skipping case-insensitive ignore tool tests on case-sensitive filesystem")
+	}
+
+	ws := t.TempDir()
+
+	ignoreRules := "ignored_file.txt\nignored_dir/\n*.confidential\n"
+	_ = os.WriteFile(filepath.Join(ws, ".gocodeignore"), []byte(ignoreRules), 0o644)
+
+	filePath := filepath.Join(ws, "ignored_file.txt")
+	_ = os.WriteFile(filePath, []byte("harmless fixture content"), 0o644)
+
+	dirPath := filepath.Join(ws, "ignored_dir")
+	_ = os.MkdirAll(dirPath, 0o755)
+	subFile := filepath.Join(dirPath, "sub.txt")
+	_ = os.WriteFile(subFile, []byte("sub fixture content"), 0o644)
+
+	confFile := filepath.Join(ws, "report.confidential")
+	_ = os.WriteFile(confFile, []byte("report fixture content"), 0o644)
+
+	realIgnoreMatcher := ignore.LoadMatcher(ws)
+	sensitiveMatcher := ignore.NewSensitiveMatcher(realIgnoreMatcher, nil)
+
+	// 1. Verify FileReadTool blocks alternate-cased paths
+	readTool := &FileReadTool{WorkspaceRoot: ws, SensitiveMatcher: sensitiveMatcher}
+	for _, target := range []string{"IGNORED_FILE.TXT", "Ignored_File.txt", "Ignored_Dir/sub.txt", "IGNORED_DIR/sub.txt", "report.CONFIDENTIAL"} {
+		args, _ := json.Marshal(fileReadArgs{Path: target})
+		res, err := readTool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", target, err)
+		}
+		if !strings.Contains(res.Error, "ignored by ignore rules") {
+			t.Errorf("expected FileReadTool to block case-variant %q, got error: %q, output: %q", target, res.Error, res.Output)
+		}
+	}
+
+	// 2. Verify FileWriteTool blocks alternate-cased paths
+	writeTool := &FileWriteTool{WorkspaceRoot: ws, SensitiveMatcher: sensitiveMatcher}
+	for _, target := range []string{"IGNORED_FILE.TXT", "Ignored_Dir/new.txt"} {
+		args, _ := json.Marshal(fileWriteArgs{Path: target, Content: "overwritten"})
+		res, err := writeTool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", target, err)
+		}
+		if !strings.Contains(res.Error, "ignored by ignore rules") {
+			t.Errorf("expected FileWriteTool to block case-variant %q, got error: %q", target, res.Error)
+		}
+	}
+	data, _ := os.ReadFile(filePath)
+	if string(data) != "harmless fixture content" {
+		t.Errorf("file was modified despite ignore rule: %q", string(data))
+	}
+
+	// 3. Verify FilePatchTool blocks alternate-cased paths
+	patchTool := &FilePatchTool{WorkspaceRoot: ws, SensitiveMatcher: sensitiveMatcher}
+	for _, target := range []string{"IGNORED_FILE.TXT", "Ignored_Dir/sub.txt"} {
+		args, _ := json.Marshal(filePatchArgs{Path: target, Find: "fixture", Replace: "patched"})
+		res, err := patchTool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", target, err)
+		}
+		if !strings.Contains(res.Error, "ignored by ignore rules") {
+			t.Errorf("expected FilePatchTool to block case-variant %q, got error: %q", target, res.Error)
+		}
+	}
+	data, _ = os.ReadFile(filePath)
+	if string(data) != "harmless fixture content" {
+		t.Errorf("file was patched despite ignore rule: %q", string(data))
+	}
+}
+
 func TestTools_OnModified(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "tracked.txt")

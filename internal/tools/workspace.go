@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/mevarx/GoCode/internal/ignore"
@@ -12,7 +11,7 @@ import (
 
 // isCaseInsensitiveFS reports whether the OS resolves filenames case-insensitively.
 func isCaseInsensitiveFS() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	return ignore.IsCaseInsensitiveFS()
 }
 
 // rejectNormalisationForms refuses spellings the OS opens differently than named (ADS, trailing space/dot).

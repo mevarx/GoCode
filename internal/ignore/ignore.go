@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
@@ -12,6 +13,15 @@ import (
 // Matcher evaluates whether file paths match ignore patterns.
 type Matcher interface {
 	IsIgnored(path string, isDir bool) bool
+}
+
+// IsCaseInsensitiveFS reports whether the OS resolves filenames case-insensitively by default.
+// In GoCode, Windows and macOS are treated as case-insensitive filesystems per project
+// platform policy (NTFS and default APFS/HFS+ are case-insensitive).
+// Note: While macOS supports case-sensitive APFS volumes as an opt-in format, standard
+// installations are case-insensitive, matching Git's core.ignoreCase default.
+func IsCaseInsensitiveFS() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 }
 
 type gitIgnoreMatcher struct {
@@ -77,10 +87,14 @@ func readIgnorePatterns(ignoreFilePath, rootDir string) ([]gitignore.Pattern, er
 	var patterns []gitignore.Pattern
 
 	scanner := bufio.NewScanner(f)
+	caseFold := IsCaseInsensitiveFS()
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if caseFold {
+			line = strings.ToLower(line)
 		}
 		patterns = append(patterns, gitignore.ParsePattern(line, nil))
 	}
@@ -106,7 +120,9 @@ func (m *gitIgnoreMatcher) IsIgnored(path string, isDir bool) bool {
 	slashPath := filepath.ToSlash(relPath)
 	slashPath = strings.TrimPrefix(slashPath, "./")
 	slashPath = strings.TrimPrefix(slashPath, "/")
-
+	if IsCaseInsensitiveFS() {
+		slashPath = strings.ToLower(slashPath)
+	}
 	parts := strings.Split(slashPath, "/")
 	return m.matcher.Match(parts, isDir)
 }
