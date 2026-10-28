@@ -35,10 +35,10 @@ foreach ($dir in $assets.Keys) {
   $binName = if ($dir.StartsWith('windows')) { 'gocode.exe' } else { 'gocode' }
   $binPath = Join-Path $dest $binName
   if ($assets[$dir].EndsWith('.zip')) {
-    Expand-Archive $tmp -DestinationPath $dest -Force
+      Expand-Archive $tmp -DestinationPath $dest -Force
   } else {
-    tar -xzf $tmp -C $dest $binName 2>$null
-    if (-not (Test-Path $binPath)) { tar -xzf $tmp -C $dest }
+      & "C:\Windows\System32\tar.exe" -xzf $tmp -C $dest $binName 2>$null
+      if (-not (Test-Path $binPath)) { & "C:\Windows\System32\tar.exe" -xzf $tmp -C $dest }
   }
   Remove-Item $tmp -Force
 }
