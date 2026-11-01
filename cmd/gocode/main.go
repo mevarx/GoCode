@@ -101,6 +101,7 @@ func main() {
 
 	mcpCmd.AddCommand(mcpAddCmd, mcpListCmd, mcpRemoveCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(newSessionCommand())
 	rootCmd.AddCommand(newProviderCommand())
 	rootCmd.AddCommand(newAuthCommand())
 
