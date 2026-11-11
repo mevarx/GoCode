@@ -102,6 +102,7 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `gocode --tui=false` | Plain terminal mode, no TUI |
 | `gocode doctor` | Health-check configured providers |
 | `gocode logs --follow` | Follow live logs |
+| `gocode session export` | Export a session transcript to Markdown or JSON |
 | `/provider`, `/model` | Switch provider or model in-session |
 | `/sessions`, `/new`, `/clear` | List, start, or reset sessions |
 | `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
@@ -184,8 +185,30 @@ Conversations are saved to SQLite and the last session resumes automatically.
 /new                 # start fresh
 ```
 
-Sessions live at `~/.local/share/gocode/sessions/sessions.db` on Linux and macOS, and `%LOCALAPPDATA%\gocode\sessions\sessions.db` on Windows. Set `persist = false` under `[session]` to keep a conversation in memory only, with nothing written to disk.
+#### Exporting sessions
 
+Export conversation transcripts from the stored SQLite history to Markdown or JSON:
+
+```bash
+# Export the latest session to stdout (Markdown)
+gocode session export
+
+# Export a specific session to a file
+gocode session export <session_id> --output transcript.md
+
+# Export as JSON without tool calls/results
+gocode session export --format json --no-tools --output transcript.json
+
+# Explicitly permit overwriting an existing destination
+gocode session export --output transcript.md --force
+```
+
+- **Formats**: Markdown (`.md`, default) and JSON (`.json`).
+- **Privacy**: Internal system prompts and model reasoning chains are always excluded from exports.
+- **File safety**: Destination files are created with `0600` permissions on POSIX systems (owner read/write only). Existing files are never overwritten unless `--force` is provided.
+- **Tools**: Tool invocations and results are included by default; pass `--no-tools` to omit them.
+
+Sessions live at `~/.local/share/gocode/sessions/sessions.db` on Linux and macOS, and `%LOCALAPPDATA%\gocode\sessions\sessions.db` on Windows. Set `persist = false` under `[session]` to keep a conversation in memory only, with nothing written to disk.
 ### Project and global context
 
 GoCode searches the current directory and its parents for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md` and injects it into the system prompt under `## Project Context`.
