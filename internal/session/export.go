@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mevarx/GoCode/internal/provider"
+	"github.com/mevarx/GoCode/internal/tools"
 )
 
 // ExportFormat specifies the target serialization format for a session.
@@ -268,9 +269,69 @@ func buildToolNameMap(messages []provider.Message) map[string]string {
 	return m
 }
 
+// RedactToolArgs masks credential-shaped values in raw tool-call arguments.
+// SECURITY: assistant tool calls are persisted and exported, so their arguments
+// cross the same transcript boundary as tool output. When the input was valid
+// JSON the result stays valid JSON.
+func RedactToolArgs(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw
+	}
+	redacted, hits := tools.RedactToolOutput(string(trimmed))
+	if len(hits) == 0 {
+		return raw
+	}
+	out := json.RawMessage(redacted)
+	if json.Valid(trimmed) && !json.Valid(out) {
+		// A pattern spanned JSON structure (e.g. a multi-line key block).
+		// Redact string values individually so the result cannot corrupt the document.
+		if fallback := redactJSONStringValues(trimmed); fallback != nil {
+			return fallback
+		}
+	}
+	return out
+}
+
+// redactJSONStringValues applies RedactToolOutput to every string value of a
+// valid JSON document, preserving its shape. Returns nil if decoding fails.
+func redactJSONStringValues(raw json.RawMessage) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil
+	}
+	out, err := json.Marshal(redactJSONValue(value))
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+func redactJSONValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		redacted, _ := tools.RedactToolOutput(v)
+		return redacted
+	case map[string]any:
+		for k, item := range v {
+			v[k] = redactJSONValue(item)
+		}
+		return v
+	case []any:
+		for i, item := range v {
+			v[i] = redactJSONValue(item)
+		}
+		return v
+	default:
+		return value
+	}
+}
+
 // sanitizeToolArgs ensures tool arguments serialize cleanly in JSON without corruption.
 func sanitizeToolArgs(raw json.RawMessage) json.RawMessage {
-	trimmed := bytes.TrimSpace(raw)
+	trimmed := bytes.TrimSpace(RedactToolArgs(raw))
 	if len(trimmed) == 0 {
 		return json.RawMessage("{}")
 	}
@@ -284,7 +345,7 @@ func sanitizeToolArgs(raw json.RawMessage) json.RawMessage {
 
 // formatToolArgs pretty-prints tool call JSON args if valid, or returns trimmed raw text.
 func formatToolArgs(raw json.RawMessage) string {
-	trimmed := bytes.TrimSpace(raw)
+	trimmed := bytes.TrimSpace(RedactToolArgs(raw))
 	if len(trimmed) == 0 {
 		return "{}"
 	}

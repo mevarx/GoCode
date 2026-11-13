@@ -63,11 +63,22 @@ func CopilotTokenPath() string {
 	return filepath.Join(ConfigDir(), "copilot_token")
 }
 
+// EnsureDirs creates the app's config and data directories, owner-only.
 func EnsureDirs() error {
 	for _, dir := range []string{ConfigDir(), DataDir(), SessionDir(), LogDir()} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := ensurePrivateDir(dir); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ensurePrivateDir creates dir if needed and tightens an existing one: MkdirAll
+// leaves the mode of an existing directory untouched, so a directory created
+// earlier with a looser mode would otherwise stay readable by other users.
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
 }

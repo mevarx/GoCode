@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/mevarx/GoCode/internal/provider"
 )
@@ -161,5 +163,103 @@ func TestSessionStorePragmasAndPool(t *testing.T) {
 	}
 	if got := query("journal_mode"); got != "wal" {
 		t.Errorf("journal_mode = %q, want wal", got)
+	}
+}
+
+// B4: the auto title is truncated by runes, so multibyte first messages never yield split UTF-8.
+func TestAppendMessageTitleTruncatesByRunes(t *testing.T) {
+	cjk50 := strings.Repeat("汉", 50)
+	emojiWithTail := strings.Repeat("a", 36) + "😀" + strings.Repeat("b", 20)
+	ascii50 := strings.Repeat("a", 50)
+	cjk40 := strings.Repeat("字", 40)
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "50 CJK runes", input: cjk50, want: string([]rune(cjk50)[:37]) + "..."},
+		{name: "emoji at truncation boundary", input: emojiWithTail, want: strings.Repeat("a", 36) + "😀" + "..."},
+		{name: "long ASCII unchanged", input: ascii50, want: ascii50[:37] + "..."},
+		{name: "exactly 40 runes kept", input: cjk40, want: cjk40},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+			if err != nil {
+				t.Fatalf("failed to create store: %v", err)
+			}
+			defer store.Close()
+
+			// Empty title makes CreateSession use the "Session sess_..." placeholder that triggers the title update.
+			if _, err := store.CreateSession("sess_title", "", "ollama", "codellama"); err != nil {
+				t.Fatalf("failed to create session: %v", err)
+			}
+			if err := store.AppendMessage("sess_title", provider.Message{Role: "user", Content: tc.input}); err != nil {
+				t.Fatalf("failed to append message: %v", err)
+			}
+
+			rec, err := store.GetSession("sess_title")
+			if err != nil {
+				t.Fatalf("failed to get session: %v", err)
+			}
+			if !utf8.ValidString(rec.Title) {
+				t.Fatalf("stored title is not valid UTF-8: %q", rec.Title)
+			}
+			if n := utf8.RuneCountInString(rec.Title); n > 40 {
+				t.Errorf("stored title has %d runes, want <= 40: %q", n, rec.Title)
+			}
+			if rec.Title != tc.want {
+				t.Errorf("stored title = %q, want %q", rec.Title, tc.want)
+			}
+			if strings.ContainsRune(rec.Title, utf8.RuneError) {
+				t.Errorf("stored title contains replacement rune: %q", rec.Title)
+			}
+		})
+	}
+}
+
+// B4: exports of a session whose title came from a multibyte first message are valid UTF-8.
+func TestExportMultibyteTitleValidUTF8(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.CreateSession("sess_export", "", "ollama", "codellama"); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	content := strings.Repeat("汉", 45) + "😀"
+	if err := store.AppendMessage("sess_export", provider.Message{Role: "user", Content: content}); err != nil {
+		t.Fatalf("failed to append message: %v", err)
+	}
+
+	rec, err := store.GetSession("sess_export")
+	if err != nil {
+		t.Fatalf("failed to get session: %v", err)
+	}
+
+	for _, format := range []ExportFormat{FormatJSON, FormatMarkdown} {
+		data, err := Export(rec, ExportOptions{Format: format})
+		if err != nil {
+			t.Fatalf("export %s failed: %v", format, err)
+		}
+		if !utf8.Valid(data) {
+			t.Errorf("%s export is not valid UTF-8", format)
+		}
+	}
+
+	jsonData, err := Export(rec, ExportOptions{Format: FormatJSON})
+	if err != nil {
+		t.Fatalf("json export failed: %v", err)
+	}
+	var decoded JSONSessionExport
+	if err := json.Unmarshal(jsonData, &decoded); err != nil {
+		t.Fatalf("exported JSON does not decode: %v", err)
+	}
+	if decoded.Title != rec.Title {
+		t.Errorf("exported title = %q, want %q", decoded.Title, rec.Title)
 	}
 }

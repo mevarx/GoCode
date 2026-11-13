@@ -17,6 +17,7 @@ builds:
       - -X main.version={{.Version}}
       - -X main.commit={{.Commit}}
       - -X main.buildDate={{.Date}}
+      - -X github.com/mevarx/GoCode/internal/version.Version={{.Version}}
     goos:
       - linux
       - darwin

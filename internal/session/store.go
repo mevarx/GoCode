@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type SessionRecord struct {
 	Title     string             `json:"title"`
 	Provider  string             `json:"provider"`
 	Model     string             `json:"model"`
+	Workspace string             `json:"workspace"`
 	CreatedAt time.Time          `json:"created_at"`
 	UpdatedAt time.Time          `json:"updated_at"`
 	Messages  []provider.Message `json:"messages"`
@@ -73,10 +75,21 @@ func NewStore(dbPath string) (*SessionStore, error) {
 	}
 
 	// The transcript can contain file contents read by tools, so it must not
-	// inherit the process umask (typically 0644).
+	// inherit the process umask (typically 0644). WAL mode mirrors the database
+	// file's mode onto its sidecars, which hold the same data; tighten the
+	// database first so files SQLite creates afterwards inherit 0600.
 	if err := os.Chmod(dbPath, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to tighten session database permissions: %w", err)
+	}
+	// Sidecars only appear after the first write, so they may be absent on a
+	// fresh database; an existing pair inherited a looser mode because it was
+	// created before the database was tightened, so re-check on every open.
+	for _, sidecar := range []string{dbPath + "-wal", dbPath + "-shm"} {
+		if err := chmodIfExists(sidecar, 0o600); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to tighten session database permissions: %w", err)
+		}
 	}
 
 	store := &SessionStore{db: db}
@@ -88,6 +101,17 @@ func NewStore(dbPath string) (*SessionStore, error) {
 	return store, nil
 }
 
+// chmodIfExists applies mode to path, ignoring a file that does not exist yet.
+func chmodIfExists(path string, mode os.FileMode) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.Chmod(path, mode)
+}
+
 func (s *SessionStore) migrate() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sessions (
@@ -95,6 +119,7 @@ func (s *SessionStore) migrate() error {
 		title TEXT NOT NULL,
 		provider TEXT NOT NULL,
 		model TEXT NOT NULL,
+		workspace TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
@@ -124,26 +149,31 @@ func (s *SessionStore) migrate() error {
 // addMissingColumns brings older databases up to the current schema; each entry is additive and idempotent.
 func (s *SessionStore) addMissingColumns() error {
 	migrations := []struct {
-		column string
+		table   string
+		column  string
+		ddlType string
 	}{
 		// reasoning_content stores model thinking output, which some
 		// providers require to be replayed into history on the next turn.
-		{column: "reasoning_content"},
+		{table: "messages", column: "reasoning_content", ddlType: "TEXT"},
+		// workspace scopes auto-resume to the repository the transcript came
+		// from; an old database reads back as '' and therefore never matches.
+		{table: "sessions", column: "workspace", ddlType: "TEXT NOT NULL DEFAULT ''"},
 	}
 
 	for _, m := range migrations {
-		exists, err := s.columnExists("messages", m.column)
+		exists, err := s.columnExists(m.table, m.column)
 		if err != nil {
 			return err
 		}
 		if exists {
 			continue
 		}
-		// The column name comes from the literal table above, never from
-		// user input, so interpolating it into the DDL is safe.
-		stmt := fmt.Sprintf("ALTER TABLE messages ADD COLUMN %s TEXT", m.column)
+		// The table, column and type come from the literals above, never from
+		// user input, so interpolating them into the DDL is safe.
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", m.table, m.column, m.ddlType)
 		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("failed to add column %s to messages: %w", m.column, err)
+			return fmt.Errorf("failed to add column %s to %s: %w", m.column, m.table, err)
 		}
 	}
 	return nil
@@ -191,7 +221,15 @@ func GenerateID() string {
 }
 
 // CreateSession initializes a new session record in the database.
+// It keeps the historical signature for callers that do not know the
+// workspace; such a session is never auto-resumed by workspace.
 func (s *SessionStore) CreateSession(id, title, providerName, model string) (*SessionRecord, error) {
+	return s.CreateSessionWithWorkspace(id, title, providerName, model, "")
+}
+
+// CreateSessionWithWorkspace initializes a new session bound to workspace, which
+// scopes auto-resume so a transcript from another repository is never replayed.
+func (s *SessionStore) CreateSessionWithWorkspace(id, title, providerName, model, workspace string) (*SessionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -201,13 +239,14 @@ func (s *SessionStore) CreateSession(id, title, providerName, model string) (*Se
 	if title == "" {
 		title = fmt.Sprintf("Session %s", id)
 	}
+	workspace = normalizeWorkspace(workspace)
 	now := time.Now().UTC()
 
 	query := `
-	INSERT INTO sessions (id, title, provider, model, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO sessions (id, title, provider, model, workspace, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
-	if _, err := s.db.Exec(query, id, title, providerName, model, now, now); err != nil {
+	if _, err := s.db.Exec(query, id, title, providerName, model, workspace, now, now); err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
@@ -216,6 +255,7 @@ func (s *SessionStore) CreateSession(id, title, providerName, model string) (*Se
 		Title:     title,
 		Provider:  providerName,
 		Model:     model,
+		Workspace: workspace,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Messages:  []provider.Message{},
@@ -260,15 +300,22 @@ func (s *SessionStore) AppendMessage(sessionID string, msg provider.Message) err
 		var currentTitle string
 		_ = tx.QueryRow(`SELECT title FROM sessions WHERE id = ?`, sessionID).Scan(&currentTitle)
 		if strings.HasPrefix(currentTitle, "Session sess_") || currentTitle == "" {
-			newTitle := strings.TrimSpace(msg.Content)
-			if len(newTitle) > 40 {
-				newTitle = newTitle[:37] + "..."
-			}
+			newTitle := truncateTitle(strings.TrimSpace(msg.Content))
 			_, _ = tx.Exec(`UPDATE sessions SET title = ? WHERE id = ?`, newTitle, sessionID)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// truncateTitle caps title at 40 runes, keeping 37 runes and appending "...".
+// Runes, not bytes, so multibyte characters (CJK, emoji) are never split into invalid UTF-8.
+func truncateTitle(title string) string {
+	runes := []rune(title)
+	if len(runes) <= 40 {
+		return title
+	}
+	return string(runes[:37]) + "..."
 }
 
 // SaveSession updates session metadata and overwrites all messages.
@@ -285,16 +332,19 @@ func (s *SessionStore) SaveSession(rec *SessionRecord) error {
 	}
 	defer tx.Rollback()
 
+	// An empty workspace means the caller does not track one (/clear), not that
+	// the session lost its repository, so keep the stored binding in that case.
 	upsert := `
-	INSERT INTO sessions (id, title, provider, model, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO sessions (id, title, provider, model, workspace, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title = excluded.title,
 		provider = excluded.provider,
 		model = excluded.model,
+		workspace = CASE WHEN excluded.workspace <> '' THEN excluded.workspace ELSE sessions.workspace END,
 		updated_at = excluded.updated_at
 	`
-	if _, err := tx.Exec(upsert, rec.ID, rec.Title, rec.Provider, rec.Model, rec.CreatedAt, rec.UpdatedAt); err != nil {
+	if _, err := tx.Exec(upsert, rec.ID, rec.Title, rec.Provider, rec.Model, normalizeWorkspace(rec.Workspace), rec.CreatedAt, rec.UpdatedAt); err != nil {
 		return fmt.Errorf("failed to upsert session: %w", err)
 	}
 
@@ -330,13 +380,13 @@ func (s *SessionStore) GetSession(id string) (*SessionRecord, error) {
 // Caller must hold s.mu (read or write).
 func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	row := s.db.QueryRow(`
-		SELECT id, title, provider, model, created_at, updated_at
+		SELECT id, title, provider, model, workspace, created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, id)
 
 	var rec SessionRecord
-	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.Workspace, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -395,6 +445,53 @@ func (s *SessionStore) GetLastSession() (*SessionRecord, error) {
 	}
 
 	return s.getSessionLocked(lastID)
+}
+
+// GetLastSessionForWorkspace returns the most recently updated session created
+// in workspace, or nil. Auto-resume is scoped this way so a transcript from
+// another repository (file contents, possibly secrets) is never sent to the
+// provider in the current one. An empty workspace never matches.
+func (s *SessionStore) GetLastSessionForWorkspace(workspace string) (*SessionRecord, error) {
+	normalized := normalizeWorkspace(workspace)
+	if normalized == "" {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var lastID string
+	err := s.db.QueryRow(
+		`SELECT id FROM sessions WHERE workspace = ? ORDER BY updated_at DESC LIMIT 1`,
+		normalized,
+	).Scan(&lastID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query last session for workspace: %w", err)
+	}
+
+	return s.getSessionLocked(lastID)
+}
+
+// normalizeWorkspace canonicalizes a workspace path for equality checks:
+// absolute, cleaned, and case-folded on Windows, where paths are
+// case-insensitive. The empty string is preserved and never matches a
+// real directory.
+func normalizeWorkspace(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	workspace = filepath.Clean(workspace)
+	if runtime.GOOS == "windows" {
+		workspace = strings.ToLower(workspace)
+	}
+	return workspace
 }
 
 // ListSessions returns a summary of recent sessions up to limit.

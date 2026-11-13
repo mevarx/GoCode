@@ -8,13 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mevarx/GoCode/internal/tools"
+	"github.com/mevarx/GoCode/internal/version"
 )
 
 // JSONRPCRequest represents a standard JSON-RPC 2.0 request.
@@ -65,9 +67,10 @@ type CallToolResult struct {
 
 // Client manages an MCP server process communicating via stdio JSON-RPC.
 type Client struct {
-	command string
-	args    []string
-	env     map[string]string
+	command  string
+	args     []string
+	env      map[string]string
+	envScrub []string
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -80,19 +83,55 @@ type Client struct {
 	closed  bool
 	doneCh  chan struct{}
 
-	// requestTimeout bounds a single Call; tests can shrink it.
+	// requestTimeout bounds a single Call; guarded by mu so a manager can
+	// retune it while calls are in flight.
 	requestTimeout time.Duration
+}
+
+// defaultRequestTimeout bounds a single JSON-RPC request when the server
+// configuration does not specify one.
+const defaultRequestTimeout = 60 * time.Second
+
+// SetRequestTimeout bounds a single JSON-RPC request. Non-positive values
+// restore the 60s default.
+func (c *Client) SetRequestTimeout(d time.Duration) {
+	if d <= 0 {
+		d = defaultRequestTimeout
+	}
+	c.mu.Lock()
+	c.requestTimeout = d
+	c.mu.Unlock()
+}
+
+// Done is closed when the server process exits or Close is called.
+func (c *Client) Done() <-chan struct{} {
+	return c.doneCh
+}
+
+// IsClosed reports whether the client is unusable because the server process
+// exited or Close was called.
+func (c *Client) IsClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // NewClient creates a new MCP client.
 func NewClient(command string, args []string, env map[string]string) *Client {
+	return NewClientWithEnvScrub(command, args, env, nil)
+}
+
+// NewClientWithEnvScrub creates a new MCP client whose child process
+// environment excludes credential-shaped variables plus envScrub names.
+func NewClientWithEnvScrub(command string, args []string, env map[string]string, envScrub []string) *Client {
 	return &Client{
 		command:        command,
 		args:           args,
 		env:            env,
+		envScrub:       envScrub,
 		pending:        make(map[uint64]chan *JSONRPCResponse),
 		doneCh:         make(chan struct{}),
-		requestTimeout: 60 * time.Second,
+		requestTimeout: defaultRequestTimeout,
 	}
 }
 
@@ -103,11 +142,11 @@ func (c *Client) Start() error {
 
 	c.cmd = exec.Command(c.command, c.args...)
 
-	if len(c.env) > 0 {
-		c.cmd.Env = os.Environ()
-		for k, v := range c.env {
-			c.cmd.Env = append(c.cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
+	// SECURITY: never inherit credential-shaped variables; server-configured
+	// env entries are appended after scrubbing so explicit values still win.
+	c.cmd.Env = tools.ScrubbedEnv(c.envScrub)
+	for k, v := range c.env {
+		c.cmd.Env = append(c.cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	stdin, err := c.cmd.StdinPipe()
@@ -136,8 +175,27 @@ func (c *Client) Start() error {
 const maxMessageSize = 16 * 1024 * 1024
 
 func (c *Client) readLoop() {
-	reader := bufio.NewReaderSize(c.stdout, 10*1024*1024)
+	c.readLoopFrom(bufio.NewReaderSize(c.stdout, 10*1024*1024))
+}
 
+// parseContentLengthHeader reports whether line is a Content-Length header and
+// returns its declared length (which may be zero or negative when malformed).
+func parseContentLengthHeader(line string) (int, bool) {
+	const prefix = "content-length:"
+	if len(line) < len(prefix) || !strings.EqualFold(line[:len(prefix)], prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(line[len(prefix):]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// readLoopFrom consumes JSON-RPC messages from reader, accepting both
+// Content-Length framing and newline-delimited JSON. Lines that merely start
+// with 'C' but are not framing headers are still handled as messages.
+func (c *Client) readLoopFrom(reader *bufio.Reader) {
 	for {
 		b, err := reader.Peek(1)
 		if err != nil {
@@ -145,19 +203,18 @@ func (c *Client) readLoop() {
 		}
 
 		if b[0] == 'C' || b[0] == 'c' {
-			header, err := reader.ReadString('\n')
-			if err != nil {
-				break
-			}
+			header, readErr := reader.ReadString('\n')
 			trimmedHeader := strings.TrimSpace(header)
-			if strings.HasPrefix(strings.ToLower(trimmedHeader), "content-length:") {
-				lenStr := strings.TrimSpace(trimmedHeader[15:])
-				contentLen, parseErr := strconv.Atoi(lenStr)
-				if parseErr == nil && contentLen > maxMessageSize {
-					slog.Error("mcp client: Content-Length exceeds ceiling, dropping connection", "content_length", contentLen, "max", maxMessageSize)
-					break
-				}
-				if parseErr == nil && contentLen > 0 {
+			if trimmedHeader != "" {
+				if contentLen, isHeader := parseContentLengthHeader(trimmedHeader); !isHeader {
+					// Not framing: keep the line consumed by ReadString as a
+					// newline-delimited JSON-RPC message instead of dropping it.
+					c.handleMessage([]byte(trimmedHeader))
+				} else if contentLen > 0 {
+					if contentLen > maxMessageSize {
+						slog.Error("mcp client: Content-Length exceeds ceiling, dropping connection", "content_length", contentLen, "max", maxMessageSize)
+						break
+					}
 					for {
 						sep, err := reader.ReadString('\n')
 						if err != nil || strings.TrimSpace(sep) == "" {
@@ -165,14 +222,17 @@ func (c *Client) readLoop() {
 						}
 					}
 					payload := make([]byte, contentLen)
-					_, readErr := io.ReadFull(reader, payload)
-					if readErr != nil {
+					if _, err := io.ReadFull(reader, payload); err != nil {
 						break
 					}
 					c.handleMessage(payload)
 					continue
 				}
 			}
+			if readErr != nil {
+				break
+			}
+			continue
 		}
 
 		line, err := reader.ReadBytes('\n')
@@ -253,6 +313,10 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 		c.mu.Unlock()
 		return nil, fmt.Errorf("mcp client is closed")
 	}
+	timeout := c.requestTimeout
+	if timeout <= 0 {
+		timeout = defaultRequestTimeout
+	}
 	c.pending[id] = ch
 	c.mu.Unlock()
 
@@ -267,7 +331,7 @@ func (c *Client) Call(ctx context.Context, method string, params interface{}) (j
 		return nil, fmt.Errorf("failed to write to mcp stdin: %w", writeErr)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	select {
@@ -339,7 +403,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]string{
 			"name":    "gocode",
-			"version": "0.5.1",
+			"version": version.Version,
 		},
 	}
 

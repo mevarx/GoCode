@@ -407,3 +407,104 @@ func TestExport_DefaultFormatIsMarkdown(t *testing.T) {
 		t.Errorf("expected default format to be markdown, got:\n%s", string(data))
 	}
 }
+
+// secretToolCallRecord returns a record whose assistant tool call carries two
+// credential shapes, plus those raw secrets for leak assertions.
+func secretToolCallRecord() (*SessionRecord, []string) {
+	openaiKey := "sk-" + strings.Repeat("c5D6", 10)
+	githubToken := "ghp_" + strings.Repeat("Q7w8", 10)
+	rec := &SessionRecord{
+		ID:        "sess_redact_001",
+		Title:     "Redaction Export",
+		Provider:  "openai",
+		Model:     "gpt-4o",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Messages: []provider.Message{
+			{
+				Role:    "assistant",
+				Content: "Running the command.",
+				ToolCalls: []provider.ToolCall{
+					{
+						ID:   "call_secret",
+						Name: "shell_exec",
+						Args: json.RawMessage(`{"command":"curl -H 'Authorization: Bearer ` + openaiKey +
+							`' https://example.com","api_key":"` + githubToken + `"}`),
+					},
+				},
+			},
+		},
+	}
+	return rec, []string{openaiKey, githubToken}
+}
+
+func TestExportJSON_RedactsToolCallArgs(t *testing.T) {
+	rec, secrets := secretToolCallRecord()
+
+	data, err := ExportJSON(rec, ExportOptions{IncludeTools: true})
+	if err != nil {
+		t.Fatalf("ExportJSON failed: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Fatalf("exported JSON is invalid:\n%s", data)
+	}
+	out := string(data)
+	if !strings.Contains(out, "***REDACTED***") {
+		t.Errorf("expected redaction marker in JSON export:\n%s", out)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(out, secret) {
+			t.Errorf("SECURITY VIOLATION: tool-call argument leaked secret %q in JSON export", secret)
+		}
+	}
+
+	var parsed JSONSessionExport
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal exported JSON: %v", err)
+	}
+	if len(parsed.Messages) != 1 || len(parsed.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("expected one message with one tool call, got %+v", parsed.Messages)
+	}
+	args := parsed.Messages[0].ToolCalls[0].Args
+	if !json.Valid(args) {
+		t.Errorf("redacted tool-call args are not valid JSON: %s", args)
+	}
+}
+
+func TestExportMarkdown_RedactsToolCallArgs(t *testing.T) {
+	rec, secrets := secretToolCallRecord()
+
+	md, err := ExportMarkdown(rec, ExportOptions{IncludeTools: true})
+	if err != nil {
+		t.Fatalf("ExportMarkdown failed: %v", err)
+	}
+	if !strings.Contains(md, "***REDACTED***") {
+		t.Errorf("expected redaction marker in Markdown export:\n%s", md)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(md, secret) {
+			t.Errorf("SECURITY VIOLATION: tool-call argument leaked secret %q in Markdown export", secret)
+		}
+	}
+}
+
+func TestRedactToolArgs_IdempotentAndValidJSON(t *testing.T) {
+	key := "sk-" + strings.Repeat("e7F8", 10)
+	raw := json.RawMessage(`{"command":"echo ` + key + `","nested":{"token":"` + key + `"},"n":12345678901234567}`)
+
+	once := RedactToolArgs(raw)
+	if !json.Valid(once) {
+		t.Fatalf("redacted args are not valid JSON: %s", once)
+	}
+	if strings.Contains(string(once), key) {
+		t.Errorf("secret survived redaction: %s", once)
+	}
+	if !strings.Contains(string(once), "***REDACTED***") {
+		t.Errorf("expected redaction marker: %s", once)
+	}
+
+	twice := RedactToolArgs(once)
+	if string(twice) != string(once) {
+		t.Errorf("redaction is not idempotent:\nonce:  %s\ntwice: %s", once, twice)
+	}
+}

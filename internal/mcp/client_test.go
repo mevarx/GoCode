@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mevarx/GoCode/internal/config"
+	"github.com/mevarx/GoCode/internal/version"
 )
 
 func TestMCPTool_SpecAndExecution(t *testing.T) {
@@ -111,6 +113,9 @@ func TestFakeMCPServerProcess(t *testing.T) {
 		}
 		switch req.Method {
 		case "initialize":
+			if path := os.Getenv("GO_FAKE_MCP_PARAMS_FILE"); path != "" {
+				_ = os.WriteFile(path, req.Params, 0o600)
+			}
 			fmt.Fprintf(os.Stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"0.0.1\"}}}\n", *req.ID)
 		case "tools/list":
 			fmt.Fprintf(os.Stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"echo back\",\"inputSchema\":{\"type\":\"object\"}}]}}\n", *req.ID)
@@ -180,7 +185,7 @@ func TestClient_RequestTimeout(t *testing.T) {
 	client := NewClient("dummy", nil, nil)
 	client.stdin = stdinW
 	client.stdout = stdoutR
-	client.requestTimeout = 200 * time.Millisecond
+	client.SetRequestTimeout(200 * time.Millisecond)
 
 	go client.readLoop()
 
@@ -190,4 +195,82 @@ func TestClient_RequestTimeout(t *testing.T) {
 	}
 	stdinW.Close()
 	stdoutW.Close()
+}
+
+// TestClient_ReadLoop_NonHeaderCLineIsMessage guards framing detection: a
+// line that merely starts with 'C' must not be swallowed as a header.
+func TestClient_ReadLoop_NonHeaderCLineIsMessage(t *testing.T) {
+	client := NewClient("dummy", nil, nil)
+
+	respCh := make(chan *JSONRPCResponse, 1)
+	client.pending[1] = respCh
+
+	input := "Connecting...\n" + `{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"
+	client.readLoopFrom(bufio.NewReader(strings.NewReader(input)))
+
+	resp, ok := <-respCh
+	if !ok || resp == nil {
+		t.Fatal("expected the line beginning with 'C' to be handled as a JSON-RPC message")
+	}
+	if resp.ID == nil || *resp.ID != 1 {
+		t.Fatalf("expected response for id 1, got %+v", resp)
+	}
+	if string(resp.Result) != `{}` {
+		t.Fatalf("expected empty object result, got %s", resp.Result)
+	}
+}
+
+// capturedInitializeVersion starts the fake server, runs the handshake and
+// returns the clientInfo.version it received.
+func capturedInitializeVersion(t *testing.T) string {
+	t.Helper()
+
+	paramsFile := filepath.Join(t.TempDir(), "initialize.json")
+	env := map[string]string{
+		"GO_FAKE_MCP_SERVER":      "1",
+		"GO_FAKE_MCP_PARAMS_FILE": paramsFile,
+	}
+	client := NewClient(os.Args[0], []string{"-test.run=TestFakeMCPServerProcess"}, env)
+	if err := client.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.Initialize(ctx); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	data, err := os.ReadFile(paramsFile)
+	if err != nil {
+		t.Fatalf("read captured initialize params: %v", err)
+	}
+
+	var params struct {
+		ClientInfo struct {
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+	}
+	if err := json.Unmarshal(data, &params); err != nil {
+		t.Fatalf("parse captured initialize params: %v", err)
+	}
+	return params.ClientInfo.Version
+}
+
+func TestClient_InitializeAdvertisesPackageVersion(t *testing.T) {
+	if got := capturedInitializeVersion(t); got != version.Version {
+		t.Fatalf("expected advertised version %q, got %q", version.Version, got)
+	}
+}
+
+func TestClient_InitializeAdvertisesVersionVariable(t *testing.T) {
+	orig := version.Version
+	version.Version = "9.9.9-test"
+	defer func() { version.Version = orig }()
+
+	if got := capturedInitializeVersion(t); got != "9.9.9-test" {
+		t.Fatalf("expected advertised version to follow version.Version, got %q", got)
+	}
 }
