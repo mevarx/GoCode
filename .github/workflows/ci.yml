@@ -6,12 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -32,8 +35,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -46,7 +49,24 @@ jobs:
         run: go test -race -coverprofile=coverage.out ./...
       - name: Upload Coverage
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           path: coverage.out
+
+  # Ollama and go-git dependencies carry accepted-risk advisories documented in
+  # docs/SECURITY.md; every other finding fails this job (no continue-on-error).
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: govulncheck
+        continue-on-error: false
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: staticcheck
+        continue-on-error: false
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...

@@ -1,0 +1,7 @@
+# Security-sensitive paths require maintainer review.
+# Bot/agent PRs touching the approval gate, providers, or CI must not merge unreviewed.
+/internal/tools/ @mevarx
+/internal/provider/ @mevarx
+/internal/session/ @mevarx
+/internal/mcp/ @mevarx
+/.github/ @mevarx

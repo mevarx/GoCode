@@ -11,30 +11,23 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    # secrets.* is not reliably available in step-level `if`; expose it as env
+    # and gate on env.NPM_TOKEN instead.
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.24'
+          go-version-file: 'go.mod'
+          cache: true
 
-      - name: Delete existing release assets
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const tag = context.ref.replace('refs/tags/', '');
-            try {
-              const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
-              console.log('Deleted existing release ' + tag);
-            } catch (e) {
-              console.log('No existing release for ' + tag + ', skipping');
-            }
-
-      - uses: goreleaser/goreleaser-action@v7
+      # Releases are immutable: do not delete/recreate the release for a tag.
+      # GoReleaser's `--clean` already removes stale dist/ artifacts.
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
           version: '~> v2'
@@ -42,14 +35,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-node@v4
-        if: ${{ secrets.NPM_TOKEN != '' }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: env.NPM_TOKEN != ''
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish npm shim (gocode-cli)
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: env.NPM_TOKEN != ''
         working-directory: npm
         run: |
           pwsh -NoProfile -File scripts/fetch-binaries.ps1 -Version ${GITHUB_REF_NAME#v}
