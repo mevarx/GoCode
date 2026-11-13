@@ -176,10 +176,16 @@ func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 
 func TestSecurity_ShellExecutionBounded(t *testing.T) {
 	wsDir := t.TempDir()
+	// macOS temp roots are symlinked (/var -> /private/var), and pwd reports the
+	// physical path; compare against the resolved directory.
+	wantDir := wsDir
+	if resolved, err := filepath.EvalSymlinks(wsDir); err == nil {
+		wantDir = resolved
+	}
 	shellTool := &ShellExecTool{
 		WorkspaceRoot:  wsDir,
 		Timeout:        2 * time.Second,
-		MaxOutputBytes: 100,
+		MaxOutputBytes: 64 << 10,
 	}
 
 	var cmd string
@@ -193,12 +199,19 @@ func TestSecurity_ShellExecutionBounded(t *testing.T) {
 	if err != nil || res.Error != "" {
 		t.Fatalf("unexpected error: %v, %s", err, res.Error)
 	}
-	if !strings.Contains(strings.ToLower(res.Output), strings.ToLower(filepath.Clean(wsDir))) {
-		t.Errorf("expected CWD %q, got output: %q", wsDir, res.Output)
+	if !strings.Contains(strings.ToLower(res.Output), strings.ToLower(filepath.Clean(wantDir))) {
+		t.Errorf("expected CWD %q, got output: %q", wantDir, res.Output)
 	}
 
+	// Use a separate small cap: the cwd path itself can exceed 100 bytes, so a
+	// shared cap would truncate before the assertion can match it.
+	boundedTool := &ShellExecTool{
+		WorkspaceRoot:  wsDir,
+		Timeout:        2 * time.Second,
+		MaxOutputBytes: 100,
+	}
 	argsLong, _ := json.Marshal(shellExecArgs{Command: "echo " + strings.Repeat("A", 500)})
-	resLong, _ := shellTool.Execute(context.Background(), argsLong)
+	resLong, _ := boundedTool.Execute(context.Background(), argsLong)
 	if !strings.Contains(resLong.Output, "truncated") {
 		t.Errorf("expected output truncation, got: %q", resLong.Output)
 	}
