@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,9 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 	stdin := bufio.NewReader(os.Stdin)
 	if a.Approval != nil {
 		a.Approval.SetInputReader(stdin)
+		// The "e" choice reads one replacement JSON object from the same
+		// reader the approval prompt used, so piped answers stay in order.
+		a.Approval.EditArgs = stdinArgEditor(stdin)
 	}
 
 	a.EnsureSystemPrompt()
@@ -81,6 +85,24 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// stdinArgEditor builds the "e" editor for the plain loop: one JSON object
+// per line from the loop's shared reader, so a piped answer sequence stays in
+// order. Invalid JSON is returned as an error and the gate denies the call.
+func stdinArgEditor(stdin *bufio.Reader) func(toolName string, args json.RawMessage) (json.RawMessage, error) {
+	return func(toolName string, args json.RawMessage) (json.RawMessage, error) {
+		fmt.Printf("Edit %s args (JSON): ", safetext.Sanitize(toolName))
+		line, err := stdin.ReadString('\n')
+		if err != nil && line == "" {
+			return nil, fmt.Errorf("failed to read edited args: %w", err)
+		}
+		trimmed := strings.TrimSpace(line)
+		if !json.Valid([]byte(trimmed)) {
+			return nil, fmt.Errorf("edited args are not valid JSON")
+		}
+		return json.RawMessage(trimmed), nil
+	}
 }
 
 func (a *AgentLoop) renderPlain(ev LoopEvent) {

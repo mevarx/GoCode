@@ -83,8 +83,7 @@ func TestRunTurnTruncatesHistory(t *testing.T) {
 	full := len(sess.History())
 
 	engine := engineWith(p, sess)
-	engine.ContextManager = NewContextManager(0)
-	engine.ContextManager.MaxTokens = 300
+	engine.ContextManager = NewContextManager(300)
 
 	if err := engine.RunTurn(context.Background(), "go"); err != nil {
 		t.Fatalf("RunTurn returned error: %v", err)

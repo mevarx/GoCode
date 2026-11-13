@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mevarx/GoCode/internal/provider"
@@ -129,5 +131,67 @@ func TestSession_ModifiedFiles(t *testing.T) {
 	s.ClearModifiedFiles()
 	if len(s.ModifiedFiles()) != 0 {
 		t.Fatalf("expected 0 modified files after clear, got %d", len(s.ModifiedFiles()))
+	}
+}
+
+func TestSession_AddMessagePersistsRedactedToolArgs(t *testing.T) {
+	dbPath := t.TempDir() + "/test_redact_args.db"
+	st, err := session.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer st.Close()
+
+	rec, err := st.CreateSession("sess-redact", "Redact Test", "openai", "gpt-4o")
+	if err != nil {
+		t.Fatalf("failed to create session in store: %v", err)
+	}
+
+	s := NewSessionWithStore(rec.ID, rec.Provider, rec.Model, st)
+
+	openaiKey := "sk-" + strings.Repeat("a1B2", 10)
+	githubToken := "ghp_" + strings.Repeat("Z9x8", 10)
+	args := json.RawMessage(`{"command":"curl -H 'Authorization: Bearer ` + openaiKey +
+		`' https://example.com","api_key":"` + githubToken + `"}`)
+
+	s.AddMessage(provider.Message{
+		Role: "assistant",
+		ToolCalls: []provider.ToolCall{{
+			ID:   "call_secret",
+			Name: "shell_exec",
+			Args: args,
+		}},
+	})
+
+	// The tool may still need the real arguments during this turn.
+	history := s.History()
+	if len(history) != 1 || len(history[0].ToolCalls) != 1 {
+		t.Fatalf("expected 1 message with 1 tool call in history, got %+v", history)
+	}
+	if string(history[0].ToolCalls[0].Args) != string(args) {
+		t.Errorf("in-memory history was mutated; got %s", history[0].ToolCalls[0].Args)
+	}
+	if !strings.Contains(string(args), openaiKey) {
+		t.Error("caller's args slice was mutated by AddMessage")
+	}
+
+	loaded, err := st.GetSession("sess-redact")
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if len(loaded.Messages) != 1 || len(loaded.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("expected persisted tool call, got %+v", loaded.Messages)
+	}
+	persisted := string(loaded.Messages[0].ToolCalls[0].Args)
+	if !strings.Contains(persisted, "***REDACTED***") {
+		t.Errorf("persisted tool args are not redacted: %s", persisted)
+	}
+	for _, secret := range []string{openaiKey, githubToken} {
+		if strings.Contains(persisted, secret) {
+			t.Errorf("persisted tool args leaked secret %q: %s", secret, persisted)
+		}
+	}
+	if !json.Valid([]byte(persisted)) {
+		t.Errorf("persisted tool args are not valid JSON: %s", persisted)
 	}
 }

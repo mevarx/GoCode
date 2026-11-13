@@ -1,5 +1,18 @@
 # GoCode Changelog
 
+### Unreleased
+
+- **Approval Integrity** — file previews now use a real Myers unified diff, `/commit` shows the file list and message it will commit, model/tool text is sanitized before terminal rendering, and approved writes are refused if the file changed after preview.
+- **Secret Containment** — child processes no longer inherit credential-shaped env vars, transcript/export redaction covers tool-call arguments, and session WAL/SHM files plus config/logs are owner-only.
+- **Bounded & Scoped Execution** — file/search reads are capped, provider error bodies are limited, tool timeouts kill process groups, hardlink identity checks are cached, and session auto-resume is scoped to the current workspace.
+- **Harness Upgrades** — per-model context budgets, model-summarized `/compact`, persistent scratchpad, parallel read-only tool calls, session-scoped approval grants, plan tool + optional auto-verify, per-turn metrics, and hardened MCP restart/timeout/caps.
+- **Headless & Evals** — `--headless` JSONL mode with an explicit approval policy, and a deterministic eval suite runnable with `make eval`.
+- **CI & Supply Chain** — release toolchain from `go.mod`, SHA-pinned actions, npm checksum verification, and govulncheck/staticcheck gates.
+- **Real Context Compaction** — `/compact` now asks the active model to summarize earlier turns (goal, decisions, open files, next steps) instead of inserting a placeholder count, and falls back to the placeholder when the provider cannot answer.
+- **Model-Aware Token Budgets** — histories are truncated against each model family's context window (80% of the window by default), and an explicitly configured limit still wins.
+- **Better Token Estimation** — estimates now weight CJK text and punctuation-heavy code higher than Latin prose, so source and non-English transcripts no longer undercount.
+- **Persistent Scratchpad Tool** — a new `scratchpad` tool records agent-maintained working state in the session and system prompt so it survives compaction; the scratchpad column is added to existing databases in place.
+
 ### v0.7.1
 
 A cross-platform distribution and security-fix release. GoCode gains an npm-based launcher for its native executable, while ignore-rule matching is hardened against filename-case variations on Windows and macOS.

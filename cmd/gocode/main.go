@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -44,6 +46,8 @@ var (
 	flagWorkdir   string
 	flagTail      int
 	flagFollow    bool
+	flagHeadless  bool
+	flagPolicy    string
 )
 
 func main() {
@@ -63,6 +67,8 @@ func main() {
 	rootCmd.Flags().BoolVar(&flagTUI, "tui", true, "Enable rich TUI (set --tui=false for plain mode)")
 	rootCmd.Flags().BoolVar(&flagNew, "new", false, "Start a new session instead of auto-resuming")
 	rootCmd.Flags().StringVar(&flagSessionID, "session", "", "Resume a specific session by ID")
+	rootCmd.Flags().BoolVar(&flagHeadless, "headless", false, "Drive the agent over a JSONL protocol on stdin/stdout (no TUI)")
+	rootCmd.Flags().StringVar(&flagPolicy, "policy", "", "Approval policy JSON for headless mode: {\"auto_approve\":[...],\"deny\":[...]}")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable debug logging")
 
 	doctorCmd := &cobra.Command{
@@ -175,12 +181,17 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 
 func setupLogging(verbose bool) (cleanup func(), err error) {
 	logFilePath := config.LogFilePath()
-	if err := os.MkdirAll(filepath.Dir(logFilePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logFilePath), 0o700); err != nil {
 		return nil, err
 	}
 
-	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	// O_CREATE's mode applies only to a new file; tighten a pre-existing log too.
+	if err := logFile.Chmod(0o600); err != nil {
+		logFile.Close()
 		return nil, err
 	}
 
@@ -220,6 +231,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	for _, warning := range config.InlineAPIKeyWarnings(cfg) {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+
 	providerRegistry := provider.NewRegistry()
 
 	ollamaProvider, err := provider.NewOllamaProvider(cfg.Provider.Ollama.Host)
@@ -253,15 +268,22 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// The workspace must be known before session selection: auto-resume is
+	// scoped to it, so repo A's transcript is never replayed in repo B.
+	workspaceRoot := flagWorkdir
+	if workspaceRoot == "" {
+		workspaceRoot, _ = os.Getwd()
+	}
+	workspaceRoot, _ = filepath.Abs(workspaceRoot)
+
 	var activeSessionRec *session.SessionRecord
 	if sessionStore != nil && !flagNew {
-		if flagSessionID != "" {
-			activeSessionRec, _ = sessionStore.GetSession(flagSessionID)
-			if activeSessionRec == nil {
-				slog.Info("session not found, creating new", "id", flagSessionID)
-			}
-		} else {
-			activeSessionRec, _ = sessionStore.GetLastSession()
+		activeSessionRec, err = selectSessionForResume(sessionStore, flagSessionID, workspaceRoot)
+		if err != nil {
+			slog.Warn("failed to select session to resume", "error", err)
+		}
+		if activeSessionRec == nil && flagSessionID != "" {
+			slog.Info("session not found, creating new", "id", flagSessionID)
 		}
 	}
 
@@ -308,6 +330,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	if activeSessionRec != nil {
 		sess = agent.NewSessionWithStore(activeSessionRec.ID, providerName, model, sessionStore)
 		sess.LoadMessages(activeSessionRec.Messages)
+		sess.SetScratchpad(activeSessionRec.Scratchpad)
 		slog.Info("resumed session", "id", activeSessionRec.ID, "messages", len(activeSessionRec.Messages))
 	} else {
 		newID := session.GenerateID()
@@ -315,16 +338,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			newID = flagSessionID
 		}
 		if sessionStore != nil {
-			rec, err := sessionStore.CreateSession(newID, "", providerName, model)
+			rec, err := sessionStore.CreateSessionWithWorkspace(newID, "", providerName, model, workspaceRoot)
 			if err == nil {
 				newID = rec.ID
 			}
 		}
-		workspaceRoot := flagWorkdir
-		if workspaceRoot == "" {
-			workspaceRoot, _ = os.Getwd()
-		}
-		workspaceRoot, _ = filepath.Abs(workspaceRoot)
 
 		sess = agent.NewSessionWithStore(newID, providerName, model, sessionStore)
 
@@ -336,12 +354,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	workspaceRoot := flagWorkdir
-	if workspaceRoot == "" {
-		workspaceRoot, _ = os.Getwd()
-	}
-	workspaceRoot, _ = filepath.Abs(workspaceRoot)
-
 	ignoreMatcher := ignore.LoadMatcher(workspaceRoot)
 	sensitiveMatcher := ignore.NewSensitiveMatcher(ignoreMatcher, cfg.Permissions.SensitivePatterns)
 
@@ -351,6 +363,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Timeout:        shellTimeout,
 		WorkspaceRoot:  workspaceRoot,
 		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+		EnvScrub:       config.SecretEnvNames(cfg),
 		Guard: &tools.ShellGuard{
 			SensitiveMatcher:   sensitiveMatcher,
 			RedactSecretOutput: cfg.Tools.Shell.RedactSecrets,
@@ -375,6 +388,21 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		WorkspaceRoot:    workspaceRoot,
 	})
 
+	planStore := tools.NewPlanStore()
+	toolRegistry.Register(&tools.PlanTool{Store: planStore})
+
+	scratchpadStore := tools.NewScratchpadStore()
+	toolRegistry.Register(&tools.ScratchpadTool{Store: scratchpadStore})
+	if sess.Scratchpad() != "" {
+		_ = scratchpadStore.Set(sess.Scratchpad())
+	}
+
+	verifyCommand := strings.TrimSpace(cfg.Tools.VerifyCommand)
+	verifyTimeout := time.Duration(cfg.Tools.VerifyTimeoutSeconds) * time.Second
+	if verifyTimeout <= 0 {
+		verifyTimeout = agent.DefaultVerifyTimeout
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -386,13 +414,26 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}()
 
 	mcpManager := mcp.NewManager(cfg.MCP.Servers)
+	mcpManager.EnvScrub = config.SecretEnvNames(cfg)
 	if err := mcpManager.StartAll(ctx, toolRegistry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: MCP server startup failed: %v\n", err)
 		slog.Warn("mcp startup", "error", err)
 	}
 	defer mcpManager.CloseAll()
 
-	approval := tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
+	// Headless has no human to prompt: only the policy allowlist may run, and
+	// every other approval-gated call is denied. Without --headless the policy
+	// is not read and the configured permissions apply.
+	var approval *tools.ApprovalGate
+	if flagHeadless {
+		policy, err := loadHeadlessPolicy(flagPolicy)
+		if err != nil {
+			return err
+		}
+		approval = newHeadlessApprovalGate(policy)
+	} else {
+		approval = tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
+	}
 
 	// One guard config for both UI paths so they agree on when a turn may stop.
 	guardCfg := agent.LoopGuardConfig{
@@ -400,15 +441,41 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		MaxRepeatedCalls: cfg.Tools.MaxRepeatedToolCalls,
 	}
 
-	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens)
-	}
-
 	loop := agent.NewAgentLoop(providerRegistry, sess, toolRegistry, approval)
 	loop.WorkspaceRoot = workspaceRoot
 	loop.GuardConfig = guardCfg
 	loop.ContextManager = agent.NewContextManager(cfg.Tools.MaxContextTokens)
+	loop.Plan = planStore
+	loop.Scratchpad = scratchpadStore
+	loop.VerifyCommand = verifyCommand
+	loop.VerifyTimeout = verifyTimeout
+
+	// Headless wins over --tui: the default --tui=true must not open a TUI on a
+	// machine driven through the JSONL protocol.
+	if flagHeadless {
+		return runHeadless(ctx, os.Stdin, os.Stdout, loop)
+	}
+
+	if flagTUI {
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout)
+	}
+
 	return loop.Run(ctx)
+}
+
+// selectSessionForResume decides which persisted session to load at startup.
+// An explicit ID always wins: the user asked for that transcript by name, and
+// the prompt is rebuilt for the current workspace afterwards. Without one,
+// auto-resume is scoped to workspaceRoot so another repository's transcript is
+// never sent to the provider. A nil record means "start a fresh session".
+func selectSessionForResume(store *session.SessionStore, explicitID, workspaceRoot string) (*session.SessionRecord, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if explicitID != "" {
+		return store.GetSession(explicitID)
+	}
+	return store.GetLastSessionForWorkspace(workspaceRoot)
 }
 
 // openSessionStore opens the store when persistence is enabled; split out for testability.
@@ -598,25 +665,31 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 	defer file.Close()
 
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to read log file %s: %w", logPath, err)
-	}
-
-	start := 0
-	if flagTail > 0 && len(lines) > flagTail {
-		start = len(lines) - flagTail
-	}
-	for i := start; i < len(lines); i++ {
-		fmt.Println(lines[i])
+	// Only the requested tail is loaded; a multi-GB log must not be buffered.
+	if flagTail > 0 {
+		lines, err := tailFileLines(file, flagTail)
+		if err != nil {
+			return fmt.Errorf("failed to read log file %s: %w", logPath, err)
+		}
+		for _, line := range lines {
+			fmt.Println(line)
+		}
+	} else {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			fmt.Println(scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("failed to read log file %s: %w", logPath, err)
+		}
 	}
 
 	if !flagFollow {
 		return nil
+	}
+
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("failed to seek log file %s: %w", logPath, err)
 	}
 
 	ctx := cmd.Context()
@@ -639,6 +712,58 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// tailFileLines returns the last n lines of f, reading backwards from the end
+// in fixed-size chunks. Memory is bounded by the chunk size plus the tail.
+func tailFileLines(f *os.File, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+
+	const chunkSize = 32 * 1024
+	var buf []byte
+	newlines := 0
+	pos := info.Size()
+	for pos > 0 && newlines <= n {
+		readSize := int64(chunkSize)
+		if pos < readSize {
+			readSize = pos
+		}
+		pos -= readSize
+		part := make([]byte, readSize)
+		if _, err := f.ReadAt(part, pos); err != nil && err != io.EOF {
+			return nil, err
+		}
+		newlines += bytes.Count(part, []byte{'\n'})
+		buf = append(part, buf...)
+	}
+
+	text := string(buf)
+	if pos > 0 {
+		// The window starts mid-line: drop that partial line.
+		if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+			text = text[idx+1:]
+		} else {
+			text = ""
+		}
+	}
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return nil, nil
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines, nil
+}
+
 func runDoctor(cmd *cobra.Command, args []string) error {
 	cfg, err := loadCLIConfig()
 	if err != nil {
@@ -648,6 +773,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	fmt.Println("GoCode Doctor — Diagnostic Health Check")
 	fmt.Println("──────────────────────────────────────────")
+
+	for _, warning := range config.InlineAPIKeyWarnings(cfg) {
+		fmt.Println(warning)
+	}
 
 	ollamaProvider, err := provider.NewOllamaProvider(cfg.Provider.Ollama.Host)
 	if err != nil {
@@ -708,8 +837,47 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	cp := provider.NewCopilotProvider(cfg.Provider.Copilot)
 	fmt.Println(copilotDoctorLine(cp, ctx, cfg.Provider.Copilot.DefaultModel))
 
+	// Session transcripts live in SQLite plus its WAL/SHM sidecars; flag any
+	// path that would let another local user read them.
+	if runtime.GOOS == "windows" {
+		fmt.Printf("• %-14s permission check skipped on Windows\n", "sessions")
+	} else {
+		dir := config.SessionDir()
+		dbPath := filepath.Join(dir, "sessions.db")
+		var warnings []string
+		for _, path := range []string{dir, dbPath, dbPath + "-wal", dbPath + "-shm"} {
+			if warning := sessionStorageWarning(path); warning != "" {
+				warnings = append(warnings, warning)
+			}
+		}
+		if len(warnings) == 0 {
+			fmt.Printf("✓ %-14s owner-only storage (0600/0700)\n", "sessions")
+		} else {
+			for _, warning := range warnings {
+				fmt.Println(warning)
+			}
+		}
+	}
+
 	fmt.Println("──────────────────────────────────────────")
 	return nil
+}
+
+// sessionStorageWarning reports a session path that is readable or writable by
+// group/other, or "" when it is owner-only, absent, or Windows has no mode bits.
+func sessionStorageWarning(path string) string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	perm := info.Mode().Perm()
+	if perm&0o077 == 0 {
+		return ""
+	}
+	return fmt.Sprintf("⚠ %s is group/other-readable (mode %04o); expected 0600/0700", path, perm)
 }
 
 // copilotDoctorLine renders the `doctor` status line; it asks the provider so reported state matches actual auth.

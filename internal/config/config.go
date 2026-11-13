@@ -2,8 +2,11 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -86,6 +89,9 @@ type MCPServerConfig struct {
 	Command string            `toml:"command"`
 	Args    []string          `toml:"args"`
 	Env     map[string]string `toml:"env,omitempty"`
+	// RequestTimeoutSeconds bounds a single JSON-RPC request to this server.
+	// Zero or negative uses the built-in default of 60 seconds.
+	RequestTimeoutSeconds int `toml:"request_timeout_seconds"`
 }
 
 // SessionConfig specifies session settings.
@@ -102,14 +108,28 @@ type ToolsConfig struct {
 	// MaxRepeatedToolCalls caps identical tool calls (same name and same
 	// arguments) within one turn. Zero or negative uses the built-in default.
 	MaxRepeatedToolCalls int `toml:"max_repeated_tool_calls"`
-	// MaxContextTokens bounds history sent to the provider; zero or negative uses the built-in default.
+	// MaxContextTokens overrides the per-model context window; zero or
+	// negative derives the budget from the active model's window (80%).
 	MaxContextTokens int `toml:"max_context_tokens"`
+	// VerifyCommand, when set, is run once after any provider round that
+	// executed a tool able to modify the workspace. Empty disables auto-verify.
+	VerifyCommand string `toml:"verify_command"`
+	// VerifyTimeoutSeconds bounds one auto-verify run. Zero or negative uses
+	// 120 seconds; it is only consulted when VerifyCommand is set.
+	VerifyTimeoutSeconds int `toml:"verify_timeout_seconds"`
 }
 
 type ShellConfig struct {
-	TimeoutSeconds int  `toml:"timeout_seconds"`
-	MaxOutputBytes int  `toml:"max_output_bytes"`
-	RedactSecrets  bool `toml:"redact_secrets"`
+	TimeoutSeconds int `toml:"timeout_seconds"`
+	MaxOutputBytes int `toml:"max_output_bytes"`
+	// RedactSecrets controls masking of shell_exec command output only, before
+	// that output becomes a tool result. Setting it false does not disable
+	// redaction at the transcript boundary: tool results, tool-call arguments,
+	// and session exports are always redacted (see tools.RedactToolOutput).
+	RedactSecrets bool `toml:"redact_secrets"`
+	// EnvScrub lists additional env var names or patterns to drop from
+	// child process environments, on top of the built-in credential patterns.
+	EnvScrub []string `toml:"env_scrub"`
 }
 
 // DefaultConfig returns default configuration values.
@@ -233,12 +253,132 @@ func DefaultConfig() Config {
 				MaxOutputBytes: 1024 * 1024,
 				RedactSecrets:  true,
 			},
-			MaxContextTokens: 65536,
+			MaxContextTokens:     0,
+			VerifyTimeoutSeconds: 120,
 		},
 		MCP: MCPConfig{
 			Servers: make(map[string]MCPServerConfig),
 		},
 	}
+}
+
+// namedGateway pairs a gateway config with the provider name used in messages.
+type namedGateway struct {
+	name string
+	cfg  GatewayConfig
+}
+
+// allGateways returns every configured gateway: the built-ins in a stable
+// order, then custom providers sorted by name.
+func allGateways(p ProviderConfig) []namedGateway {
+	gateways := []namedGateway{
+		{"omniroute", p.OmniRoute},
+		{"openai", p.OpenAI},
+		{"gemini", p.Gemini},
+		{"groq", p.Groq},
+		{"openrouter", p.OpenRouter},
+		{"anthropic", p.Anthropic},
+		{"qwen", p.Qwen},
+		{"kimi", p.Kimi},
+		{"hermes", p.Hermes},
+		{"xai", p.XAI},
+		{"mistral", p.Mistral},
+		{"minimax", p.MiniMax},
+		{"deepseek", p.DeepSeek},
+		{"together", p.Together},
+		{"fireworks", p.Fireworks},
+		{"cerebras", p.Cerebras},
+		{"zhipu", p.Zhipu},
+		{"nvidia", p.Nvidia},
+	}
+
+	customNames := make([]string, 0, len(p.Custom))
+	for name := range p.Custom {
+		customNames = append(customNames, name)
+	}
+	sort.Strings(customNames)
+	for _, name := range customNames {
+		gateways = append(gateways, namedGateway{name, p.Custom[name]})
+	}
+	return gateways
+}
+
+// ValidateProviderBaseURL checks an OpenAI-compatible endpoint. Endpoints must
+// be absolute http(s) URLs without credentials, a query, or a fragment, and
+// plain HTTP is only allowed for localhost/loopback targets. A trailing slash
+// is trimmed.
+func ValidateProviderBaseURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return "", fmt.Errorf("base URL must be an absolute http or https URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("base URL must not contain credentials, a query, or a fragment")
+	}
+	if parsed.Scheme == "http" {
+		host := strings.ToLower(parsed.Hostname())
+		ip := net.ParseIP(host)
+		if host != "localhost" && !strings.HasSuffix(host, ".localhost") && (ip == nil || !ip.IsLoopback()) {
+			return "", fmt.Errorf("base URL must use HTTPS unless it targets localhost")
+		}
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+// validateProviderBaseURLs rejects a config whose effective endpoint would send
+// a key over cleartext or to a malformed URL. Copilot and Ollama have their own
+// host handling and are not checked here.
+func validateProviderBaseURLs(cfg Config) error {
+	for _, gw := range allGateways(cfg.Provider) {
+		if gw.cfg.BaseURL == "" {
+			continue
+		}
+		if _, err := ValidateProviderBaseURL(gw.cfg.BaseURL); err != nil {
+			return fmt.Errorf("provider %q has invalid base_url: %w", gw.name, err)
+		}
+	}
+	return nil
+}
+
+// InlineAPIKeyWarnings reports every provider whose key is stored in config.toml
+// instead of an environment variable. The key value itself is never included.
+func InlineAPIKeyWarnings(cfg Config) []string {
+	var warnings []string
+	for _, gw := range allGateways(cfg.Provider) {
+		if gw.cfg.APIKey != "" {
+			warnings = append(warnings, fmt.Sprintf("⚠ %s: inline api_key stored in plaintext; prefer api_key_env", gw.name))
+		}
+	}
+	return warnings
+}
+
+// SecretEnvNames returns every non-empty environment variable name that can
+// hold a provider credential, plus the shell's extra scrub entries. Child
+// processes started by GoCode get these variables removed.
+func SecretEnvNames(cfg Config) []string {
+	names := make([]string, 0, 24)
+	seen := make(map[string]bool)
+
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+
+	p := cfg.Provider
+	for _, gw := range allGateways(p) {
+		add(gw.cfg.APIKeyEnv)
+	}
+
+	add(p.Copilot.OAuthTokenEnv)
+
+	for _, name := range cfg.Tools.Shell.EnvScrub {
+		add(name)
+	}
+
+	return names
 }
 
 // Load reads configuration from file or returns defaults if non-existent.
@@ -253,9 +393,13 @@ func Load() (Config, error) {
 		}
 		return cfg, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
+	_ = os.Chmod(path, 0o600)
 
 	if err := decodeConfig(data, &cfg, path); err != nil {
 		return cfg, err
+	}
+	if err := validateProviderBaseURLs(cfg); err != nil {
+		return cfg, fmt.Errorf("config file %s: %w", path, err)
 	}
 
 	if cfg.MCP.Servers == nil {
@@ -276,9 +420,13 @@ func LoadFromPath(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
+	_ = os.Chmod(path, 0o600)
 
 	if err := decodeConfig(data, &cfg, path); err != nil {
 		return cfg, err
+	}
+	if err := validateProviderBaseURLs(cfg); err != nil {
+		return cfg, fmt.Errorf("config file %s: %w", path, err)
 	}
 
 	if cfg.MCP.Servers == nil {
@@ -310,35 +458,35 @@ func decodeConfig(data []byte, cfg *Config, path string) error {
 
 // Save writes the configuration to the config.toml file.
 func Save(cfg Config) error {
-	path := ConfigFilePath()
-	if err := os.MkdirAll(ConfigDir(), 0o755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create config file: %w", err)
-	}
-	defer f.Close()
-
-	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
-		return fmt.Errorf("failed to encode config to TOML: %w", err)
-	}
-
-	return nil
+	return writeConfigFile(cfg, ConfigFilePath())
 }
 
 // SaveToPath writes the configuration to a specific file path.
 func SaveToPath(cfg Config, path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+	return writeConfigFile(cfg, path)
+}
+
+// writeConfigFile creates the parent directory owner-only and writes path with
+// mode 0600. An existing file keeps its old mode through O_CREATE, so chmod it
+// as well.
+func writeConfigFile(cfg Config, path string) error {
+	// A bare filename has "." as its parent; chmod'ing the working directory
+	// would be surprising, so only treat a real directory as one to create.
+	if dir := filepath.Dir(path); dir != "." {
+		if err := ensurePrivateDir(dir); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
 	}
 
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create config file: %w", err)
 	}
 	defer f.Close()
+
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("failed to restrict config file permissions: %w", err)
+	}
 
 	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
 		return fmt.Errorf("failed to encode config to TOML: %w", err)

@@ -105,6 +105,8 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `gocode session export` | Export a session transcript to Markdown or JSON |
 | `/provider`, `/model` | Switch provider or model in-session |
 | `/sessions`, `/new`, `/clear` | List, start, or reset sessions |
+| `/compact` | Summarize earlier turns to free context window |
+| `/stats` | Show estimated token usage and message count |
 | `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
 | `/help` | Show all in-session commands |
 
@@ -120,6 +122,8 @@ TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears 
 | :-- | :-- | :-: |
 | `file_read` | Read files, with line offset and limit | Automatic |
 | `code_search` | Regex or plain-text search with context and glob filters | Automatic |
+| `plan` | Record a task checklist rendered into the system prompt | Automatic |
+| `scratchpad` | Persist goal, decisions, and open files across compaction | Automatic |
 | `file_write` | Create or overwrite files, with a unified diff preview | **Required** |
 | `file_patch` | Targeted edits, with a unified diff preview | **Required** |
 | `shell_exec` | Run a terminal command in the workspace directory | **Required** |
@@ -211,7 +215,7 @@ gocode session export --output transcript.md --force
 Sessions live at `~/.local/share/gocode/sessions/sessions.db` on Linux and macOS, and `%LOCALAPPDATA%\gocode\sessions\sessions.db` on Windows. Set `persist = false` under `[session]` to keep a conversation in memory only, with nothing written to disk.
 ### Project and global context
 
-GoCode searches the current directory and its parents for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md` and injects it into the system prompt under `## Project Context`.
+GoCode searches the current directory and its parents for `AGENTS.md`, `.gocode/AGENTS.md`, or `docs/AGENTS.md` and injects it into the system prompt as delimited untrusted repository data (`## Project Context (untrusted repository data)`), after the safety rules; this text cannot override the approval policy.
 
 For rules that apply to every repository, create `~/.config/gocode/CONTEXT.md` (`%APPDATA%\gocode\CONTEXT.md` on Windows).
 
@@ -259,11 +263,14 @@ GoCode is built around human-in-the-loop approval: the agent cannot write files 
 
 **File tools are confined.** `file_read`, `file_write`, `file_patch`, and `code_search` resolve every path through the workspace root, reject traversal, and re-check after resolving symlinks. Sensitive files (`.env*`, SSH keys, certificates, cloud credentials) and anything matched by your ignore rules are blocked.
 
+**Credentials stay out of files.** On POSIX systems `config.toml` and `gocode.log` are created owner-only (`0600`; their directories `0700`), and a config or log file with looser permissions is tightened when it is loaded. Prefer `api_key_env` over inline `api_key`: an inline key is stored in plaintext, so `gocode doctor` prints a warning for every provider that uses one. Provider base URLs are validated at load time: HTTPS is required except for localhost/loopback, and URLs containing embedded credentials, a query, or a fragment are rejected.
+
 **The shell is not confined.** `shell_exec` uses the workspace as its *working directory*, which is not a sandbox. A command can read anything your user account can read. Static inspection cannot reliably prevent this, since command substitution, pipes, and interpreters defeat it. GoCode instead provides:
 
-- **Secret redaction**: credential-shaped values in command output are masked before reaching the model or your session transcript (`redact_secrets = false` disables it).
+- **Secret redaction**: tool results, tool-call arguments, and session exports are always redacted before reaching the model or your transcript — this cannot be disabled. The `[tools.shell] redact_secrets` setting controls only masking of `shell_exec` command output before it enters the tool result; setting it to `false` is not recommended.
+- **Credential-free child env**: child processes (shell commands and MCP servers) do not inherit credential-shaped environment variables by default. Names matching patterns such as `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_KEY`, and `*_CREDENTIALS` — plus every configured provider `api_key_env` — are removed. Add more names or patterns with `[tools.shell] env_scrub`. Essential variables (`PATH`, `HOME`, `SystemRoot`, `TEMP`, …) always survive so commands still run.
 - **Advisory warnings**: commands referencing known-sensitive paths are flagged in the approval prompt.
-- **The approval gate**: your real protection. Read each command before approving it.
+- **The approval gate**: your real protection. Read each command before approving it. Answers are `y` (once), `a` (allow these exact arguments for the rest of the session; identical calls then run without prompting and are marked `(session grant)`), `r` (allow tools that declare themselves read-only for the current turn), `e` (edit the arguments before deciding; plain terminal only), and `n` (deny). Grants are in-memory, die with the process, and never widen to different arguments — those prompt again.
 
 **Recommendations**
 
@@ -295,7 +302,7 @@ A minimal example:
 default = "gemini"
 
 [provider.gemini]
-api_key_env = "GEMINI_API_KEY"
+api_key_env = "GEMINI_API_KEY"   # preferred: the key stays in the environment, not in this file
 default_model = "gemini-3.8-flash"
 
 [permissions]
@@ -313,7 +320,10 @@ max_repeated_tool_calls = 3   # identical tool calls per turn
 [tools.shell]
 timeout_seconds = 30
 max_output_bytes = 1048576
-redact_secrets = true
+redact_secrets = true         # mask shell_exec output; transcript/export redaction is always on
+# Extra env var names or glob patterns to remove from child processes,
+# on top of the built-in credential patterns.
+env_scrub = ["MY_GATEWAY_KEY", "TEAM_*_CREDENTIALS"]
 ```
 
 Only the sections you change need to appear; everything else comes from defaults. The full reference, including MCP servers, custom providers, and Copilot settings, is in [docs/configuration.md](docs/configuration.md).

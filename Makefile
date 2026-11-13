@@ -1,4 +1,4 @@
-.PHONY: build test lint install clean
+.PHONY: build test lint eval install clean
 
 BINARY=gocode
 PKG=./cmd/gocode/
@@ -17,6 +17,9 @@ test:
 lint:
 	go vet ./...
 	gofmt -l .
+
+eval:
+	go test ./internal/eval -count=1
 
 install:
 	go install $(PKG)

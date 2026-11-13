@@ -63,9 +63,9 @@ func TestRequestApprovalSanitizesUntrustedText(t *testing.T) {
 			t.Fatalf("preview block delimiters missing: %q", out)
 		}
 		// The injected text cannot reach the prompt line itself.
-		if strings.Count(out, "Approve? [y/N]") != 2 {
+		if strings.Count(out, "Approve? [") != 2 {
 			t.Fatalf("expected the real prompt plus one visible spoof occurrence, got %d: %q",
-				strings.Count(out, "Approve? [y/N]"), out)
+				strings.Count(out, "Approve? ["), out)
 		}
 	})
 

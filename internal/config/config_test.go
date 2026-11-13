@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -264,8 +265,8 @@ func TestLoadFromPath_CustomAndMCPKeysAreKnown(t *testing.T) {
 
 // MEDIUM-9/MEDIUM-34: context budget needs a sane default to avoid truncating long sessions.
 func TestConfig_MaxContextTokensDefaultAndRoundTrip(t *testing.T) {
-	if got := DefaultConfig().Tools.MaxContextTokens; got <= 0 {
-		t.Fatalf("default MaxContextTokens must be positive, got %d", got)
+	if got := DefaultConfig().Tools.MaxContextTokens; got != 0 {
+		t.Fatalf("default MaxContextTokens must be 0 (auto per-model), got %d", got)
 	}
 
 	tmpFile := filepath.Join(t.TempDir(), "config.toml")
@@ -279,5 +280,207 @@ func TestConfig_MaxContextTokensDefaultAndRoundTrip(t *testing.T) {
 	}
 	if loaded.Tools.MaxContextTokens != 12345 {
 		t.Errorf("expected max_context_tokens 12345, got %d", loaded.Tools.MaxContextTokens)
+	}
+}
+
+func TestSecretEnvNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider.Custom["gateway"] = GatewayConfig{APIKeyEnv: "CUSTOM_GW_KEY"}
+	cfg.Provider.Copilot.OAuthTokenEnv = "MY_COPILOT_TOKEN"
+	cfg.Tools.Shell.EnvScrub = []string{"EXTRA_GATEWAY_KEY", "*_MAGIC_CRED"}
+
+	names := SecretEnvNames(cfg)
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		seen[name] = true
+	}
+
+	for _, want := range []string{
+		"OPENAI_API_KEY",
+		"CUSTOM_GW_KEY",
+		"MY_COPILOT_TOKEN",
+		"EXTRA_GATEWAY_KEY",
+		"*_MAGIC_CRED",
+	} {
+		if !seen[want] {
+			t.Errorf("SecretEnvNames missing %q: %v", want, names)
+		}
+	}
+}
+
+func TestSecretEnvNamesSkipsEmpty(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider.OpenAI.APIKeyEnv = ""
+	cfg.Provider.Gemini.APIKeyEnv = ""
+	cfg.Provider.Copilot.OAuthTokenEnv = ""
+
+	for _, name := range SecretEnvNames(cfg) {
+		if name == "" {
+			t.Errorf("SecretEnvNames returned an empty name")
+		}
+	}
+}
+
+// A12: a written config holds keys, so both new and pre-existing files must end
+// up owner-only, and the parent directory must not be group/other accessible.
+func TestSaveToPathCreatesOwnerOnlyFileAndDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested")
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SaveToPath(DefaultConfig(), path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("expected config file mode 0600, got %04o", got)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat config dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Errorf("expected config dir mode 0700, got %04o", got)
+	}
+}
+
+func TestSaveToPathTightensExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Go mode bits are ignored on Windows; ACL inheritance applies instead")
+	}
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[provider]\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	// WriteFile is masked by the umask; force the loose mode the save must fix.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod failed: %v", err)
+	}
+
+	if err := SaveToPath(DefaultConfig(), path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("expected pre-existing file to be tightened to 0600, got %04o", got)
+	}
+}
+
+func TestLoadFromPathTightensExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Go mode bits are ignored on Windows; ACL inheritance applies instead")
+	}
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[provider]\ndefault = \"ollama\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod failed: %v", err)
+	}
+
+	if _, err := LoadFromPath(path); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("expected loaded config to be tightened to 0600, got %04o", got)
+	}
+}
+
+// A12: an endpoint override can otherwise send a key over cleartext or embed
+// credentials, so every built-in and custom base URL is validated on load.
+func TestLoadFromPathValidatesProviderBaseURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		wantErr  string
+	}{
+		{
+			name:     "public cleartext built-in",
+			contents: "[provider.openai]\nbase_url = \"http://evil.example\"\n",
+			wantErr:  `provider "openai"`,
+		},
+		{
+			name:     "userinfo built-in",
+			contents: "[provider.openai]\nbase_url = \"https://user:pass@api.openai.com/v1\"\n",
+			wantErr:  "must not contain credentials",
+		},
+		{
+			name:     "public cleartext custom",
+			contents: "[provider.custom.my-gw]\nbase_url = \"http://evil.example/v1\"\n",
+			wantErr:  `provider "my-gw"`,
+		},
+		{
+			name:     "https override accepted",
+			contents: "[provider.openai]\nbase_url = \"https://api.openai.com/v1\"\n",
+		},
+		{
+			name:     "loopback http accepted",
+			contents: "[provider.openai]\nbase_url = \"http://127.0.0.1:8080/v1\"\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
+				t.Fatalf("write failed: %v", err)
+			}
+			_, err := LoadFromPath(path)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected config to load, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestInlineAPIKeyWarnings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider.OpenAI.APIKey = "sk-inline-secret"
+	cfg.Provider.Custom["my-gw"] = GatewayConfig{APIKey: "inline-custom-secret"}
+
+	lines := InlineAPIKeyWarnings(cfg)
+	if len(lines) != 2 {
+		t.Fatalf("expected one warning per inline key, got %v", lines)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"openai:", "my-gw:", "api_key_env", "plaintext"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warning should contain %q, got %q", want, joined)
+		}
+	}
+	for _, secret := range []string{"sk-inline-secret", "inline-custom-secret"} {
+		if strings.Contains(joined, secret) {
+			t.Errorf("warning must never print the key, got %q", joined)
+		}
+	}
+}
+
+func TestInlineAPIKeyWarningsEmptyWithEnvKeys(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Provider.Custom["my-gw"] = GatewayConfig{APIKeyEnv: "MY_GW_KEY"}
+	if warnings := InlineAPIKeyWarnings(cfg); len(warnings) != 0 {
+		t.Errorf("expected no warnings when keys come from env vars, got %v", warnings)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/list"
@@ -17,6 +18,7 @@ import (
 	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/safetext"
+	"github.com/mevarx/GoCode/internal/tools"
 )
 
 type ChatRole int
@@ -88,6 +90,9 @@ type Model struct {
 	approvalActive bool
 	approvalReq    ApprovalRequest
 	approvalFocus  int
+	// Tools the user granted exact-args approval for during this UI session,
+	// displayed in the modal footer. The authoritative copy lives in the gate.
+	sessionGrants map[string]bool
 
 	bridge   *ApprovalBridge
 	inputCh  chan string
@@ -130,6 +135,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		outputCh:      outputCh,
 		cancelCh:      cancelCh,
 		pendingTools:  make(map[string]int),
+		sessionGrants: make(map[string]bool),
 		focused:       true,
 	}
 }
@@ -423,31 +429,74 @@ func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			m.approvalFocus = 0
 		}
 	case "enter":
-		approved := m.approvalFocus == 0
-		req := m.approvalReq
-		m.approvalActive = false
-		label := "✓ Approved"
-		role := RoleSystem
-		if !approved {
-			label = "✗ Denied"
-			role = RoleError
+		if m.approvalFocus == 0 {
+			return m.resolveApproval(tools.ApprovalOnce, "✓ Approved", RoleSystem), nil
 		}
-		m.addMessage(ChatMessage{Role: role, Label: label, Content: req.ToolName})
-		m.viewport.GotoBottom()
-		go func() { req.ReplyCh <- approved }()
+		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
+	case "y":
+		return m.resolveApproval(tools.ApprovalOnce, "✓ Approved", RoleSystem), nil
+	case "n":
+		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
+	case "a":
+		if m.sessionGrants == nil {
+			m.sessionGrants = make(map[string]bool)
+		}
+		// "/commit" is a synthetic slash-command prompt, not a gate tool; the
+		// gate keeps no grant for it, so the footer must not claim one.
+		if m.approvalReq.ToolName != "/commit" {
+			m.sessionGrants[m.approvalReq.ToolName] = true
+		}
+		return m.resolveApproval(tools.ApprovalGrantExact, "✓ Approved (exact args this session)", RoleSystem), nil
+	case "r":
+		return m.resolveApproval(tools.ApprovalReadOnlyTurn, "✓ Read-only tools allowed this turn", RoleSystem), nil
 	case "esc":
-		req := m.approvalReq
-		m.approvalActive = false
-		m.addMessage(ChatMessage{Role: RoleSystem, Label: "✗ Denied", Content: req.ToolName})
-		m.viewport.GotoBottom()
-		go func() { req.ReplyCh <- false }()
+		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
 	case "ctrl+c":
+		// Quit without approving; the requester sees a denial.
 		req := m.approvalReq
 		m.approvalActive = false
-		go func() { req.ReplyCh <- false }()
+		m.sendApprovalReply(req, tools.ApprovalDeny)
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// resolveApproval closes the modal, records the outcome in the transcript, and
+// answers the waiting engine. The modal does not edit arguments; see
+// ApprovalBridge.RequestApprovalChoice for that limitation.
+func (m Model) resolveApproval(choice tools.ApprovalChoice, label string, role ChatRole) Model {
+	req := m.approvalReq
+	m.approvalActive = false
+	m.addMessage(ChatMessage{Role: role, Label: label, Content: req.ToolName})
+	m.viewport.GotoBottom()
+	m.sendApprovalReply(req, choice)
+	return m
+}
+
+// sendApprovalReply answers whichever channel the requester used. The legacy
+// bool channel only carries approval; grants and the read-only flag are
+// conveyed through the choice channel the gate installs.
+func (m Model) sendApprovalReply(req ApprovalRequest, choice tools.ApprovalChoice) {
+	if req.ChoiceCh != nil {
+		ch := req.ChoiceCh
+		go func() { ch <- choice }()
+	}
+	if req.ReplyCh != nil {
+		ch := req.ReplyCh
+		approved := choice.Approved()
+		go func() { ch <- approved }()
+	}
+}
+
+// grantedToolNames lists tools the user granted exact-args approval to, in a
+// stable order for the modal footer.
+func (m *Model) grantedToolNames() []string {
+	names := make([]string, 0, len(m.sessionGrants))
+	for name := range m.sessionGrants {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (m *Model) interruptTurn() {
@@ -666,10 +715,24 @@ func (m *Model) renderApprovalModal() string {
 		denyBtn = modalButtonFocused.Render("  ✗ Deny  ")
 	}
 
-	body := strings.Join(append(
-		[]string{title, "", toolLine},
-		append(argLines, preview, "", "  "+approveBtn+"   "+denyBtn, systemStyle.Render("  ← → Tab: switch  Enter: confirm  Esc: deny"))...,
-	), "\n")
+	footer := []string{
+		"  " + approveBtn + "   " + denyBtn,
+		systemStyle.Render("  ← → Tab: switch  Enter: confirm  Esc: deny"),
+		systemStyle.Render("  a: allow exact args this session"),
+		systemStyle.Render("  r: read-only tools this turn"),
+	}
+	if names := m.grantedToolNames(); len(names) > 0 {
+		footer = append(footer, systemStyle.Render("  granted: "+strings.Join(names, ", ")))
+	}
+
+	bodyLines := append([]string{title, "", toolLine}, argLines...)
+	if preview != "" {
+		bodyLines = append(bodyLines, preview)
+	}
+	bodyLines = append(bodyLines, "")
+	bodyLines = append(bodyLines, footer...)
+
+	body := strings.Join(bodyLines, "\n")
 
 	return modalOverlayStyle.Width(modalW).Render(body)
 }

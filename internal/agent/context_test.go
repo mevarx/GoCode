@@ -124,11 +124,11 @@ func TestTruncate_PreservesToolPairs(t *testing.T) {
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "first turn with long query text that takes up tokens"},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "shell_exec", Args: []byte(`{"command":"ls"}`)}}},
-		{Role: "tool", Content: "file1.txt\nfile2.txt"},
+		{Role: "tool", Content: "file1.txt\nfile2.txt", ToolCallID: "call_1"},
 		{Role: "assistant", Content: "here are the files"},
 		{Role: "user", Content: "turn two"},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_2", Name: "code_search", Args: []byte(`{"query":"test"}`)}}},
-		{Role: "tool", Content: "match found"},
+		{Role: "tool", Content: "match found", ToolCallID: "call_2"},
 		{Role: "assistant", Content: "found it"},
 	}
 
@@ -148,6 +148,85 @@ func TestTruncate_PreservesToolPairs(t *testing.T) {
 				t.Fatalf("tool message at index %d has no preceding assistant tool call!", i)
 			}
 		}
+	}
+}
+
+func TestEstimateTextTokens_Empty(t *testing.T) {
+	if got := estimateTextTokens(""); got != 0 {
+		t.Fatalf("empty text should estimate 0 tokens, got %d", got)
+	}
+}
+
+// CJK text tokenizes far worse than Latin prose: weighting it as prose would
+// let a Japanese or Chinese transcript overflow the request budget.
+func TestEstimateTextTokens_CJKHigherThanASCII(t *testing.T) {
+	ascii := strings.Repeat("a", 60)
+	cjk := strings.Repeat("漢", 60)
+
+	asciiTokens := estimateTextTokens(ascii)
+	cjkTokens := estimateTextTokens(cjk)
+	if cjkTokens <= asciiTokens {
+		t.Fatalf("CJK text must cost more than equal-length ASCII: cjk=%d ascii=%d", cjkTokens, asciiTokens)
+	}
+	if asciiTokens < 1 || cjkTokens < 1 {
+		t.Fatalf("non-empty text must estimate at least one token: ascii=%d cjk=%d", asciiTokens, cjkTokens)
+	}
+}
+
+// Source code and JSON are mostly punctuation; a plain 4-bytes-per-token
+// estimate undercounts them badly enough to skip necessary truncation.
+func TestEstimateTextTokens_PunctuationHeavyCode(t *testing.T) {
+	plain := strings.Repeat("word ", 30)
+	code := strings.Repeat(`a->b();{},[]`, 15)
+
+	if est := estimateTextTokens(plain); est < 30 || est > 45 {
+		t.Fatalf("plain prose estimate = %d, want roughly 4 chars/token (30..45)", est)
+	}
+	if codeTokens, plainTokens := estimateTextTokens(code), estimateTextTokens(plain); codeTokens <= plainTokens {
+		t.Fatalf("punctuation-heavy code must cost more than plain words: code=%d plain=%d", codeTokens, plainTokens)
+	}
+}
+
+func TestResolveBudget_ConfiguredOverrideWins(t *testing.T) {
+	reg := provider.NewRegistry()
+	reg.RegisterContextWindow("split-model", 128000)
+
+	cm := NewContextManager(4096)
+	got := cm.ResolveBudget(reg, "split-model")
+	if got != 4096 || cm.MaxTokens != 4096 {
+		t.Fatalf("configured budget must win: ResolveBudget=%d MaxTokens=%d", got, cm.MaxTokens)
+	}
+}
+
+func TestResolveBudget_UsesModelWindow(t *testing.T) {
+	reg := provider.NewRegistry()
+	reg.RegisterContextWindow("test-model", 100000)
+
+	cm := NewContextManager(0)
+	got := cm.ResolveBudget(reg, "test-model")
+	if got != 80000 {
+		t.Fatalf("expected 80%% of the 100000-token window, got %d", got)
+	}
+	if cm.MaxTokens != 80000 {
+		t.Fatalf("ResolveBudget must store the resolved budget, got %d", cm.MaxTokens)
+	}
+}
+
+func TestResolveBudget_UnknownModelFallback(t *testing.T) {
+	cm := NewContextManager(0)
+	got := cm.ResolveBudget(provider.NewRegistry(), "totally-unknown")
+	if got != 52428 { // 80% of the 65536 fallback window
+		t.Fatalf("expected fallback budget 52428, got %d", got)
+	}
+}
+
+func TestResolveBudget_ClampsToWindow(t *testing.T) {
+	reg := provider.NewRegistry()
+	reg.RegisterContextWindow("tiny", 2000)
+
+	cm := NewContextManager(0)
+	if got := cm.ResolveBudget(reg, "tiny"); got != 2000 {
+		t.Fatalf("budget must not exceed a small window, got %d", got)
 	}
 }
 

@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -124,7 +122,7 @@ func validateCustomProvider(name string, endpoint config.GatewayConfig) (customP
 	if !providerNamePattern.MatchString(name) {
 		return customProvider{}, fmt.Errorf("invalid provider name %q: use 1-32 lowercase letters, digits, hyphens, or underscores; it must start with a letter", name)
 	}
-	baseURL, err := validateProviderBaseURL(endpoint.BaseURL)
+	baseURL, err := config.ValidateProviderBaseURL(endpoint.BaseURL)
 	if err != nil {
 		return customProvider{}, err
 	}
@@ -138,24 +136,6 @@ func validateCustomProvider(name string, endpoint config.GatewayConfig) (customP
 		return customProvider{}, fmt.Errorf("invalid API key environment variable name %q", endpoint.APIKeyEnv)
 	}
 	return customProvider{name: name, endpoint: endpoint}, nil
-}
-
-func validateProviderBaseURL(raw string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
-		return "", fmt.Errorf("base URL must be an absolute http or https URL")
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("base URL must not contain credentials, a query, or a fragment")
-	}
-	if parsed.Scheme == "http" {
-		host := strings.ToLower(parsed.Hostname())
-		ip := net.ParseIP(host)
-		if host != "localhost" && !strings.HasSuffix(host, ".localhost") && (ip == nil || !ip.IsLoopback()) {
-			return "", fmt.Errorf("base URL must use HTTPS unless it targets localhost")
-		}
-	}
-	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func isBuiltInProvider(name string) bool {

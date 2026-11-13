@@ -25,14 +25,22 @@ func Run(
 	workspaceRoot string,
 	guardCfg agent.LoopGuardConfig,
 	maxContextTokens int,
+	plan *tools.PlanStore,
+	scratchpad *tools.ScratchpadStore,
+	verifyCommand string,
+	verifyTimeout time.Duration,
 ) error {
 	bridge := NewApprovalBridge()
-	approval.OnPresent = bridge.RequestApproval
+	approval.OnPresentChoice = bridge.RequestApprovalChoice
 
 	engine := agent.NewAgentLoop(registry, session, toolRegistry, approval)
 	engine.WorkspaceRoot = workspaceRoot
 	engine.GuardConfig = guardCfg
 	engine.ContextManager = agent.NewContextManager(maxContextTokens)
+	engine.Plan = plan
+	engine.Scratchpad = scratchpad
+	engine.VerifyCommand = verifyCommand
+	engine.VerifyTimeout = verifyTimeout
 	engine.EnsureSystemPrompt()
 
 	// /commit reuses tool-approval modal so user sees the prompt.

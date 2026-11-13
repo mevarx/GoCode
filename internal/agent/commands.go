@@ -60,7 +60,7 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 			Output: `Available commands:
   /help            — Show this help message
   /clear           — Clear conversation history and reset context
-  /compact         — Compact earlier turns in conversation history
+  /compact         — Summarize earlier turns and compact history
   /stats           — Show current token usage and message count
   /new             — Start a new session
   /sessions        — List previous saved sessions
@@ -78,6 +78,7 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 	case "/clear":
 		cmdCtx.Session.Clear()
 		opts := DefaultPromptOptions(cmdCtx.WorkspaceRoot, cmdCtx.Registry.ActiveName(), cmdCtx.Session.Model())
+		opts.Scratchpad = cmdCtx.Session.Scratchpad()
 		cmdCtx.Session.AddMessage(provider.Message{
 			Role:    "system",
 			Content: BuildSystemPromptWithOptions(opts),
@@ -88,17 +89,45 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 		if cmdCtx.ContextManager == nil {
 			cmdCtx.ContextManager = NewContextManager(0)
 		}
+		if cmdCtx.Registry != nil {
+			cmdCtx.ContextManager.ResolveBudget(cmdCtx.Registry, cmdCtx.Session.Model())
+		}
 		history := cmdCtx.Session.History()
-		compacted := cmdCtx.ContextManager.Compact(history, 2)
+		var compacted []provider.Message
+		notice := ""
+		usedSummary := false
+
+		var active provider.Provider
+		if cmdCtx.Registry != nil {
+			if p, err := cmdCtx.Registry.Active(); err == nil {
+				active = p
+			}
+		}
+		if active != nil {
+			if summarized, err := cmdCtx.ContextManager.CompactWithSummary(ctx, active, cmdCtx.Session.Model(), history, 2); err == nil {
+				compacted = summarized
+				usedSummary = true
+			} else {
+				notice = fmt.Sprintf("\nProvider summary unavailable (%v); used placeholder compaction.", err)
+			}
+		}
+		if !usedSummary {
+			compacted = cmdCtx.ContextManager.Compact(history, 2)
+		}
+
 		cmdCtx.Session.LoadMessages(compacted)
 		return CommandResult{
 			Handled: true,
-			Output:  fmt.Sprintf("Compacted history: %d messages -> %d messages.\n%s", len(history), len(compacted), cmdCtx.ContextManager.FormatContextStats(compacted)),
+			Output: fmt.Sprintf("Compacted history: %d messages -> %d messages.\n%s%s",
+				len(history), len(compacted), cmdCtx.ContextManager.FormatContextStats(compacted), notice),
 		}
 
 	case "/stats":
 		if cmdCtx.ContextManager == nil {
 			cmdCtx.ContextManager = NewContextManager(0)
+		}
+		if cmdCtx.Registry != nil {
+			cmdCtx.ContextManager.ResolveBudget(cmdCtx.Registry, cmdCtx.Session.Model())
 		}
 		return CommandResult{
 			Handled: true,
@@ -110,12 +139,13 @@ func HandleCommand(ctx context.Context, cmdCtx CommandContext, input string) Com
 		var newID string
 		if st != nil {
 			newID = session.GenerateID()
-			rec, err := st.CreateSession(newID, "", cmdCtx.Registry.ActiveName(), cmdCtx.Session.Model())
+			rec, err := st.CreateSessionWithWorkspace(newID, "", cmdCtx.Registry.ActiveName(), cmdCtx.Session.Model(), cmdCtx.WorkspaceRoot)
 			if err == nil {
 				cmdCtx.Session.SetID(rec.ID)
 			}
 		}
 		cmdCtx.Session.Clear()
+		cmdCtx.Session.SetScratchpad("")
 		opts := DefaultPromptOptions(cmdCtx.WorkspaceRoot, cmdCtx.Registry.ActiveName(), cmdCtx.Session.Model())
 		cmdCtx.Session.AddMessage(provider.Message{
 			Role:    "system",
@@ -255,10 +285,16 @@ func resumeSession(cmdCtx CommandContext, sessionID string) CommandResult {
 	cmdCtx.Session.SetID(rec.ID)
 	cmdCtx.Session.SetProvider(rec.Provider)
 	cmdCtx.Session.SetModel(rec.Model)
+	cmdCtx.Session.SetScratchpad(rec.Scratchpad)
 	cmdCtx.Session.LoadMessages(rec.Messages)
 	if rec.Provider != "" {
 		_ = cmdCtx.Registry.Switch(rec.Provider)
 	}
+	// The stored transcript carries the prompt of the workspace it was recorded
+	// in; this process runs in a possibly different one, so rebuild it.
+	opts := DefaultPromptOptions(cmdCtx.WorkspaceRoot, cmdCtx.Registry.ActiveName(), cmdCtx.Session.Model())
+	opts.Scratchpad = cmdCtx.Session.Scratchpad()
+	cmdCtx.Session.SetSystemMessage(BuildSystemPromptWithOptions(opts))
 	return CommandResult{
 		Handled: true,
 		Output:  fmt.Sprintf("Resumed session %s (%d messages, model: %s/%s)", rec.ID, len(rec.Messages), rec.Provider, rec.Model),
