@@ -168,6 +168,88 @@ func TestHandleCommand_Commit_CancelledByUser(t *testing.T) {
 	}
 }
 
+// The approval prompt must show exactly what will be committed: every file and
+// the full commit message, trailer included.
+func TestHandleCommand_Commit_ApprovalShowsPreparedCommit(t *testing.T) {
+	dir := t.TempDir()
+	sess := NewSession("test-model")
+	paths := []string{
+		filepath.Join(dir, "one.txt"),
+		filepath.Join(dir, "two.txt"),
+	}
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte("change"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sess.TrackModifiedFile(p)
+	}
+
+	var prompt string
+	cmdCtx := CommandContext{
+		Session:       sess,
+		WorkspaceRoot: dir,
+		AskApproval: func(p string) bool {
+			prompt = p
+			return false // deny: no git command may run
+		},
+	}
+
+	res := HandleCommand(context.Background(), cmdCtx, "/commit")
+	if !res.Handled || !strings.Contains(res.Output, "cancelled by user") {
+		t.Fatalf("expected commit cancelled by user, got: %s", res.Output)
+	}
+	for _, p := range paths {
+		if !strings.Contains(prompt, p) {
+			t.Errorf("approval prompt missing file %q: %q", p, prompt)
+		}
+	}
+	for _, want := range []string{
+		"Changes assisted by GoCode",
+		"Assisted-by: GoCode:test-model",
+		"Approve this commit? [y/N]",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("approval prompt missing %q: %q", want, prompt)
+		}
+	}
+}
+
+func TestHandleCommand_Commit_ApprovalShowsCustomMessage(t *testing.T) {
+	dir := t.TempDir()
+	sess := NewSession("m1")
+	filePath := filepath.Join(dir, "changed.txt")
+	if err := os.WriteFile(filePath, []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess.TrackModifiedFile(filePath)
+
+	var prompt string
+	cmdCtx := CommandContext{
+		Session:       sess,
+		WorkspaceRoot: dir,
+		AskApproval: func(p string) bool {
+			prompt = p
+			return false
+		},
+	}
+
+	res := HandleCommand(context.Background(), cmdCtx, "/commit custom commit msg")
+	if !res.Handled || !strings.Contains(res.Output, "cancelled by user") {
+		t.Fatalf("expected commit cancelled by user, got: %s", res.Output)
+	}
+	for _, want := range []string{
+		"custom commit msg",
+		"Assisted-by: GoCode:m1",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("approval prompt missing %q: %q", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Changes assisted by GoCode") {
+		t.Errorf("approval prompt should use the custom message, got: %q", prompt)
+	}
+}
+
 // A '-' path must not parse as a flag; commit needs a pathspec to avoid sweeping the index.
 func TestGitArgsUseSeparatorAndPathspec(t *testing.T) {
 	add := gitAddArgs("-n")

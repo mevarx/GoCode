@@ -305,7 +305,7 @@ func executeCommit(cmdCtx CommandContext, messageArg string) CommandResult {
 	sb.WriteString(fmt.Sprintf("\nCommit message:\n%s\n", fullCommitMsg))
 
 	if cmdCtx.AskApproval != nil {
-		approved := cmdCtx.AskApproval(fmt.Sprintf("Commit %d modified file(s)?", len(files)))
+		approved := cmdCtx.AskApproval(sb.String() + "\nApprove this commit? [y/N]")
 		if !approved {
 			return CommandResult{Handled: true, Output: "Commit cancelled by user."}
 		}
