@@ -20,14 +20,17 @@ import (
 
 // SessionRecord holds the full data of a persisted session.
 type SessionRecord struct {
-	ID        string             `json:"id"`
-	Title     string             `json:"title"`
-	Provider  string             `json:"provider"`
-	Model     string             `json:"model"`
-	Workspace string             `json:"workspace"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
-	Messages  []provider.Message `json:"messages"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Workspace string `json:"workspace"`
+	// Scratchpad is agent-maintained working state that survives compaction and
+	// is restored with the transcript.
+	Scratchpad string             `json:"scratchpad,omitempty"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+	Messages   []provider.Message `json:"messages"`
 }
 
 // SessionSummary holds brief metadata about a session for listing.
@@ -120,6 +123,7 @@ func (s *SessionStore) migrate() error {
 		provider TEXT NOT NULL,
 		model TEXT NOT NULL,
 		workspace TEXT NOT NULL DEFAULT '',
+		scratchpad TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
@@ -159,6 +163,9 @@ func (s *SessionStore) addMissingColumns() error {
 		// workspace scopes auto-resume to the repository the transcript came
 		// from; an old database reads back as '' and therefore never matches.
 		{table: "sessions", column: "workspace", ddlType: "TEXT NOT NULL DEFAULT ''"},
+		// scratchpad holds agent-maintained working state that must survive
+		// compaction; an old database reads it back as ''.
+		{table: "sessions", column: "scratchpad", ddlType: "TEXT NOT NULL DEFAULT ''"},
 	}
 
 	for _, m := range migrations {
@@ -335,16 +342,17 @@ func (s *SessionStore) SaveSession(rec *SessionRecord) error {
 	// An empty workspace means the caller does not track one (/clear), not that
 	// the session lost its repository, so keep the stored binding in that case.
 	upsert := `
-	INSERT INTO sessions (id, title, provider, model, workspace, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO sessions (id, title, provider, model, workspace, scratchpad, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title = excluded.title,
 		provider = excluded.provider,
 		model = excluded.model,
 		workspace = CASE WHEN excluded.workspace <> '' THEN excluded.workspace ELSE sessions.workspace END,
+		scratchpad = CASE WHEN excluded.scratchpad <> '' THEN excluded.scratchpad ELSE sessions.scratchpad END,
 		updated_at = excluded.updated_at
 	`
-	if _, err := tx.Exec(upsert, rec.ID, rec.Title, rec.Provider, rec.Model, normalizeWorkspace(rec.Workspace), rec.CreatedAt, rec.UpdatedAt); err != nil {
+	if _, err := tx.Exec(upsert, rec.ID, rec.Title, rec.Provider, rec.Model, normalizeWorkspace(rec.Workspace), rec.Scratchpad, rec.CreatedAt, rec.UpdatedAt); err != nil {
 		return fmt.Errorf("failed to upsert session: %w", err)
 	}
 
@@ -380,13 +388,13 @@ func (s *SessionStore) GetSession(id string) (*SessionRecord, error) {
 // Caller must hold s.mu (read or write).
 func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	row := s.db.QueryRow(`
-		SELECT id, title, provider, model, workspace, created_at, updated_at
+		SELECT id, title, provider, model, workspace, scratchpad, created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, id)
 
 	var rec SessionRecord
-	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.Workspace, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.Workspace, &rec.Scratchpad, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -550,5 +558,15 @@ func (s *SessionStore) UpdateModel(id, providerName, model string) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(`UPDATE sessions SET provider = ?, model = ?, updated_at = ? WHERE id = ?`, providerName, model, time.Now().UTC(), id)
+	return err
+}
+
+// UpdateScratchpad persists the agent-maintained working state for a session.
+// An empty value clears it, because the agent explicitly replaced it.
+func (s *SessionStore) UpdateScratchpad(id, scratchpad string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`UPDATE sessions SET scratchpad = ?, updated_at = ? WHERE id = ?`, scratchpad, time.Now().UTC(), id)
 	return err
 }
