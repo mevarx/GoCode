@@ -13,6 +13,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/harmonica v0.2.0
 	github.com/go-git/go-git/v5 v5.19.2
+	github.com/hexops/gotextdiff v1.0.3
 	github.com/ollama/ollama v0.32.3
 	github.com/spf13/cobra v1.10.2
 	modernc.org/sqlite v1.56.0

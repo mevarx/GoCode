@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hexops/gotextdiff"
+	"github.com/hexops/gotextdiff/myers"
+	"github.com/hexops/gotextdiff/span"
 	"github.com/mevarx/GoCode/internal/ignore"
 )
 
@@ -16,6 +19,8 @@ type FileWriteTool struct {
 	SensitiveMatcher *ignore.SensitiveMatcher
 	WorkspaceRoot    string
 	OnModified       func(path string)
+
+	snapshots fileSnapshotStore
 }
 
 type fileWriteArgs struct {
@@ -63,6 +68,14 @@ func (f *FileWriteTool) Preview(ctx context.Context, args json.RawMessage) (Prev
 
 	diff := generateUnifiedDiff(path, oldContent, a.Content)
 
+	// SECURITY: remember the state the diff was computed from so Execute can
+	// refuse to apply a change that no longer matches what the user approved.
+	snap, err := snapshotFromRead(path, existingData, readErr)
+	if err != nil {
+		return Preview{}, fmt.Errorf("failed to resolve %s: %v", path, err)
+	}
+	f.snapshots.put(fileWriteSnapshotKey(path, a.Content), snap)
+
 	return Preview{
 		Description: fmt.Sprintf("Write %d bytes to %s", len(a.Content), path),
 		Diff:        diff,
@@ -82,6 +95,18 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		oldContent = string(existingData)
 	}
 
+	// SECURITY: refuse a write whose precondition changed after preview.
+	snapKey := fileWriteSnapshotKey(path, a.Content)
+	if snap, ok := f.snapshots.get(snapKey); ok {
+		current, snapErr := snapshotFromRead(path, existingData, readErr)
+		if snapErr != nil {
+			return Result{Error: fmt.Sprintf("%s: cannot verify file state: %v", path, snapErr)}, nil
+		}
+		if !snap.matches(current) {
+			return Result{Error: fileChangedSinceApprovalError(path)}, nil
+		}
+	}
+
 	diff := generateUnifiedDiff(path, oldContent, a.Content)
 
 	dir := filepath.Dir(path)
@@ -92,6 +117,10 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	if err := os.WriteFile(path, []byte(a.Content), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
 	}
+	f.snapshots.remove(snapKey)
+
+	// SECURITY: drop pre-write identities so the next check cannot serve stale hardlinks.
+	InvalidateSensitiveIdentityCache(f.WorkspaceRoot)
 
 	if f.OnModified != nil {
 		f.OnModified(path)
@@ -101,6 +130,11 @@ func (f *FileWriteTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		Output: fmt.Sprintf("Successfully wrote %d bytes to %s", len(a.Content), path),
 		Diff:   diff,
 	}, nil
+}
+
+// fileWriteSnapshotKey identifies a preview by target path and new content.
+func fileWriteSnapshotKey(path, content string) string {
+	return path + "\x00" + hashFileContent([]byte(content))
 }
 
 func (f *FileWriteTool) validateArgs(args json.RawMessage) (fileWriteArgs, string, error) {
@@ -148,113 +182,79 @@ func (f *FileWriteTool) validateArgs(args json.RawMessage) (fileWriteArgs, strin
 }
 
 func generateUnifiedDiff(filename, oldContent, newContent string) string {
-	oldLines := splitLines(oldContent)
-	newLines := splitLines(newContent)
+	// Diff always operates on LF-normalized text so hunk line math is stable
+	// across platforms; callers keep the original content for the write itself.
+	oldContent = normalizeDiffNewlines(oldContent)
+	newContent = normalizeDiffNewlines(newContent)
 
-	var diff strings.Builder
-
-	if oldContent == "" {
-		diff.WriteString("--- /dev/null\n")
-		diff.WriteString(fmt.Sprintf("+++ %s\n", filename))
-		diff.WriteString(fmt.Sprintf("@@ -0,0 +1,%d @@\n", len(newLines)))
-		for _, line := range newLines {
-			diff.WriteString(fmt.Sprintf("+%s\n", line))
-		}
-	} else {
-		diff.WriteString(fmt.Sprintf("--- %s\n", filename))
-		diff.WriteString(fmt.Sprintf("+++ %s\n", filename))
-
-		inHunk := false
-		oldHunkStart := 0
-		newHunkStart := 0
-		var hunkLines []string
-
-		flushHunk := func() {
-			if len(hunkLines) > 0 {
-				oldCount, newCount := 0, 0
-				for _, l := range hunkLines {
-					if strings.HasPrefix(l, "-") {
-						oldCount++
-					} else if strings.HasPrefix(l, "+") {
-						newCount++
-					} else {
-						oldCount++
-						newCount++
-					}
-				}
-				diff.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldHunkStart+1, oldCount, newHunkStart+1, newCount))
-				for _, l := range hunkLines {
-					diff.WriteString(l)
-					diff.WriteString("\n")
-				}
-				hunkLines = nil
-			}
-		}
-
-		oldIdx, newIdx := 0, 0
-		for oldIdx < len(oldLines) || newIdx < len(newLines) {
-			if oldIdx < len(oldLines) && newIdx < len(newLines) {
-				if oldLines[oldIdx] == newLines[newIdx] {
-					if inHunk {
-						hunkLines = append(hunkLines, " "+oldLines[oldIdx])
-					}
-					oldIdx++
-					newIdx++
-				} else {
-					if !inHunk {
-						inHunk = true
-						contextStart := oldIdx - 3
-						newContextStart := newIdx - 3
-						if contextStart < 0 {
-							contextStart = 0
-						}
-						if newContextStart < 0 {
-							newContextStart = 0
-						}
-						oldHunkStart = contextStart
-						newHunkStart = newContextStart
-						for i := contextStart; i < oldIdx; i++ {
-							hunkLines = append(hunkLines, " "+oldLines[i])
-						}
-					}
-					hunkLines = append(hunkLines, "-"+oldLines[oldIdx])
-					hunkLines = append(hunkLines, "+"+newLines[newIdx])
-					oldIdx++
-					newIdx++
-				}
-			} else if oldIdx < len(oldLines) {
-				if !inHunk {
-					inHunk = true
-					oldHunkStart = oldIdx
-					newHunkStart = newIdx
-				}
-				hunkLines = append(hunkLines, "-"+oldLines[oldIdx])
-				oldIdx++
-			} else {
-				if !inHunk {
-					inHunk = true
-					oldHunkStart = oldIdx
-					newHunkStart = newIdx
-				}
-				hunkLines = append(hunkLines, "+"+newLines[newIdx])
-				newIdx++
-			}
-		}
-
-		flushHunk()
+	if oldContent == "" && newContent == "" {
+		return ""
 	}
 
+	// New file: the standard /dev/null header is not produced by gotextdiff.
+	if oldContent == "" {
+		lines := strings.Split(strings.TrimSuffix(newContent, "\n"), "\n")
+		var diff strings.Builder
+		diff.WriteString("--- /dev/null\n")
+		fmt.Fprintf(&diff, "+++ %s\n", filename)
+		fmt.Fprintf(&diff, "@@ -0,0 +1,%d @@\n", len(lines))
+		for _, line := range lines {
+			diff.WriteString("+" + line + "\n")
+		}
+		return diff.String()
+	}
+
+	edits := myers.ComputeEdits(span.URIFromPath(filename), oldContent, newContent)
+	unified := gotextdiff.ToUnified(filename, filename, oldContent, edits)
+	if len(unified.Hunks) == 0 {
+		return ""
+	}
+
+	// Render the hunks ourselves: gotextdiff's own Format omits zero counts and
+	// leaves the start line at 1 for an empty side, producing invalid headers
+	// such as "@@ -1,3 +1 @@" instead of "@@ -1,3 +0,0 @@".
+	var diff strings.Builder
+	fmt.Fprintf(&diff, "--- %s\n", unified.From)
+	fmt.Fprintf(&diff, "+++ %s\n", unified.To)
+	for _, hunk := range unified.Hunks {
+		oldCount, newCount := 0, 0
+		for _, line := range hunk.Lines {
+			switch line.Kind {
+			case gotextdiff.Delete:
+				oldCount++
+			case gotextdiff.Insert:
+				newCount++
+			default:
+				oldCount++
+				newCount++
+			}
+		}
+		oldStart, newStart := hunk.FromLine, hunk.ToLine
+		if oldCount == 0 {
+			oldStart = 0
+		}
+		if newCount == 0 {
+			newStart = 0
+		}
+		fmt.Fprintf(&diff, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+		for _, line := range hunk.Lines {
+			switch line.Kind {
+			case gotextdiff.Delete:
+				diff.WriteString("-")
+			case gotextdiff.Insert:
+				diff.WriteString("+")
+			default:
+				diff.WriteString(" ")
+			}
+			diff.WriteString(line.Content)
+			if !strings.HasSuffix(line.Content, "\n") {
+				diff.WriteString("\n\\ No newline at end of file\n")
+			}
+		}
+	}
 	return diff.String()
 }
 
-func splitLines(content string) []string {
-	if content == "" {
-		return nil
-	}
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	lines := strings.Split(content, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
+func normalizeDiffNewlines(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
 }

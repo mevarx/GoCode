@@ -16,6 +16,8 @@ type FilePatchTool struct {
 	SensitiveMatcher *ignore.SensitiveMatcher
 	WorkspaceRoot    string
 	OnModified       func(path string)
+
+	snapshots fileSnapshotStore
 }
 
 type filePatchArgs struct {
@@ -55,13 +57,21 @@ func (f *FilePatchTool) RequiresApproval() bool {
 
 // Preview shows a diff preview without modifying files.
 func (f *FilePatchTool) Preview(ctx context.Context, args json.RawMessage) (Preview, error) {
-	_, path, oldContent, newContent, count, err := f.computePatch(args)
+	a, path, oldContent, newContent, count, err := f.computePatch(args)
 	if err != nil {
 		return Preview{}, err
 	}
 
 	diff := generateUnifiedDiff(path, oldContent, newContent)
 	desc := fmt.Sprintf("Patch %s (%d occurrence(s) of find string, replacing first)", path, count)
+
+	// SECURITY: remember the file the diff was computed from so Execute can
+	// refuse to apply a patch the user did not approve.
+	snap, err := snapshotForContent(path, []byte(oldContent))
+	if err != nil {
+		return Preview{}, fmt.Errorf("failed to resolve %s: %v", path, err)
+	}
+	f.snapshots.put(filePatchSnapshotKey(path, a.Find, a.Replace), snap)
 
 	return Preview{
 		Description: desc,
@@ -71,9 +81,21 @@ func (f *FilePatchTool) Preview(ctx context.Context, args json.RawMessage) (Prev
 
 // Execute applies the patch. Called only after approval.
 func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Result, error) {
-	_, path, oldContent, newContent, count, err := f.computePatch(args)
+	a, path, oldContent, newContent, count, err := f.computePatch(args)
 	if err != nil {
 		return Result{Error: err.Error()}, nil
+	}
+
+	// SECURITY: refuse a patch whose precondition changed after preview.
+	snapKey := filePatchSnapshotKey(path, a.Find, a.Replace)
+	if snap, ok := f.snapshots.get(snapKey); ok {
+		current, snapErr := snapshotForContent(path, []byte(oldContent))
+		if snapErr != nil {
+			return Result{Error: fmt.Sprintf("%s: cannot verify file state: %v", path, snapErr)}, nil
+		}
+		if !snap.matches(current) {
+			return Result{Error: fileChangedSinceApprovalError(path)}, nil
+		}
 	}
 
 	diff := generateUnifiedDiff(path, oldContent, newContent)
@@ -81,6 +103,10 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("cannot write file: %v", err)}, nil
 	}
+	f.snapshots.remove(snapKey)
+
+	// SECURITY: drop pre-write identities so the next check cannot serve stale hardlinks.
+	InvalidateSensitiveIdentityCache(f.WorkspaceRoot)
 
 	if f.OnModified != nil {
 		f.OnModified(path)
@@ -96,6 +122,11 @@ func (f *FilePatchTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	}
 
 	return result, nil
+}
+
+// filePatchSnapshotKey identifies a preview by target path and patch operation.
+func filePatchSnapshotKey(path, find, replace string) string {
+	return path + "\x00" + find + "\x00" + replace
 }
 
 func (f *FilePatchTool) computePatch(args json.RawMessage) (filePatchArgs, string, string, string, int, error) {

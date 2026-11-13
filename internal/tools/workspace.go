@@ -5,9 +5,52 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/mevarx/GoCode/internal/ignore"
 )
+
+// sensitiveIdentityCacheTTL bounds how long a cached hardlink identity set may
+// be served. Writes invalidate explicitly; the TTL covers changes GoCode did
+// not make (external processes creating or removing hardlinks).
+const sensitiveIdentityCacheTTL = 30 * time.Second
+
+// externalSensitiveRelPaths are credential files outside the workspace whose
+// identities are probed so a hardlink brought into the workspace is still
+// recognised as sensitive. Relative to the user's home directory.
+var externalSensitiveRelPaths = []string{
+	".ssh/id_rsa",
+	".ssh/id_ed25519",
+	".aws/credentials",
+	".kube/config",
+	".netrc",
+	".npmrc",
+}
+
+// userHomeDir is a seam so tests can probe a synthetic home directory
+// deterministically instead of the real one.
+var userHomeDir = os.UserHomeDir
+
+// sensitiveIdentityWalks counts workspace walks actually performed. Test-only
+// observability for the identity cache; never read by production code.
+var sensitiveIdentityWalks atomic.Int64
+
+type sensitiveIdentityCacheKey struct {
+	root    string
+	matcher *ignore.SensitiveMatcher
+}
+
+type sensitiveIdentityCacheEntry struct {
+	set       []os.FileInfo
+	expiresAt time.Time
+}
+
+var sensitiveIdentityCache = struct {
+	mu      sync.Mutex
+	entries map[sensitiveIdentityCacheKey]sensitiveIdentityCacheEntry
+}{entries: make(map[sensitiveIdentityCacheKey]sensitiveIdentityCacheEntry)}
 
 // isCaseInsensitiveFS reports whether the OS resolves filenames case-insensitively.
 func isCaseInsensitiveFS() bool {
@@ -68,11 +111,70 @@ func CheckSensitiveFile(m *ignore.SensitiveMatcher, path string, isDir bool) (bo
 
 // SensitiveIdentitySet returns FileInfo of blocked files. SECURITY: hardlink aliases match by identity.
 // Callers filter candidates by identity instead of by name.
+//
+// The set is cached per (normalized root, matcher) for sensitiveIdentityCacheTTL
+// and MUST be treated as read-only: the returned slice may be shared with other
+// callers, so callers must never mutate or append to it. Invalidate the cache
+// with InvalidateSensitiveIdentityCache after modifying the workspace.
 func SensitiveIdentitySet(root string, m *ignore.SensitiveMatcher) []os.FileInfo {
-	var set []os.FileInfo
 	if root == "" || m == nil {
 		return nil
 	}
+	key := sensitiveIdentityCacheKey{root: normalizeIdentityRoot(root), matcher: m}
+
+	sensitiveIdentityCache.mu.Lock()
+	defer sensitiveIdentityCache.mu.Unlock()
+
+	if entry, ok := sensitiveIdentityCache.entries[key]; ok && time.Now().Before(entry.expiresAt) {
+		return entry.set
+	}
+
+	set := walkSensitiveIdentities(key.root, m)
+	set = append(set, externalSensitiveFileInfos()...)
+	now := time.Now()
+	for k, e := range sensitiveIdentityCache.entries {
+		if now.After(e.expiresAt) {
+			delete(sensitiveIdentityCache.entries, k)
+		}
+	}
+	sensitiveIdentityCache.entries[key] = sensitiveIdentityCacheEntry{
+		set:       set,
+		expiresAt: now.Add(sensitiveIdentityCacheTTL),
+	}
+	return set
+}
+
+// InvalidateSensitiveIdentityCache drops cached identity sets for root. It is
+// called after a successful file_write/file_patch so approvals and subsequent
+// checks never rely on pre-write identities for the TTL window.
+func InvalidateSensitiveIdentityCache(root string) {
+	if root == "" {
+		return
+	}
+	normalized := normalizeIdentityRoot(root)
+	sensitiveIdentityCache.mu.Lock()
+	defer sensitiveIdentityCache.mu.Unlock()
+	for key := range sensitiveIdentityCache.entries {
+		if key.root == normalized {
+			delete(sensitiveIdentityCache.entries, key)
+		}
+	}
+}
+
+// normalizeIdentityRoot keys the cache by the absolute, cleaned root so the
+// same workspace spelled differently does not produce a cross-root hit.
+func normalizeIdentityRoot(root string) string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return filepath.Clean(root)
+	}
+	return filepath.Clean(abs)
+}
+
+// walkSensitiveIdentities walks the workspace and collects sensitive file identities.
+func walkSensitiveIdentities(root string, m *ignore.SensitiveMatcher) []os.FileInfo {
+	sensitiveIdentityWalks.Add(1)
+	var set []os.FileInfo
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -92,6 +194,26 @@ func SensitiveIdentitySet(root string, m *ignore.SensitiveMatcher) []os.FileInfo
 		return nil
 	})
 	return set
+}
+
+// externalSensitiveFileInfos returns FileInfos for a fixed list of credential
+// files outside the workspace. SECURITY: a hardlink to one of these planted in
+// the workspace shares the inode, so the identity check blocks it even though
+// the in-workspace walk cannot see the original path.
+func externalSensitiveFileInfos() []os.FileInfo {
+	home, err := userHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	var infos []os.FileInfo
+	for _, rel := range externalSensitiveRelPaths {
+		info, statErr := os.Stat(filepath.Join(home, filepath.FromSlash(rel)))
+		if statErr != nil || info.IsDir() {
+			continue
+		}
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // IsBlockedByIdentity reports whether info is SameFile-equal to any entry in set.

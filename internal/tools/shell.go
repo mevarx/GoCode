@@ -14,6 +14,9 @@ type ShellExecTool struct {
 	Timeout        time.Duration
 	WorkspaceRoot  string
 	MaxOutputBytes int
+	// EnvScrub lists additional env var names or patterns to drop from the
+	// child process environment, on top of the built-in credential patterns.
+	EnvScrub []string
 	// Guard redacts secrets and warns about sensitive paths in previews. May be nil.
 	Guard *ShellGuard
 }
@@ -85,10 +88,17 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(timeoutCtx, "cmd", "/C", a.Command)
+		cmd = exec.Command("cmd", "/C", a.Command)
 	} else {
-		cmd = exec.CommandContext(timeoutCtx, "sh", "-c", a.Command)
+		cmd = exec.Command("sh", "-c", a.Command)
 	}
+
+	// SECURITY: the shell leads its own process group so timeout/cancellation can
+	// terminate every descendant, not just the shell itself.
+	configureShellProcess(cmd)
+
+	// SECURITY: never hand provider credentials to the command's environment.
+	cmd.Env = ScrubbedEnv(s.EnvScrub)
 
 	if s.WorkspaceRoot != "" {
 		cmd.Dir = s.WorkspaceRoot
@@ -104,7 +114,7 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
 
-	err := cmd.Run()
+	err := runShellProcess(timeoutCtx, cmd)
 
 	stdoutStr := stdoutBuf.String()
 	if stdoutBuf.capped {
@@ -157,6 +167,42 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 	}
 
 	return result, nil
+}
+
+// shellTerminateGrace is how long a timed-out shell has to exit after a
+// graceful interrupt before its process group is killed outright.
+const shellTerminateGrace = 2 * time.Second
+
+// runShellProcess starts cmd and waits for it, terminating the shell's whole
+// process group when ctx is done. Wait is called exactly once and the wait
+// goroutine is always drained, so no pipes or goroutines leak.
+func runShellProcess(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	select {
+	case err := <-waitDone:
+		return err
+	case <-ctx.Done():
+	}
+
+	// SECURITY: backgrounded grandchildren survive a plain shell kill, so signal
+	// the entire process group instead.
+	_ = interruptShellProcess(cmd)
+
+	grace := time.NewTimer(shellTerminateGrace)
+	defer grace.Stop()
+	select {
+	case err := <-waitDone:
+		return err
+	case <-grace.C:
+		_ = killShellProcess(cmd)
+		return <-waitDone
+	}
 }
 
 // waitDelayGrace bounds pipe release after exit/cancellation.

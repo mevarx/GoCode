@@ -20,6 +20,10 @@ type CodeSearchTool struct {
 	IgnoreMatcher    ignore.Matcher
 	SensitiveMatcher *ignore.SensitiveMatcher
 	WorkspaceRoot    string
+	// MaxFileBytes skips files larger than this; 0 uses defaultMaxSearchFileBytes.
+	MaxFileBytes int64
+	// MaxScanLines caps lines scanned per file; 0 uses defaultSearchScanLines.
+	MaxScanLines int
 }
 
 type codeSearchArgs struct {
@@ -273,6 +277,27 @@ func (c *CodeSearchTool) Execute(ctx context.Context, args json.RawMessage) (Res
 // maxSearchOutputBytes bounds one result so it cannot dominate the context budget.
 const maxSearchOutputBytes = 64 * 1024
 
+const (
+	// defaultMaxSearchFileBytes skips files too large to scan cheaply.
+	defaultMaxSearchFileBytes int64 = 4 << 20
+	// defaultSearchScanLines caps per-file scanning so one huge file cannot stall a search.
+	defaultSearchScanLines = 200000
+)
+
+func (c *CodeSearchTool) maxFileBytes() int64 {
+	if c.MaxFileBytes > 0 {
+		return c.MaxFileBytes
+	}
+	return defaultMaxSearchFileBytes
+}
+
+func (c *CodeSearchTool) maxScanLines() int {
+	if c.MaxScanLines > 0 {
+		return c.MaxScanLines
+	}
+	return defaultSearchScanLines
+}
+
 func (c *CodeSearchTool) isBlocked(path string, isDir bool) bool {
 	if c.SensitiveMatcher != nil {
 		blocked, _, err := CheckSensitiveFile(c.SensitiveMatcher, path, isDir)
@@ -289,11 +314,27 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 		return nil, nil
 	}
 
+	displayPath := path
+	if c.WorkspaceRoot != "" {
+		if rel, err := filepath.Rel(c.WorkspaceRoot, path); err == nil {
+			displayPath = filepath.ToSlash(rel)
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
+	// Stat before reading so an oversized file is never streamed into the scanner.
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes := c.maxFileBytes(); info.Size() > maxBytes {
+		return []string{fmt.Sprintf("%s: skipped (file too large: %d bytes > %d)", displayPath, info.Size(), maxBytes)}, nil
+	}
 
 	buf := make([]byte, 512)
 	n, _ := f.Read(buf)
@@ -304,13 +345,7 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 		return nil, err
 	}
 
-	displayPath := path
-	if c.WorkspaceRoot != "" {
-		if rel, err := filepath.Rel(c.WorkspaceRoot, path); err == nil {
-			displayPath = filepath.ToSlash(rel)
-		}
-	}
-
+	scanLineCap := c.maxScanLines()
 	var allLines []string
 	scanner := bufio.NewScanner(f)
 	bufLarge := make([]byte, 64*1024)
@@ -318,7 +353,13 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 
 	var matchIndices []int
 	lineNum := 0
+	capped := false
 	for scanner.Scan() {
+		// Check before recording: a token past the cap proves more lines exist.
+		if lineNum >= scanLineCap {
+			capped = true
+			break
+		}
 		lineNum++
 		line := scanner.Text()
 		allLines = append(allLines, line)
@@ -334,8 +375,16 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 		return nil, err
 	}
 
+	var skipped string
+	if capped {
+		skipped = fmt.Sprintf("%s: skipped (line cap: scanned %d lines)", displayPath, lineNum)
+	}
+
 	if len(matchIndices) == 0 {
-		return nil, nil
+		if skipped == "" {
+			return nil, nil
+		}
+		return []string{skipped}, nil
 	}
 
 	var out []string
@@ -363,6 +412,10 @@ func (c *CodeSearchTool) searchFile(path string, re *regexp.Regexp, contextLines
 			}
 			out = append(out, "---")
 		}
+	}
+
+	if skipped != "" {
+		out = append(out, skipped)
 	}
 
 	return out, nil
