@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/mevarx/GoCode/internal/safetext"
 )
 
 type ApprovalGate struct {
@@ -96,28 +98,34 @@ func (g *ApprovalGate) RequestApproval(toolName string, args json.RawMessage, pr
 		return true, nil
 	}
 
+	// Model/tool text is untrusted; strip escapes before it can repaint the gate.
+	displayName := safetext.Sanitize(toolName)
+	displayPreview := safetext.Sanitize(preview)
+
 	if g.OnPresent != nil {
-		return g.OnPresent(toolName, args, preview)
+		return g.OnPresent(displayName, args, displayPreview)
 	}
 
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 50))
-	fmt.Printf("🔧 Tool: %s\n", toolName)
+	fmt.Printf("🔧 Tool: %s\n", displayName)
 	fmt.Println(strings.Repeat("─", 50))
 
 	var prettyArgs map[string]interface{}
 	if err := json.Unmarshal(args, &prettyArgs); err == nil {
 		for k, v := range prettyArgs {
-			fmt.Printf("  %s: %v\n", k, v)
+			fmt.Printf("  %s: %v\n", safetext.Sanitize(k), safetext.Sanitize(fmt.Sprintf("%v", v)))
 		}
 	} else {
-		fmt.Printf("  args: %s\n", string(args))
+		fmt.Printf("  args: %s\n", safetext.Sanitize(string(args)))
 	}
 
-	if preview != "" {
+	if displayPreview != "" {
 		fmt.Println()
-		fmt.Println("Preview:")
-		fmt.Println(preview)
+		// Delimiters stop injected text from spoofing the prompt line below.
+		fmt.Println("─── preview begin ───")
+		fmt.Println(displayPreview)
+		fmt.Println("─── preview end ───")
 	}
 
 	fmt.Println(strings.Repeat("─", 50))

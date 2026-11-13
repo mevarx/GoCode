@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/mevarx/GoCode/internal/safetext"
 )
 
 // Run drives the plain terminal loop, rendering engine events.
@@ -56,7 +58,7 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 		// Slash commands needing confirmation (e.g. /commit) prompt via this callback
 		// on the same stdin reader.
 		a.AskApproval = func(prompt string) bool {
-			fmt.Printf("%s [y/N]: ", prompt)
+			fmt.Printf("%s [y/N]: ", safetext.Sanitize(prompt))
 			ans, err := stdin.ReadString('\n')
 			if err != nil && ans == "" {
 				return false
@@ -69,7 +71,7 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 			if IsExitRequest(err) {
 				return nil
 			}
-			fmt.Printf("\nError: %v\n", err)
+			fmt.Printf("\nError: %s\n", safetext.Sanitize(err.Error()))
 			continue
 		}
 	}
@@ -82,23 +84,26 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 }
 
 func (a *AgentLoop) renderPlain(ev LoopEvent) {
+	// Model/tool text is untrusted; strip escapes so it cannot rewrite the terminal.
+	text := safetext.Sanitize(ev.Text)
+	tool := safetext.Sanitize(ev.Tool)
 	switch ev.Kind {
 	case EventDelta:
-		fmt.Print(ev.Text)
+		fmt.Print(text)
 	case EventNotice:
-		fmt.Println(ev.Text)
+		fmt.Println(text)
 	case EventExit:
-		if ev.Text != "" {
-			fmt.Println(ev.Text)
+		if text != "" {
+			fmt.Println(text)
 		}
 	case EventError:
-		fmt.Printf("\n[GoCode] %s\n", ev.Text)
+		fmt.Printf("\n[GoCode] %s\n", text)
 	case EventToolResult:
-		fmt.Printf("\n[%s result]\n", ev.Tool)
+		fmt.Printf("\n[%s result]\n", tool)
 		if ev.IsError {
-			fmt.Printf("Error: %s\n", ev.Text)
+			fmt.Printf("Error: %s\n", text)
 		} else {
-			fmt.Println(ev.Text)
+			fmt.Println(text)
 		}
 	}
 }

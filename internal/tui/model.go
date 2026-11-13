@@ -16,6 +16,7 @@ import (
 
 	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/provider"
+	"github.com/mevarx/GoCode/internal/safetext"
 )
 
 type ChatRole int
@@ -285,7 +286,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentChunkMsg:
 		m.mascot.setState(mascotWorking, msgNow())
-		m.streamBuf.WriteString(msg.delta)
+		// Strip escapes at ingestion so the stream buffer never holds them.
+		m.streamBuf.WriteString(safetext.Sanitize(msg.delta))
 		m.setStreamingMessage(m.streamBuf.String())
 		if m.viewport.AtBottom() {
 			m.viewport.GotoBottom()
@@ -315,7 +317,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if errors.Is(msg.err, context.Canceled) {
 				m.addMessage(ChatMessage{Role: RoleSystem, Label: "⏹ Stopped", Content: "generation canceled — enter a new message to continue"})
 			} else {
-				m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: msg.err.Error()})
+				m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: safetext.Sanitize(msg.err.Error())})
 			}
 		}
 		m.viewport.GotoBottom()
@@ -325,7 +327,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
-		trimmed := strings.TrimSpace(msg.args)
+		trimmed := safetext.Sanitize(strings.TrimSpace(msg.args))
 		if len(trimmed) > 200 {
 			trimmed = trimmed[:197] + "..."
 		}
@@ -335,7 +337,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.messages = append(m.messages, ChatMessage{
 			Role:    RoleTool,
-			Label:   "🔧 " + msg.name,
+			Label:   "🔧 " + safetext.Sanitize(msg.name),
 			Content: content,
 		})
 		if msg.toolCallID != "" {
@@ -349,28 +351,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
-		label := "🔧 " + msg.name
+		toolName := safetext.Sanitize(msg.name)
+		result := safetext.Sanitize(msg.result)
+		diff := safetext.Sanitize(msg.diff)
+		label := "🔧 " + toolName
 		role := RoleTool
 		if msg.isError {
 			role = RoleError
-			label = msg.name
+			label = toolName
 		}
 		if idx, ok := m.pendingTools[msg.toolCallID]; ok && idx < len(m.messages) {
 			m.messages[idx].Role = role
 			m.messages[idx].Label = label
-			m.messages[idx].Content = msg.result
-			m.messages[idx].Diff = msg.diff
+			m.messages[idx].Content = result
+			m.messages[idx].Diff = diff
 			delete(m.pendingTools, msg.toolCallID)
 			m.viewport.SetContent(m.renderMessages())
 		} else {
-			m.addMessage(ChatMessage{Role: role, Label: label, Content: msg.result, Diff: msg.diff})
+			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff})
 		}
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
 	case agentExitMsg:
 		if msg.notice != "" {
-			m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: msg.notice})
+			m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: safetext.Sanitize(msg.notice)})
 			m.viewport.GotoBottom()
 		}
 		m.streaming = false
@@ -382,6 +387,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.approvalActive = true
 		m.approvalReq = msg.req
+		m.approvalReq.ToolName = safetext.Sanitize(msg.req.ToolName)
+		m.approvalReq.Preview = safetext.Sanitize(msg.req.Preview)
+		m.approvalReq.Args = json.RawMessage(safetext.Sanitize(string(msg.req.Args)))
 		m.approvalFocus = 0
 		return m, pollApproval(m.bridge)
 
@@ -628,25 +636,26 @@ func (m *Model) renderApprovalModal() string {
 	modalW := max(8, min(m.width, 56))
 
 	title := modalTitleStyle.Render("⚠  Tool Approval Required")
-	toolLine := "  Tool: " + modalToolNameStyle.Render(req.ToolName)
+	toolLine := "  Tool: " + modalToolNameStyle.Render(safetext.Sanitize(req.ToolName))
 
 	argLines := []string{}
 	var prettyArgs map[string]interface{}
 	if err := json.Unmarshal(req.Args, &prettyArgs); err == nil {
 		for k, v := range prettyArgs {
-			val := fmt.Sprintf("%v", v)
+			// Values are decoded after ingestion, so sanitize again for display.
+			val := safetext.Sanitize(fmt.Sprintf("%v", v))
 			if len(val) > 120 {
 				val = val[:117] + "..."
 			}
-			argLines = append(argLines, "  "+modalArgKeyStyle.Render(k+": ")+modalArgValStyle.Render(val))
+			argLines = append(argLines, "  "+modalArgKeyStyle.Render(safetext.Sanitize(k)+": ")+modalArgValStyle.Render(val))
 		}
 	} else {
-		argLines = append(argLines, "  "+string(req.Args))
+		argLines = append(argLines, "  "+safetext.Sanitize(string(req.Args)))
 	}
 
 	preview := ""
-	if req.Preview != "" {
-		preview = "\n  Preview:\n" + toolBubbleStyle.Render(req.Preview)
+	if displayPreview := safetext.Sanitize(req.Preview); displayPreview != "" {
+		preview = "\n  Preview:\n" + toolBubbleStyle.Render(displayPreview)
 	}
 
 	approveBtn := modalButtonApprove.Render("  ✓ Approve  ")
