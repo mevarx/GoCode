@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -176,35 +175,26 @@ func TestSecurity_ApprovalBeforeExecution(t *testing.T) {
 
 func TestSecurity_ShellExecutionBounded(t *testing.T) {
 	wsDir := t.TempDir()
-	// macOS temp roots are symlinked (/var -> /private/var), and pwd reports the
-	// physical path; compare against the resolved directory.
-	wantDir := wsDir
-	if resolved, err := filepath.EvalSymlinks(wsDir); err == nil {
-		wantDir = resolved
-	}
 	shellTool := &ShellExecTool{
 		WorkspaceRoot:  wsDir,
 		Timeout:        2 * time.Second,
 		MaxOutputBytes: 64 << 10,
 	}
 
-	var cmd string
-	if runtime.GOOS == "windows" {
-		cmd = "cd"
-	} else {
-		cmd = "pwd"
-	}
-	args, _ := json.Marshal(shellExecArgs{Command: cmd})
+	// Prove cmd.Dir by writing a file into the current directory. Comparing pwd
+	// text is not portable: macOS reports /private/var for /var temp roots and
+	// Windows can report 8.3 short names (RUNNER~1).
+	args, _ := json.Marshal(shellExecArgs{Command: "echo cwd > cwd_probe.txt"})
 	res, err := shellTool.Execute(context.Background(), args)
 	if err != nil || res.Error != "" {
 		t.Fatalf("unexpected error: %v, %s", err, res.Error)
 	}
-	if !strings.Contains(strings.ToLower(res.Output), strings.ToLower(filepath.Clean(wantDir))) {
-		t.Errorf("expected CWD %q, got output: %q", wantDir, res.Output)
+	if _, err := os.Stat(filepath.Join(wsDir, "cwd_probe.txt")); err != nil {
+		t.Errorf("shell did not run in the workspace: %v (output %q)", err, res.Output)
 	}
 
-	// Use a separate small cap: the cwd path itself can exceed 100 bytes, so a
-	// shared cap would truncate before the assertion can match it.
+	// Use a separate small cap: a temp path can exceed 100 bytes, so a shared
+	// cap would truncate the cwd probe before it could be observed.
 	boundedTool := &ShellExecTool{
 		WorkspaceRoot:  wsDir,
 		Timeout:        2 * time.Second,
