@@ -10,6 +10,7 @@ A security- and harness-focused release: approval previews now use a real diff e
 - **Harness Upgrades** — per-model context budgets, model-summarized `/compact`, persistent scratchpad, parallel read-only tool calls, session-scoped approval grants, plan tool + optional auto-verify, per-turn metrics, and hardened MCP restart/timeout/caps.
 - **Headless & Evals** — `--headless` JSONL mode with an explicit approval policy, and a deterministic eval suite runnable with `make eval`.
 - **CI & Supply Chain** — release toolchain from `go.mod`, SHA-pinned actions, npm checksum verification, and govulncheck/staticcheck gates.
+- **Security Remediation** — removed the unpatched `github.com/ollama/ollama` dependency (every published advisory for it has no fixed version) in favor of a local stdlib HTTP/NDJSON client, and raised the floors to Go 1.26.11 and `golang.org/x/net v0.60.0`; `govulncheck ./...` is clean again.
 - **Real Context Compaction** — `/compact` now asks the active model to summarize earlier turns (goal, decisions, open files, next steps) instead of inserting a placeholder count, and falls back to the placeholder when the provider cannot answer.
 - **Model-Aware Token Budgets** — histories are truncated against each model family's context window (80% of the window by default), and an explicitly configured limit still wins.
 - **Better Token Estimation** — estimates now weight CJK text and punctuation-heavy code higher than Latin prose, so source and non-English transcripts no longer undercount.

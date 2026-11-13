@@ -814,10 +814,6 @@ func (m *Model) finalizeStreamingMessage() {
 	}
 }
 
-func (m Model) textareaHeight() int {
-	return m.textarea.Height()
-}
-
 func (m Model) listenOutput() tea.Cmd {
 	return func() tea.Msg {
 		return <-m.outputCh

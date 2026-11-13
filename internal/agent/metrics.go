@@ -86,14 +86,6 @@ func (m *turnMetrics) beginTool() time.Time {
 	return time.Now()
 }
 
-// endTool adds one call's latency to its per-tool total.
-func (m *turnMetrics) endTool(name string, start time.Time) {
-	if name == "" {
-		return
-	}
-	m.toolLatency[name] += time.Since(start)
-}
-
 // recordDecision counts an approval outcome. auto means the gate decided
 // without asking the user (permission allow/deny, or a tool that needs none).
 func (m *turnMetrics) recordDecision(_ string, approved, auto bool) {

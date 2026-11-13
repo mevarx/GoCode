@@ -89,7 +89,7 @@ func (g *LoopGuard) CheckCall(toolCalls []provider.ToolCall) error {
 	g.ToolCalls += len(toolCalls)
 
 	if g.iterations > g.maxIterations() {
-		return fmt.Errorf("stopped after %d tool iterations (limit %d) — the model kept requesting tools without finishing. Narrow the request and try again.",
+		return fmt.Errorf("stopped after %d tool iterations (limit %d) — the model kept requesting tools without finishing; narrow the request and try again",
 			g.iterations-1, g.maxIterations())
 	}
 
@@ -108,7 +108,7 @@ func (g *LoopGuard) CheckCall(toolCalls []provider.ToolCall) error {
 		if repeatName != "" {
 			g.consecutiveRep++
 			if g.consecutiveRep >= g.maxRepeatedCalls() {
-				return fmt.Errorf("stopped: tool %q was called %d times in a row with identical arguments. The previous attempts already produced a result; calling it again with the same input cannot change the outcome. Adjust the approach or the arguments.",
+				return fmt.Errorf("stopped: tool %q was called %d times in a row with identical arguments; the previous attempts already produced a result, so calling it again with the same input cannot change the outcome — adjust the approach or the arguments",
 					repeatName, g.consecutiveRep+1)
 			}
 		} else {

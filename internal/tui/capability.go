@@ -67,31 +67,3 @@ func isTerminal(f *os.File) bool {
 	}
 	return info.Mode()&os.ModeCharDevice != 0
 }
-
-func colorEnabled() bool {
-	if capabilities.ForceColor {
-		return true
-	}
-	return !capabilities.NoColor
-}
-
-// Off for non-TTY, dumb terminals, or reduced motion; callers must not start a ticker.
-// A single static frame is always fine.
-func animationsEnabled() bool {
-	if capabilities.ReducedMotion || capabilities.Dumb {
-		return false
-	}
-	// ForceColor re-enables animation for demos and tests.
-	if !capabilities.IsTTY && !capabilities.ForceColor {
-		return false
-	}
-	return true
-}
-
-// Reduced motion also shortens timings so the UI feels deliberate, not frozen.
-func animationScale() float64 {
-	if animationsEnabled() {
-		return 1
-	}
-	return 0
-}

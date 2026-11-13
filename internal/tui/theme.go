@@ -132,8 +132,3 @@ func resolveDarkBackground() bool {
 	}
 	return lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
 }
-
-// v2 replacement for AdaptiveColor: picks via resolved background.
-func adaptive(light, dark string) color.Color {
-	return lipgloss.LightDark(darkBackground)(lipgloss.Color(light), lipgloss.Color(dark))
-}

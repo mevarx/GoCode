@@ -41,6 +41,11 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+release:
+  # v0.7.4 is re-pointed for the security remediation; update the existing
+  # release in place instead of failing when asset names already exist.
+  replace_existing_artifacts: true
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 

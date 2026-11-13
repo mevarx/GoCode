@@ -1,8 +1,8 @@
 # Security notes
 
 This file records dependency-related security decisions that reviewers and future
-maintainers must not silently reverse. It documents risks that are **accepted**, not
-risks that are fixed.
+maintainers must not silently reverse. It documents risks that are **accepted**, and
+the dependencies that were **removed** rather than accepted or bumped.
 
 ## Vulnerability tracking
 
@@ -18,34 +18,48 @@ go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 A finding is only actionable if it is *reachable* from GoCode code. Unreachable
 advisories are recorded here as accepted, with the reason.
 
+## Toolchain floors
+
+The minimum toolchain is **Go 1.26.11** with `golang.org/x/net v0.60.0` (and the
+`golang.org/x/crypto v0.57.0` / `golang.org/x/sys v0.48.0` versions that go with it).
+Earlier Go 1.26 patch releases are vulnerable to
+`GO-2026-6859`, `GO-2026-6809`, `GO-2026-6617`, `GO-2026-6613`, `GO-2026-6612`,
+`GO-2026-6611`, `GO-2026-6610`, `GO-2026-6608`, `GO-2026-6607`, `GO-2026-6605`, and
+`GO-2026-6603` in the standard library and `x/net`. Lowering either floor reintroduces
+those findings in `govulncheck ./...`.
+
 ## Known accepted risks / dependencies
 
-### `github.com/ollama/ollama` (local Ollama provider)
+### Ollama provider (local client, upstream module removed)
 
-GoCode imports only two packages of this module: `api` (HTTP client) and
-`envconfig` (`Host()` host/port resolution). The Ollama server daemon, model
-runtimes, and GGUF loading code are never built or executed by GoCode.
+`github.com/ollama/ollama` is **not** a dependency. Every published advisory for it
+(`GO-2025-4251`, `GO-2025-3824`, `GO-2025-3695`, `GO-2025-3689`, `GO-2025-3582`,
+`GO-2025-3559`, `GO-2025-3558`, `GO-2025-3557`) has `introduced: 0` and no fixed
+version, so no module upgrade can clear them; bumping the module was never a
+remediation. GoCode now talks to the Ollama HTTP API through a minimal client in
+`internal/provider/ollama.go` built only on the standard library, and no upstream
+Ollama package is imported or linked.
 
-Accepted because the module is required to speak the Ollama chat API. Advisories in
-the parts of the module GoCode does not link are out of scope; advisories reachable
-through `api`/`envconfig` are in scope and are fixed by bumping the module version.
+The client surface is deliberately small and auditable:
 
-Mitigations that bound the risk while an upgrade is pending:
-
-- The provider never uses `http.DefaultClient`. It builds its own `http.Client`
-  with a 10-minute whole-turn timeout, a 30s dial timeout, a 15s TLS handshake
-  timeout, and `NewRetryTransport` (`internal/provider/retry.go`).
-- The retry transport replays idempotent methods only, so a `/api/chat` POST is
-  never duplicated or re-billed.
-- `OLLAMA_HOST` is resolved by the upstream `envconfig.Host()` rather than a local
-  parser, so host/port normalization stays owned by the dependency instead of
-  drifting.
+- `GET /api/tags` for model listing and `POST /api/chat` for streaming chat, decoded
+  as newline-delimited JSON with a bounded scanner buffer. Non-2xx responses are
+  surfaced as errors with a limited error body.
+- `OLLAMA_HOST` is resolved locally (scheme, host, port, and default port
+  normalization), matching the behavior GoCode previously inherited from
+  `envconfig.Host()`.
+- `OLLAMA_AUTH` optionally signs requests for ollama.com with an ed25519 key, using
+  the same header scheme the upstream client used; plain local hosts send no auth.
+- The provider never uses `http.DefaultClient`. It builds its own `http.Client` with
+  a 10-minute whole-turn timeout (`ollamaRequestTimeout`), a 30s dial timeout, a 15s
+  TLS handshake timeout, and `NewRetryTransport` (`internal/provider/retry.go`),
+  which replays idempotent methods only — a `/api/chat` POST is never duplicated.
 - Truncation is propagated (`done_reason` → `StreamChunk.FinishReason`) instead of
   being dropped, so a token-limit stop is visible to the agent loop and the user.
 
-Upgrade policy: bump the module when govulncheck reports a reachable advisory in
-`api` or `envconfig`; record any accepted unreachable advisory in this section with
-its CVE/GO-ID and the reason it is unreachable.
+Removal policy: do not reintroduce the upstream module. If it is proposed again,
+govulncheck must report zero reachable advisories for it at a version that exists,
+and that version must actually be fixed — do not record these GO-IDs as accepted.
 
 ### `github.com/go-git/go-git/v5` (gitignore parsing only) — accepted, not removed
 
