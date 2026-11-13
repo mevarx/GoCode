@@ -51,6 +51,11 @@ type ToolInfo struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations carries MCP hints; readOnlyHint lets the approval gate offer
+	// "read-only tools this turn" for servers that declare safe tools.
+	Annotations *struct {
+		ReadOnlyHint bool `json:"readOnlyHint"`
+	} `json:"annotations,omitempty"`
 }
 
 // ToolContent is a piece of output returned from an MCP tool call.

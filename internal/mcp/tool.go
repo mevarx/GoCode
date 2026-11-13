@@ -17,6 +17,7 @@ type MCPTool struct {
 	toolName    string
 	description string
 	parameters  json.RawMessage
+	readOnly    bool
 
 	// manager is nil for adapters built without one (unit tests); when set it
 	// is asked for a live client after the current one dies.
@@ -33,6 +34,7 @@ func NewMCPTool(serverName string, info ToolInfo, client *Client) *MCPTool {
 		toolName:    info.Name,
 		description: info.Description,
 		parameters:  info.InputSchema,
+		readOnly:    info.Annotations != nil && info.Annotations.ReadOnlyHint,
 	}
 	t.client.Store(client)
 	return t
@@ -67,6 +69,13 @@ func (m *MCPTool) Spec() tools.ToolSpec {
 
 func (m *MCPTool) RequiresApproval() bool {
 	return true
+}
+
+// ReadOnly reports the server's MCP readOnlyHint. The approval gate uses it
+// only to honor an explicit "read-only tools this turn" choice; a server that
+// lies about the hint is still gated by the per-call prompt otherwise.
+func (m *MCPTool) ReadOnly() bool {
+	return m.readOnly
 }
 
 // Preview shows the server, tool, and arguments awaiting approval.
