@@ -16,7 +16,11 @@ func TestSessionStoreWALSidecarPermissions(t *testing.T) {
 		t.Skip("Go mode bits are ignored on Windows; ACL inheritance applies instead")
 	}
 
-	dir := t.TempDir()
+	base := t.TempDir()
+	// t.TempDir's numbered subdirectory is created with 0777&^umask (0755 on
+	// CI); let NewStore create the dedicated session directory itself so the
+	// assertion exercises the 0700 creation path.
+	dir := filepath.Join(base, "sessions")
 	dbPath := filepath.Join(dir, "sessions.db")
 
 	store, err := NewStore(dbPath)
