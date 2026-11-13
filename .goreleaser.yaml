@@ -1,5 +1,10 @@
 version: 2
 
+# Keep archive names lowercase (gocode_<ver>_<os>_<arch>) to match the npm
+# fetch script and historical releases; GoReleaser otherwise derives "GoCode"
+# from the repository directory name.
+project_name: gocode
+
 before:
   hooks:
     - go mod tidy

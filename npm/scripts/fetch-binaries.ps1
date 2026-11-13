@@ -55,15 +55,21 @@ try {
 
   foreach ($dir in $assets.Keys) {
     $asset = $assets[$dir]
+    # Older releases used the GoReleaser-derived "GoCode_" prefix. Prefer the
+    # canonical lowercase name but accept either when it is in checksums.txt.
+    if (-not $checksums.ContainsKey($asset)) {
+      $alt = "GoCode_" + $asset.Substring("gocode_".Length)
+      if ($checksums.ContainsKey($alt)) { $asset = $alt }
+    }
+    if (-not $checksums.ContainsKey($asset)) {
+      throw "no checksum entry for $asset in checksums.txt; refusing to extract"
+    }
     $dest = Join-Path $vendor $dir
     New-Item -ItemType Directory -Force $dest | Out-Null
     $url = "$base/$asset"
     $tmp = Join-Path $tmpRoot $asset
     Invoke-WebRequest $url -OutFile $tmp
 
-    if (-not $checksums.ContainsKey($asset)) {
-      throw "no checksum entry for $asset in checksums.txt; refusing to extract"
-    }
     $expected = $checksums[$asset]
     $actual = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {
