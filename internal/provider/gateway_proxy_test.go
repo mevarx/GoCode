@@ -189,6 +189,8 @@ func TestStreamOpenAISSEToolCallIDReset(t *testing.T) {
 	}
 }
 
+// Truncation is a terminal finish, not an error: the loop keeps the partial
+// answer and warns the user exactly once.
 func TestStreamOpenAISSEFinishReasonLengthIsTruncation(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"partial answer"}}]}`,
@@ -203,26 +205,27 @@ func TestStreamOpenAISSEFinishReasonLengthIsTruncation(t *testing.T) {
 		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, "test")
 	}()
 
-	var gotErr error
 	var gotFinish string
 	var text string
+	var last StreamChunk
 	for chunk := range ch {
 		if chunk.Err != nil {
-			gotErr = chunk.Err
+			t.Fatalf("truncation must not surface as a stream error, got %v", chunk.Err)
 		}
 		if chunk.FinishReason != "" {
 			gotFinish = chunk.FinishReason
 		}
 		text += chunk.Delta
-	}
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "length") {
-		t.Errorf("expected truncation error mentioning length, got %v", gotErr)
+		last = chunk
 	}
 	if gotFinish != "length" {
 		t.Errorf("expected FinishReason length, got %q", gotFinish)
 	}
+	if !last.Done {
+		t.Errorf("expected a terminal Done chunk, got %+v", last)
+	}
 	if text != "partial answer" {
-		t.Errorf("content chunks must still be delivered before the truncation error, got %q", text)
+		t.Errorf("content chunks must still be delivered before truncation, got %q", text)
 	}
 }
 

@@ -289,3 +289,33 @@ func (r *dummyStringReader) Read(p []byte) (n int, err error) {
 	r.i += n
 	return n, nil
 }
+
+// RetryCount is what per-turn metrics sample; one retry must bump it by one.
+func TestRetryTransport_RetryCountIncrements(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	before := RetryCount.Load()
+
+	rt := NewRetryTransport(nil)
+	rt.InitialDelay = 5 * time.Millisecond
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := RetryCount.Load() - before; got != 1 {
+		t.Errorf("RetryCount delta = %d, want 1", got)
+	}
+}

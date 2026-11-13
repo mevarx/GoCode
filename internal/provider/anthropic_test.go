@@ -275,7 +275,8 @@ func lenOfArgs(calls []ToolCall) int {
 	return len(calls[0].Args)
 }
 
-// stop_reason max_tokens must surface, not store truncated answer as complete.
+// stop_reason max_tokens is a terminal finish, so the partial text already
+// streamed stays in history instead of being discarded by an error return.
 func TestAnthropicStream_MaxTokensStopReasonTruncates(t *testing.T) {
 	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -287,21 +288,27 @@ func TestAnthropicStream_MaxTokensStopReasonTruncates(t *testing.T) {
 	p := anthropicProviderFor(srv.URL)
 	ch, _ := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "go"}}, nil)
 
-	var gotErr error
+	var text string
 	var gotFinish string
+	var last StreamChunk
 	for chunk := range ch {
 		if chunk.Err != nil {
-			gotErr = chunk.Err
+			t.Fatalf("truncation must not surface as a stream error, got %v", chunk.Err)
 		}
+		text += chunk.Delta
 		if chunk.FinishReason != "" {
 			gotFinish = chunk.FinishReason
 		}
+		last = chunk
 	}
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "max_tokens") {
-		t.Errorf("expected truncation error mentioning max_tokens, got %v", gotErr)
+	if text != "partial" {
+		t.Errorf("content chunks must still be delivered before truncation, got %q", text)
 	}
 	if gotFinish != "max_tokens" {
 		t.Errorf("expected FinishReason max_tokens, got %q", gotFinish)
+	}
+	if !last.Done {
+		t.Errorf("expected a terminal Done chunk, got %+v", last)
 	}
 }
 

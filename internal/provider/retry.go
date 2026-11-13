@@ -6,8 +6,14 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
+
+// RetryCount is the number of retries performed by any RetryTransport in this
+// process. It is a process counter so a turn's metrics can report its delta
+// without reaching into each provider's HTTP client.
+var RetryCount atomic.Int64
 
 // RetryTransport wraps an http.RoundTripper with retry logic for transient errors.
 type RetryTransport struct {
@@ -99,6 +105,8 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				retryDelay = t.MaxDelay
 			}
 		}
+
+		RetryCount.Add(1)
 
 		select {
 		case <-time.After(retryDelay):

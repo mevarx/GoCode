@@ -340,14 +340,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 				}
 
 			case "message_stop":
-				if isTruncationFinish(stopReason) {
-					emitChunk(ctx, ch, StreamChunk{
-						Err:          fmt.Errorf("response truncated: provider stopped at the token limit (stop_reason %q)", stopReason),
-						Done:         true,
-						FinishReason: stopReason,
-					})
-					return
-				}
+				// Truncation ("max_tokens") is a normal terminal finish, not an
+				// error: the loop owns the user-facing warning and must keep the
+				// text already streamed. A block cut off mid-json never reached
+				// content_block_stop, so its arguments are never emitted.
 				emitChunk(ctx, ch, StreamChunk{Done: true, FinishReason: stopReason})
 				return
 

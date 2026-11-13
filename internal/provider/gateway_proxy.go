@@ -15,6 +15,10 @@ import (
 	"github.com/mevarx/GoCode/internal/config"
 )
 
+// maxGatewayErrorBodyBytes caps the non-200 body echoed into an error string so a
+// huge error page cannot exhaust memory or flood the logs.
+const maxGatewayErrorBodyBytes = 16 << 10
+
 type GatewayProxyProvider struct {
 	name   string
 	cfg    config.GatewayConfig
@@ -82,7 +86,7 @@ func (p *GatewayProxyProvider) Models(ctx context.Context) ([]string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxGatewayErrorBodyBytes))
 		return nil, fmt.Errorf("gateway %q returned status %d: %s", p.name, resp.StatusCode, string(body))
 	}
 
@@ -192,7 +196,7 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxGatewayErrorBodyBytes))
 		resp.Body.Close()
 		return nil, fmt.Errorf("gateway %q returned status %d: %s", p.name, resp.StatusCode, string(body))
 	}

@@ -559,6 +559,98 @@ func TestStreamOpenAISSEPreservesReasoning(t *testing.T) {
 	}
 }
 
+// collectSSE drains a parser channel, failing on any Err chunk.
+func collectSSE(t *testing.T, body string) []StreamChunk {
+	t.Helper()
+
+	ch := make(chan StreamChunk, 16)
+	go func() {
+		defer close(ch)
+		streamOpenAISSE(context.Background(), strings.NewReader(body), ch, "test")
+	}()
+
+	var chunks []StreamChunk
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("truncation must not surface as a stream error, got %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+// Truncation is a normal finish, so the partial answer already shown stays
+// committed to history instead of being dropped by an error return.
+func TestStreamOpenAISSETruncationEndsAsDoneChunk(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"partial answer"}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	chunks := collectSSE(t, body)
+
+	var text string
+	for _, chunk := range chunks {
+		text += chunk.Delta
+	}
+	if text != "partial answer" {
+		t.Errorf("expected streamed content before truncation, got %q", text)
+	}
+
+	final := chunks[len(chunks)-1]
+	if !final.Done || final.FinishReason != "length" {
+		t.Errorf("expected final chunk Done with FinishReason length, got %+v", final)
+	}
+}
+
+// A broken connection without [DONE] must end the same way, not as an error.
+func TestStreamOpenAISSETruncationAtEOFEndsAsDoneChunk(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"partial answer"}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"max_tokens"}]}`,
+		``,
+	}, "\n")
+
+	chunks := collectSSE(t, body)
+
+	var text string
+	for _, chunk := range chunks {
+		text += chunk.Delta
+	}
+	if text != "partial answer" {
+		t.Errorf("expected streamed content before truncation, got %q", text)
+	}
+
+	final := chunks[len(chunks)-1]
+	if !final.Done || final.FinishReason != "max_tokens" {
+		t.Errorf("expected final chunk Done with FinishReason max_tokens, got %+v", final)
+	}
+}
+
+// A tool call cut off mid-arguments must never reach the executor.
+func TestStreamOpenAISSETruncationDropsPendingToolCalls(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"write_file","arguments":"{\"path\":\"a"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	chunks := collectSSE(t, body)
+
+	for _, chunk := range chunks {
+		if len(chunk.ToolCalls) > 0 {
+			t.Fatalf("truncated tool call must not be emitted, got %+v", chunk.ToolCalls)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if !final.Done || final.FinishReason != "length" {
+		t.Errorf("expected final chunk Done with FinishReason length, got %+v", final)
+	}
+}
+
 // Assistant reasoning must be replayed; dropping it breaks multi-turn continuity.
 func TestBuildOpenAIMessagesReplaysReasoning(t *testing.T) {
 	msgs := buildOpenAIMessages([]Message{

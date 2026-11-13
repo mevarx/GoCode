@@ -4,40 +4,58 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/envconfig"
 )
+
+// ollamaRequestTimeout bounds a whole chat turn, including streamed body reads,
+// so a stalled Ollama server cannot hold a turn forever.
+const ollamaRequestTimeout = 10 * time.Minute
 
 type OllamaProvider struct {
 	client *api.Client
 	host   string
 }
 
+// newOllamaHTTPClient builds the HTTP client used for Ollama traffic. It never
+// uses http.DefaultClient, which has no timeout and no retry policy.
+func newOllamaHTTPClient() *http.Client {
+	baseTransport := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 15 * time.Second,
+	}
+	return &http.Client{
+		Transport: NewRetryTransport(baseTransport),
+		Timeout:   ollamaRequestTimeout,
+	}
+}
+
 func NewOllamaProvider(host string) (*OllamaProvider, error) {
-	var client *api.Client
-	var err error
+	var base *url.URL
 	if host != "" {
 		hostURL := host
 		if !strings.Contains(hostURL, "://") {
 			hostURL = "http://" + hostURL
 		}
-		u, parseErr := url.Parse(hostURL)
-		if parseErr != nil {
-			return nil, fmt.Errorf("invalid ollama host %q: %w", host, parseErr)
-		}
-		client = api.NewClient(u, http.DefaultClient)
-	} else {
-		client, err = api.ClientFromEnvironment()
+		u, err := url.Parse(hostURL)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create ollama client: %w", err)
+			return nil, fmt.Errorf("invalid ollama host %q: %w", host, err)
 		}
+		base = u
+	} else {
+		// Same OLLAMA_HOST resolution api.ClientFromEnvironment performs, but with
+		// our own bounded client instead of http.DefaultClient.
+		base = envconfig.Host()
 	}
 
 	return &OllamaProvider{
-		client: client,
+		client: api.NewClient(base, newOllamaHTTPClient()),
 		host:   host,
 	}, nil
 }
@@ -116,6 +134,11 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 			chunk := StreamChunk{
 				Delta: resp.Message.Content,
 				Done:  resp.Done,
+			}
+			if resp.Done {
+				// Ollama reports "length" when the token budget cut generation short and
+				// "stop"/"load" otherwise, so surface it rather than losing the truncation.
+				chunk.FinishReason = resp.DoneReason
 			}
 
 			if len(resp.Message.ToolCalls) > 0 {

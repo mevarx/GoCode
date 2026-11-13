@@ -534,10 +534,11 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 			continue
 		}
 		if data == "[DONE]" {
+			// Truncation is a normal terminal chunk, not an error: the loop owns
+			// the user-facing warning and must keep the text already streamed.
+			// Pending tool calls are dropped; a cut-off argument must not execute.
 			if isTruncationFinish(finishReason) {
-				if !emitChunk(ctx, ch, StreamChunk{Err: fmt.Errorf("response truncated: provider stopped at the token limit (finish_reason %q)", finishReason), Done: true, FinishReason: finishReason}) {
-					return
-				}
+				emitChunk(ctx, ch, StreamChunk{Done: true, FinishReason: finishReason})
 				return
 			}
 			emitChunk(ctx, ch, StreamChunk{ToolCalls: flush(), Done: true, FinishReason: finishReason})
@@ -615,8 +616,10 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 		}
 	}
 
+	// Stream ended without [DONE]; truncation is still a normal terminal chunk.
+	// Pending tool calls are dropped; a cut-off argument must not execute.
 	if isTruncationFinish(finishReason) {
-		emitChunk(ctx, ch, StreamChunk{Err: fmt.Errorf("response truncated: provider stopped at the token limit (finish_reason %q)", finishReason), Done: true, FinishReason: finishReason})
+		emitChunk(ctx, ch, StreamChunk{Done: true, FinishReason: finishReason})
 		return
 	}
 
