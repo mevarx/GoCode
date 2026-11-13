@@ -1,6 +1,6 @@
 {
     "name":  "gocode-cli",
-    "version":  "0.7.2",
+    "version":  "0.7.4",
     "description":  "Open-source AI terminal coding agent (Go binary, distributed via npm shim)",
     "license":  "MIT",
     "homepage":  "https://github.com/mevarx/GoCode",

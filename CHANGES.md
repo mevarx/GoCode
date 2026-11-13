@@ -1,6 +1,8 @@
 # GoCode Changelog
 
-### Unreleased
+### v0.7.4 — 2026-11-13
+
+A security- and harness-focused release: approval previews now use a real diff engine, model/tool text is sanitized before rendering, secrets are scrubbed from child process environments and transcripts, session storage is owner-only and workspace-scoped, and the agent gains context compaction, parallel read-only tools, session-scoped approval grants, a plan tool, auto-verification, per-turn metrics, headless mode, and an eval suite. Full notes: `docs/releases/v0.7.4.md`.
 
 - **Approval Integrity** — file previews now use a real Myers unified diff, `/commit` shows the file list and message it will commit, model/tool text is sanitized before terminal rendering, and approved writes are refused if the file changed after preview.
 - **Secret Containment** — child processes no longer inherit credential-shaped env vars, transcript/export redaction covers tool-call arguments, and session WAL/SHM files plus config/logs are owner-only.
