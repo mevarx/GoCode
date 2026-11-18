@@ -3,6 +3,7 @@
 ### Unreleased
 
 - **omp Reverse-Engineering Research** — added `docs/omp-reverse-engineering.md`, a source-cited synthesis of oh-my-pi's harness, TUI/animations, and command surface (analyzed at commit `840cc4b`), with the three detailed evidence audits under `docs/research/`. This is the design reference for the GoCode harness/TUI upgrade plan.
+- **Upgrade Plan & Baseline Audit** — added `PLAN.md` (8 phases porting omp's turn-lifecycle events, auto-compaction, tool-arg streaming, steering, render caching, animation system, command registry and live cards onto GoCode's existing seams) and `docs/research/gocode-audit.md` (measured as-is baseline: build/vet/test clean, 579 tests, extension seams with file:line).
 
 ### v0.7.4 — 2026-11-13
 
