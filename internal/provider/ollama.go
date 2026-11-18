@@ -298,6 +298,10 @@ type ollamaChatResponse struct {
 	Message    ollamaResponseMessage `json:"message"`
 	Done       bool                  `json:"done"`
 	DoneReason string                `json:"done_reason,omitempty"`
+	// PromptEvalCount/EvalCount are Ollama's token accounting, reported on the
+	// final (done) response only.
+	PromptEvalCount int `json:"prompt_eval_count,omitempty"`
+	EvalCount       int `json:"eval_count,omitempty"`
 }
 
 type ollamaResponseMessage struct {
@@ -431,6 +435,12 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 				// Ollama reports "length" when the token budget cut generation short and
 				// "stop"/"load" otherwise, so surface it rather than losing the truncation.
 				chunk.FinishReason = resp.DoneReason
+				if resp.PromptEvalCount > 0 || resp.EvalCount > 0 {
+					chunk.Usage = &Usage{
+						PromptTokens:     resp.PromptEvalCount,
+						CompletionTokens: resp.EvalCount,
+					}
+				}
 			}
 
 			for i, tc := range resp.Message.ToolCalls {

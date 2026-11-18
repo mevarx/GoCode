@@ -387,3 +387,80 @@ func TestLoadHeadlessPolicy(t *testing.T) {
 		t.Error("missing policy file must be a startup error")
 	}
 }
+
+// turn_done carries the turn's metrics: additive, so a driver that ignores the
+// object still sees the same record type and every older field.
+func TestRunHeadlessTurnDoneCarriesMetrics(t *testing.T) {
+	p := &headlessScriptProvider{scripts: [][]provider.StreamChunk{
+		{
+			{Delta: "hello"},
+			{Usage: &provider.Usage{PromptTokens: 900, CompletionTokens: 30}},
+			{Done: true, FinishReason: "stop"},
+		},
+	}}
+	loop := newHeadlessLoop(t, p, nil)
+
+	input := strings.Join([]string{
+		`{"type":"user","text":"hi"}`,
+		`{"type":"user","text":"again"}`,
+		`{"type":"exit"}`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := runHeadless(context.Background(), strings.NewReader(input), &out, loop); err != nil {
+		t.Fatalf("runHeadless returned error: %v", err)
+	}
+
+	records := decodeHeadlessRecords(t, out.String())
+	var turnDone []map[string]any
+	for _, rec := range records {
+		if rec["type"] == "turn_done" {
+			turnDone = append(turnDone, rec)
+		}
+	}
+	if len(turnDone) != 2 {
+		t.Fatalf("expected 2 turn_done records, got %d (%q)", len(turnDone), out.String())
+	}
+
+	metrics, ok := turnDone[0]["metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn_done has no metrics object: %#v", turnDone[0])
+	}
+	if got := metrics["prompt_tokens"]; got != float64(900) {
+		t.Errorf("prompt_tokens = %v, want the provider's 900", got)
+	}
+	if got := metrics["completion_tokens"]; got != float64(30) {
+		t.Errorf("completion_tokens = %v, want the provider's 30", got)
+	}
+	if got := metrics["provider_reported"]; got != true {
+		t.Errorf("provider_reported = %v, want true", got)
+	}
+	if got := metrics["context_tokens"]; got != float64(930) {
+		t.Errorf("context_tokens = %v, want prompt+completion 930", got)
+	}
+	if got, ok := metrics["context_budget"].(float64); !ok || got <= 0 {
+		t.Errorf("context_budget = %v, want a resolved budget", metrics["context_budget"])
+	}
+	if _, ok := metrics["elapsed_ms"].(float64); !ok {
+		t.Errorf("elapsed_ms missing or not a number: %#v", metrics["elapsed_ms"])
+	}
+	if got := metrics["tool_calls"]; got != float64(0) {
+		t.Errorf("tool_calls = %v, want 0", got)
+	}
+	if got := metrics["retries"]; got != float64(0) {
+		t.Errorf("retries = %v, want 0", got)
+	}
+
+	// The second turn reported no usage: estimates are used and the flag says so.
+	second, ok := turnDone[1]["metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("second turn_done has no metrics object: %#v", turnDone[1])
+	}
+	if got := second["provider_reported"]; got != false {
+		t.Errorf("provider_reported = %v for a turn without usage, want false", got)
+	}
+	if got, ok := second["completion_tokens"].(float64); !ok || got < 1 {
+		t.Errorf("completion_tokens = %v, want a positive estimate", second["completion_tokens"])
+	}
+}

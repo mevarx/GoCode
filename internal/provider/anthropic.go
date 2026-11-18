@@ -103,11 +103,25 @@ type anthropicStreamEvent struct {
 		ID   string `json:"id,omitempty"`
 		Name string `json:"name,omitempty"`
 	} `json:"content_block,omitempty"`
+	// Message is message_start's payload; only its usage is consumed here.
+	Message *struct {
+		Usage *anthropicUsage `json:"usage"`
+	} `json:"message,omitempty"`
+	// Usage is message_delta's cumulative output count.
+	Usage *anthropicUsage `json:"usage,omitempty"`
 	// Error is the in-band {"type":"error","error":{...}} payload.
 	Error *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// anthropicUsage is Anthropic's usage object. message_start reports input_tokens
+// once; message_delta reports the running output_tokens total, so the parser
+// treats the two as cumulative rather than additive.
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 type anthropicDelta struct {
@@ -265,6 +279,24 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 		pendingTools := make(map[int]*pendingToolCall)
 		var stopReason string
 
+		// Usage is cumulative across the stream: message_start carries the
+		// prompt count, message_delta the running completion count.
+		var reported Usage
+		lastSent := Usage{}
+		emitUsage := func() {
+			if reported.PromptTokens == 0 && reported.CompletionTokens == 0 {
+				return
+			}
+			if reported == lastSent {
+				return
+			}
+			lastSent = reported
+			emitChunk(ctx, ch, StreamChunk{Usage: &Usage{
+				PromptTokens:     reported.PromptTokens,
+				CompletionTokens: reported.CompletionTokens,
+			}})
+		}
+
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || strings.HasPrefix(line, ":") {
@@ -285,6 +317,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 			}
 
 			switch event.Type {
+			case "message_start":
+				if event.Message != nil && event.Message.Usage != nil {
+					reported.PromptTokens = event.Message.Usage.InputTokens
+					reported.CompletionTokens = event.Message.Usage.OutputTokens
+					emitUsage()
+				}
+
 			case "content_block_start":
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 					pendingTools[event.Index] = &pendingToolCall{
@@ -338,12 +377,25 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 				if err := json.Unmarshal(event.Delta, &delta); err == nil && delta.StopReason != "" {
 					stopReason = delta.StopReason
 				}
+				// message_delta's usage is the cumulative output count; input
+				// tokens are only repeated by some gateways, so keep the
+				// message_start value when they are omitted.
+				if event.Usage != nil {
+					if event.Usage.InputTokens > 0 {
+						reported.PromptTokens = event.Usage.InputTokens
+					}
+					if event.Usage.OutputTokens > 0 {
+						reported.CompletionTokens = event.Usage.OutputTokens
+					}
+					emitUsage()
+				}
 
 			case "message_stop":
 				// Truncation ("max_tokens") is a normal terminal finish, not an
 				// error: the loop owns the user-facing warning and must keep the
 				// text already streamed. A block cut off mid-json never reached
 				// content_block_stop, so its arguments are never emitted.
+				emitUsage()
 				emitChunk(ctx, ch, StreamChunk{Done: true, FinishReason: stopReason})
 				return
 

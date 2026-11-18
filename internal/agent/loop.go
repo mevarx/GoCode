@@ -20,8 +20,11 @@ import (
 type LoopEventKind int
 
 const (
+	// EventTurnStart reports that a turn began. It precedes every other event
+	// of that turn, so a UI can arm timers before any provider output arrives.
+	EventTurnStart LoopEventKind = iota
 	// EventDelta is a fragment of assistant text for streaming to a display.
-	EventDelta LoopEventKind = iota
+	EventDelta
 	// EventToolStart reports a tool call before approval/execution so a UI can show pending state.
 	EventToolStart
 	// EventToolResult reports the outcome of a single tool call.
@@ -33,7 +36,9 @@ const (
 	// EventExit reports that a slash command asked the UI to shut down. The
 	// UI renders any accompanying notice and then quits.
 	EventExit
-	// EventTurnEnd signals that the turn finished, successfully or not.
+	// EventTurnEnd signals that the turn finished, successfully or not. It is
+	// emitted exactly once per turn, on every exit path, and carries the
+	// turn's metrics.
 	EventTurnEnd
 )
 
@@ -55,6 +60,9 @@ type LoopEvent struct {
 	Diff string
 	// Err carries the underlying error on EventTurnEnd.
 	Err error
+	// Metrics carries the turn summary on EventTurnEnd; nil on every other
+	// kind, so a zero TurnMetrics is never mistaken for a measurement.
+	Metrics *TurnMetrics
 }
 
 // maxDisplayedToolOutput caps rendered tool output; the full result still
@@ -174,7 +182,9 @@ func (a *AgentLoop) EnsureSystemPrompt() {
 
 // RunTurn processes one user input: slash command or full agent turn with tools.
 // Shared by the TUI and the plain loop, so turn handling has one implementation.
-func (a *AgentLoop) RunTurn(ctx context.Context, input string) error {
+// A turn that runs reports EventTurnStart before anything else and exactly one
+// EventTurnEnd, whatever its outcome.
+func (a *AgentLoop) RunTurn(ctx context.Context, input string) (err error) {
 	// "read-only tools this turn" grants never outlive the turn that set them.
 	if a.Approval != nil {
 		a.Approval.BeginTurn()
@@ -188,9 +198,20 @@ func (a *AgentLoop) RunTurn(ctx context.Context, input string) error {
 	// measured from before the work so compaction and retry deltas are right.
 	m := newTurnMetrics(a)
 
+	// The single exit funnel. Normal completion, cancellation, a loop-guard
+	// stop, a provider failure and a slash command all end here, so no path can
+	// miss the end event or emit it twice. A /exit turn emits EventExit just
+	// before it, which is the one case where the end is not the last event a
+	// front-end acts on.
+	defer func() {
+		m.log()
+		a.emit(LoopEvent{Kind: EventTurnEnd, Err: err, Metrics: m.snapshot()})
+	}()
+
+	a.emit(LoopEvent{Kind: EventTurnStart})
+
 	if res := a.handleSlashCommand(ctx, input); res.Handled {
 		m.slashCommand = true
-		m.log()
 		if res.Exit {
 			if res.Output != "" {
 				a.emit(LoopEvent{Kind: EventExit, Text: res.Output})
@@ -239,7 +260,7 @@ func (a *AgentLoop) handleSlashCommand(ctx context.Context, input string) Comman
 func (a *AgentLoop) streamResponse(ctx context.Context, m *turnMetrics) error {
 	guard := NewLoopGuardWithConfig(a.GuardConfig)
 
-	defer m.log()
+	// m.log() belongs to RunTurn's exit funnel, which runs exactly once.
 	defer a.observeApprovals(m)()
 
 	return a.streamResponseGuarded(ctx, guard, m)
@@ -288,10 +309,19 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 		var fullReasoning strings.Builder
 		var toolCalls []provider.ToolCall
 		var finishReason string
+		// The last usage a provider reported for this request wins: Anthropic
+		// sends cumulative counts, so later reports supersede earlier ones.
+		var roundUsage provider.Usage
+		var roundHasUsage bool
 
 		for chunk := range ch {
 			if chunk.Err != nil {
 				return fmt.Errorf("stream chunk error: %w", chunk.Err)
+			}
+
+			if chunk.Usage != nil {
+				roundUsage = *chunk.Usage
+				roundHasUsage = true
 			}
 
 			if chunk.Delta != "" {
@@ -324,6 +354,12 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 			return ctx.Err()
 		}
 
+		// Usage is recorded only for a request that ran to completion: a
+		// cancelled stream reports partial counts that would corrupt the
+		// context accounting.
+		if roundHasUsage {
+			m.addUsage(roundUsage)
+		}
 		m.addCompletion(fullResponse.String(), fullReasoning.String())
 		if isTruncationFinish(finishReason) {
 			m.truncations++

@@ -152,6 +152,10 @@ func drainCancelCh(cancelCh <-chan struct{}) {
 
 func toTeaMsg(ev agent.LoopEvent) tea.Msg {
 	switch ev.Kind {
+	case agent.EventTurnStart:
+		return agentTurnStartMsg{}
+	case agent.EventTurnEnd:
+		return agentTurnMetricsMsg{metrics: ev.Metrics}
 	case agent.EventDelta:
 		return agentChunkMsg{delta: ev.Text}
 	case agent.EventToolStart:

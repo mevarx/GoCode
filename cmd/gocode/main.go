@@ -254,6 +254,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to configure custom providers: %w", err)
 	}
 
+	// stream_usage is a [provider]-level switch: it applies to every
+	// OpenAI-compatible gateway, built-in or custom, but not to the native
+	// Anthropic, Copilot or Ollama dialects, which report usage already.
+	applyStreamUsage(providerRegistry, cfg.Provider.StreamUsage)
+
 	// With persist=false the store is never opened, so nothing is read or written.
 	sessionStore, err := openSessionStore(cfg.Session.Persist, filepath.Join(config.SessionDir(), "sessions.db"))
 	if err != nil {

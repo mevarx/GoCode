@@ -74,6 +74,10 @@ var (
 	statusSeparator = statusBarStyle.
 			Foreground(colorBorder).
 			Render(statusSepGlyph)
+
+	// Turn metrics are secondary information: muted like the workspace path.
+	statusMetricsStyle = statusBarStyle.
+				Foreground(colorMutedFg)
 )
 
 // Labels margin-free; bodies share one gutter for a single aligned column.

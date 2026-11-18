@@ -484,3 +484,44 @@ func TestInlineAPIKeyWarningsEmptyWithEnvKeys(t *testing.T) {
 		t.Errorf("expected no warnings when keys come from env vars, got %v", warnings)
 	}
 }
+
+// stream_usage is opt-in: absent means false, and the key must be registered so
+// strict decoding accepts it instead of rejecting the file as unknown.
+func TestConfig_StreamUsageKey(t *testing.T) {
+	if got := DefaultConfig().Provider.StreamUsage; got {
+		t.Errorf("default stream_usage = %v, want false (opt-in)", got)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\nstream_usage = true\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !loaded.Provider.StreamUsage {
+		t.Error("stream_usage = true was not applied")
+	}
+
+	// The key's TOML name is the contract, so it must also survive a write.
+	cfg := DefaultConfig()
+	cfg.Provider.StreamUsage = true
+	if err := SaveToPath(cfg, tmpFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if !strings.Contains(string(data), "stream_usage = true") {
+		t.Errorf("saved config lost stream_usage:\n%s", data)
+	}
+	again, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if !again.Provider.StreamUsage {
+		t.Error("stream_usage did not round-trip")
+	}
+}

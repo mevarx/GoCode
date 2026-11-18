@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textarea"
@@ -40,6 +41,15 @@ type ChatMessage struct {
 
 type agentChunkMsg struct{ delta string }
 type agentDoneMsg struct{ err error }
+
+// agentTurnStartMsg arms the status-bar clock; the engine emits it before the
+// first delta of a turn, so the elapsed time is measured, not guessed.
+type agentTurnStartMsg struct{}
+
+// agentTurnMetricsMsg carries the finished turn's summary (tokens, elapsed,
+// context). metrics is nil only if a caller emits the kind without a body.
+type agentTurnMetricsMsg struct{ metrics *agent.TurnMetrics }
+
 type agentToolMsg struct {
 	name       string
 	result     string
@@ -106,6 +116,11 @@ type Model struct {
 	// Maps tool call ID to transcript index so results replace pending cards.
 	pendingTools map[string]int
 
+	// lastTurn is the most recent finished turn's summary, shown in the status
+	// bar; turnStarted is when the running turn began (zero when idle).
+	lastTurn    agent.TurnMetrics
+	turnStarted time.Time
+
 	cancelRequested bool
 }
 
@@ -153,6 +168,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case agentTurnStartMsg:
+		m.turnStarted = msgNow()
+		cmds = append(cmds, m.listenOutput())
+
+	case agentTurnMetricsMsg:
+		if msg.metrics != nil {
+			m.lastTurn = *msg.metrics
+		}
+		cmds = append(cmds, m.listenOutput())
 
 	case tea.WindowSizeMsg:
 		m.width = max(1, msg.Width)
@@ -561,6 +586,13 @@ func (m *Model) renderStatusBar() string {
 		suffix = statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
 	}
 
+	// Metrics appear only while a turn runs and only when they fit: the
+	// existing squeeze order (workspace path, then model id) is untouched.
+	metrics := ""
+	if m.streaming {
+		metrics = m.renderTurnMetrics()
+	}
+
 	// When tight, drop workspace path first, model id second.
 	var right string
 	if path := workspaceShortName(m.workspaceRoot); path != "" {
@@ -577,6 +609,14 @@ func (m *Model) renderStatusBar() string {
 	if room >= minModelWidth {
 		left += statusSeparator + statusModelStyle.Render(truncateToWidth(m.modelName, room))
 	}
+	if metrics != "" {
+		// The suffix is appended after this, so its width is part of the price:
+		// otherwise the cluster can push the bar past contentWidth.
+		needed := lipgloss.Width(metrics) + lipgloss.Width(statusSeparator) + lipgloss.Width(suffix)
+		if contentWidth-lipgloss.Width(left)-lipgloss.Width(right) >= needed {
+			left += statusSeparator + statusMetricsStyle.Render(metrics)
+		}
+	}
 	left += suffix
 
 	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
@@ -584,6 +624,48 @@ func (m *Model) renderStatusBar() string {
 		left += statusBarStyle.Render(strings.Repeat(" ", gap))
 	}
 	return left + right
+}
+
+// renderTurnMetrics builds the compact "elapsed · tokens · ctx%" cluster. A
+// missing measurement is omitted rather than rendered as zero.
+func (m *Model) renderTurnMetrics() string {
+	var parts []string
+	if !m.turnStarted.IsZero() {
+		parts = append(parts, formatTurnElapsed(time.Since(m.turnStarted)))
+	}
+	if m.lastTurn.PromptTokens > 0 || m.lastTurn.CompletionTokens > 0 {
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s",
+			formatTokenCount(m.lastTurn.PromptTokens),
+			formatTokenCount(m.lastTurn.CompletionTokens)))
+	}
+	if pct, ok := m.lastTurn.ContextPercent(); ok {
+		parts = append(parts, fmt.Sprintf("ctx %d%%", int(pct+0.5)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// formatTurnElapsed renders whole seconds, switching to m:ss past a minute.
+func formatTurnElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := int(d / time.Second)
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
+}
+
+// formatTokenCount keeps the cluster narrow: 999, 1.2k, 3.4M.
+func formatTokenCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func (m *Model) renderInputArea() string {

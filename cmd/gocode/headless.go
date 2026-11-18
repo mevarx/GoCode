@@ -60,12 +60,45 @@ func newHeadlessApprovalGate(policy headlessPolicy) *tools.ApprovalGate {
 
 // headlessRecord is one JSON object of the stdout protocol. Text is free-form
 // (already produced by the agent loop); Args is the raw tool-call JSON so a
-// driver can inspect exactly what the model asked for.
+// driver can inspect exactly what the model asked for. Metrics is additive on
+// turn_done: older drivers that ignore it keep working.
 type headlessRecord struct {
-	Type string          `json:"type"`
-	Text string          `json:"text,omitempty"`
-	Tool string          `json:"tool,omitempty"`
-	Args json.RawMessage `json:"args,omitempty"`
+	Type    string               `json:"type"`
+	Text    string               `json:"text,omitempty"`
+	Tool    string               `json:"tool,omitempty"`
+	Args    json.RawMessage      `json:"args,omitempty"`
+	Metrics *headlessTurnMetrics `json:"metrics,omitempty"`
+}
+
+// headlessTurnMetrics is the stable metrics schema on turn_done. Token counts
+// come from the provider when it reported usage, from local estimates
+// otherwise; provider_reported says which.
+type headlessTurnMetrics struct {
+	PromptTokens     int   `json:"prompt_tokens"`
+	CompletionTokens int   `json:"completion_tokens"`
+	ToolCalls        int   `json:"tool_calls"`
+	ElapsedMS        int64 `json:"elapsed_ms"`
+	Retries          int64 `json:"retries"`
+	ProviderReported bool  `json:"provider_reported"`
+	ContextTokens    int   `json:"context_tokens"`
+	ContextBudget    int   `json:"context_budget"`
+}
+
+// headlessMetrics converts the engine's turn summary to the protocol shape.
+func headlessMetrics(m *agent.TurnMetrics) *headlessTurnMetrics {
+	if m == nil {
+		return nil
+	}
+	return &headlessTurnMetrics{
+		PromptTokens:     m.PromptTokens,
+		CompletionTokens: m.CompletionTokens,
+		ToolCalls:        m.ToolCalls,
+		ElapsedMS:        m.Elapsed.Milliseconds(),
+		Retries:          m.Retries,
+		ProviderReported: m.ProviderReported,
+		ContextTokens:    m.ContextTokens,
+		ContextBudget:    m.ContextBudget,
+	}
 }
 
 // headlessToolResult keeps text and is_error unconditional, so a driver never
@@ -122,28 +155,41 @@ func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.A
 	// Observe cannot report errors, so the first write failure is stashed and
 	// surfaced after the turn; events arrive on one goroutine, so no lock.
 	var writeErr error
+	// lastTurn holds the metrics from the turn that just ended, so turn_done
+	// can carry them. Captured before the write-error guard: a broken write
+	// must not leave a turn_done without its summary.
+	var lastTurn *headlessTurnMetrics
 	loop.Observe = func(ev agent.LoopEvent) {
-		if writeErr != nil {
-			return
-		}
 		switch ev.Kind {
 		case agent.EventDelta:
-			writeErr = w.write(headlessRecord{Type: "delta", Text: ev.Text})
+			if writeErr == nil {
+				writeErr = w.write(headlessRecord{Type: "delta", Text: ev.Text})
+			}
 		case agent.EventNotice:
-			writeErr = w.write(headlessRecord{Type: "notice", Text: ev.Text})
+			if writeErr == nil {
+				writeErr = w.write(headlessRecord{Type: "notice", Text: ev.Text})
+			}
 		case agent.EventToolStart:
 			var args json.RawMessage
 			if len(ev.Args) > 0 && json.Valid([]byte(ev.Args)) {
 				args = json.RawMessage(ev.Args)
 			}
-			writeErr = w.write(headlessRecord{Type: "tool_start", Tool: ev.Tool, Args: args})
+			if writeErr == nil {
+				writeErr = w.write(headlessRecord{Type: "tool_start", Tool: ev.Tool, Args: args})
+			}
 		case agent.EventToolResult:
-			writeErr = w.toolResult(ev.Tool, ev.Text, ev.IsError)
+			if writeErr == nil {
+				writeErr = w.toolResult(ev.Tool, ev.Text, ev.IsError)
+			}
 		case agent.EventError:
-			writeErr = w.write(headlessRecord{Type: "error", Text: ev.Text})
+			if writeErr == nil {
+				writeErr = w.write(headlessRecord{Type: "error", Text: ev.Text})
+			}
+		case agent.EventTurnEnd:
+			lastTurn = headlessMetrics(ev.Metrics)
 		}
-		// EventExit and EventTurnEnd have no protocol record: exit is answered
-		// by the request stream, and each turn is closed by turn_done.
+		// EventTurnStart and EventExit have no protocol record: a turn is
+		// opened implicitly by its first record and closed by turn_done.
 	}
 
 	// Rebuild the system prompt for this workspace, exactly as the plain loop does.
@@ -170,9 +216,10 @@ func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.A
 
 		switch msg.Type {
 		case "user":
+			lastTurn = nil
 			if err := loop.RunTurn(ctx, msg.Text); err != nil {
 				if agent.IsExitRequest(err) {
-					_ = w.write(headlessRecord{Type: "turn_done"})
+					_ = w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn})
 					return nil
 				}
 				_ = w.write(headlessRecord{Type: "error", Text: err.Error()})
@@ -181,7 +228,7 @@ func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.A
 			if writeErr != nil {
 				return writeErr
 			}
-			if err := w.write(headlessRecord{Type: "turn_done"}); err != nil {
+			if err := w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn}); err != nil {
 				return err
 			}
 		case "exit":

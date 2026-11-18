@@ -23,28 +23,33 @@ type Config struct {
 
 // ProviderConfig specifies provider settings.
 type ProviderConfig struct {
-	Default    string                   `toml:"default"`
-	Ollama     OllamaConfig             `toml:"ollama"`
-	OmniRoute  GatewayConfig            `toml:"omniroute"`
-	OpenAI     GatewayConfig            `toml:"openai"`
-	Gemini     GatewayConfig            `toml:"gemini"`
-	Groq       GatewayConfig            `toml:"groq"`
-	OpenRouter GatewayConfig            `toml:"openrouter"`
-	Anthropic  GatewayConfig            `toml:"anthropic"`
-	Qwen       GatewayConfig            `toml:"qwen"`
-	Kimi       GatewayConfig            `toml:"kimi"`
-	Hermes     GatewayConfig            `toml:"hermes"`
-	XAI        GatewayConfig            `toml:"xai"`
-	Mistral    GatewayConfig            `toml:"mistral"`
-	MiniMax    GatewayConfig            `toml:"minimax"`
-	DeepSeek   GatewayConfig            `toml:"deepseek"`
-	Together   GatewayConfig            `toml:"together"`
-	Fireworks  GatewayConfig            `toml:"fireworks"`
-	Cerebras   GatewayConfig            `toml:"cerebras"`
-	Zhipu      GatewayConfig            `toml:"zhipu"`
-	Nvidia     GatewayConfig            `toml:"nvidia"`
-	Copilot    CopilotConfig            `toml:"copilot"`
-	Custom     map[string]GatewayConfig `toml:"custom"`
+	Default string `toml:"default"`
+	// StreamUsage asks OpenAI-compatible gateways to report token usage on the
+	// final stream chunk (stream_options.include_usage). Parsing usage is
+	// always on; this only makes providers that hide it by default send it.
+	// Off by default because some gateways reject unknown request fields.
+	StreamUsage bool                     `toml:"stream_usage"`
+	Ollama      OllamaConfig             `toml:"ollama"`
+	OmniRoute   GatewayConfig            `toml:"omniroute"`
+	OpenAI      GatewayConfig            `toml:"openai"`
+	Gemini      GatewayConfig            `toml:"gemini"`
+	Groq        GatewayConfig            `toml:"groq"`
+	OpenRouter  GatewayConfig            `toml:"openrouter"`
+	Anthropic   GatewayConfig            `toml:"anthropic"`
+	Qwen        GatewayConfig            `toml:"qwen"`
+	Kimi        GatewayConfig            `toml:"kimi"`
+	Hermes      GatewayConfig            `toml:"hermes"`
+	XAI         GatewayConfig            `toml:"xai"`
+	Mistral     GatewayConfig            `toml:"mistral"`
+	MiniMax     GatewayConfig            `toml:"minimax"`
+	DeepSeek    GatewayConfig            `toml:"deepseek"`
+	Together    GatewayConfig            `toml:"together"`
+	Fireworks   GatewayConfig            `toml:"fireworks"`
+	Cerebras    GatewayConfig            `toml:"cerebras"`
+	Zhipu       GatewayConfig            `toml:"zhipu"`
+	Nvidia      GatewayConfig            `toml:"nvidia"`
+	Copilot     CopilotConfig            `toml:"copilot"`
+	Custom      map[string]GatewayConfig `toml:"custom"`
 }
 
 // CopilotConfig configures GitHub Copilot.
@@ -137,6 +142,8 @@ func DefaultConfig() Config {
 	return Config{
 		Provider: ProviderConfig{
 			Default: "ollama",
+			// Opt-in: parsing usage is always on, requesting it is not.
+			StreamUsage: false,
 			Ollama: OllamaConfig{
 				Host:         "http://127.0.0.1:11434",
 				DefaultModel: "",

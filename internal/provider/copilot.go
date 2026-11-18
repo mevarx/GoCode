@@ -559,6 +559,17 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 			return
 		}
 
+		// Usage can arrive alone (the standard final chunk) or alongside the
+		// last choice. Missing usage is normal: never fail a stream over it.
+		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+			if !emitChunk(ctx, ch, StreamChunk{Usage: &Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+			}}) {
+				return
+			}
+		}
+
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				if !emitChunk(ctx, ch, StreamChunk{Delta: choice.Delta.Content}) {

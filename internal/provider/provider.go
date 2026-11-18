@@ -20,6 +20,14 @@ type ToolCall struct {
 	Args json.RawMessage `json:"args"`
 }
 
+// Usage reports the token counts a provider attributes to one request. It is
+// advisory: a provider that reports nothing leaves StreamChunk.Usage nil, and a
+// provider that reports only one side leaves the other at zero.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+}
+
 type StreamChunk struct {
 	Delta string
 	// Reasoning streams separately and is replayed next turn; MiniMax/DeepSeek require the full chain.
@@ -29,6 +37,10 @@ type StreamChunk struct {
 	Err       error
 	// FinishReason is the provider stop reason; empty if unreported. "length"/"max_tokens" means truncated.
 	FinishReason string
+	// Usage, when non-nil, carries provider-reported token counts. Parsing is
+	// always on; a provider that never reports usage leaves it nil and the
+	// agent loop falls back to its local estimate.
+	Usage *Usage
 }
 
 type ToolSpec struct {

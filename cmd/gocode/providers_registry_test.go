@@ -2,7 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -161,5 +166,49 @@ func TestProviderListIncludesEveryRegisteredProvider(t *testing.T) {
 	// The default provider must be discoverable without reading config.toml.
 	if cfg := config.DefaultConfig(); !strings.Contains(out, cfg.Provider.Default) {
 		t.Errorf("the default provider %q is not listed", cfg.Provider.Default)
+	}
+}
+
+// The [provider] stream_usage switch must reach the wire: enabled adds
+// stream_options.include_usage to a gateway request, disabled adds nothing.
+func TestStreamUsageWiringReachesTheRequest(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			bodies := make(chan map[string]any, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("request body is not JSON: %v", err)
+				}
+				bodies <- body
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintln(w, `data: [DONE]`)
+			}))
+			defer srv.Close()
+
+			registry := provider.NewRegistry()
+			registry.Register(provider.NewGatewayProxyProvider("gw", config.GatewayConfig{BaseURL: srv.URL}))
+			applyStreamUsage(registry, enabled)
+
+			ch, err := registry.Get("gw").Stream(context.Background(), "m",
+				[]provider.Message{{Role: "user", Content: "hi"}}, nil)
+			if err != nil {
+				t.Fatalf("stream error: %v", err)
+			}
+			for range ch {
+			}
+
+			body := <-bodies
+			opts, present := body["stream_options"]
+			if present != enabled {
+				t.Fatalf("stream_options present = %v, want %v (%#v)", present, enabled, opts)
+			}
+			if enabled {
+				obj, ok := opts.(map[string]any)
+				if !ok || obj["include_usage"] != true {
+					t.Errorf("include_usage not requested: %#v", opts)
+				}
+			}
+		})
 	}
 }

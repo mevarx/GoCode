@@ -18,6 +18,11 @@ type ContextManager struct {
 	// ConfiguredMaxTokens is the budget the caller asked for. Zero means the
 	// budget is resolved from the active model's context window each round.
 	ConfiguredMaxTokens int
+	// ProviderReportedContext is the last provider-reported prompt+completion
+	// token count. A local estimate can undercount the same window (framing,
+	// tokenizer differences, provider-side rewriting), so accounting uses the
+	// larger of the two; see EffectiveTokens.
+	ProviderReportedContext int
 	// Compactions counts every compacted history, so a turn's metrics can
 	// report the delta without threading a counter through commands.
 	Compactions atomic.Int64
@@ -72,6 +77,34 @@ func (cm *ContextManager) ResolveBudget(reg *provider.Registry, model string) in
 	}
 	cm.MaxTokens = budget
 	return budget
+}
+
+// ObserveProviderUsage records the provider's own token count for the request
+// it just answered. Non-positive counts are ignored: many providers omit usage,
+// and keeping the previous observation beats replacing it with a wrong zero.
+func (cm *ContextManager) ObserveProviderUsage(promptTokens, completionTokens int) {
+	if cm == nil {
+		return
+	}
+	total := promptTokens + completionTokens
+	if total <= 0 {
+		return
+	}
+	cm.ProviderReportedContext = total
+}
+
+// EffectiveTokens returns the effective context size for a local estimate: the
+// larger of that estimate and the last provider report. Provider-side
+// compression can make a window look smaller than it is; taking the maximum
+// means growth cannot hide behind it.
+func (cm *ContextManager) EffectiveTokens(local int) int {
+	if cm == nil {
+		return local
+	}
+	if cm.ProviderReportedContext > local {
+		return cm.ProviderReportedContext
+	}
+	return local
 }
 
 // estimateTextTokens approximates the token count of text without a tokenizer.
@@ -407,7 +440,24 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 	}
 
 	// Pairing is a wire requirement, so repair even when the budget already fits.
-	if cm.estimateHistoryTokens(history) <= cm.MaxTokens {
+	local := cm.estimateHistoryTokens(history)
+	budget := cm.MaxTokens
+	if effective := cm.EffectiveTokens(local); effective > budget && local > 0 {
+		// The provider counted more tokens than the estimate for the same
+		// window, so the estimate understates what will be billed. Scale the
+		// trimming target by the observed ratio: dropping local tokens worth
+		// budget/effective of themselves brings the provider's count down to
+		// the budget. A floor keeps one wild report from emptying the window.
+		scaled := int(float64(local) * float64(budget) / float64(effective))
+		if floor := budget / 4; scaled < floor {
+			scaled = floor
+		}
+		if scaled < 1 {
+			scaled = 1
+		}
+		budget = scaled
+	}
+	if local <= budget {
 		return EnsureToolPairing(history)
 	}
 
@@ -437,7 +487,7 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		for _, t := range turns {
 			totalTokens += t.Tokens(cm)
 		}
-		if totalTokens <= cm.MaxTokens {
+		if totalTokens <= budget {
 			break
 		}
 		turns = turns[1:]
@@ -473,6 +523,9 @@ func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int)
 	}
 
 	cm.Compactions.Add(1)
+	// The window just shrank; the last provider report describes content that
+	// is no longer in it, so it must not keep scaling the trimming target.
+	cm.ProviderReportedContext = 0
 
 	omittedTurns := len(turns) - keepLastTurns
 	omittedMsgCount := 0
@@ -580,6 +633,9 @@ func (cm *ContextManager) CompactWithSummary(ctx context.Context, p provider.Pro
 	}
 
 	cm.Compactions.Add(1)
+	// The window just shrank; the last provider report describes content that
+	// is no longer in it.
+	cm.ProviderReportedContext = 0
 
 	result := make([]provider.Message, 0, len(history))
 	if systemMsg != nil {
@@ -656,7 +712,9 @@ func boundCompactionTranscript(transcript string) string {
 
 // FormatContextStats returns a formatted status string of token usage.
 func (cm *ContextManager) FormatContextStats(history []provider.Message) string {
-	tokens := cm.estimateHistoryTokens(history)
+	// Effective, not raw: the provider's own count supersedes the estimate
+	// when it is larger, so the user sees the window the model actually has.
+	tokens := cm.EffectiveTokens(cm.estimateHistoryTokens(history))
 	pct := float64(tokens) / float64(cm.MaxTokens) * 100.0
 	return fmt.Sprintf("Context: %d / %d tokens (%.1f%%) | %d messages",
 		tokens, cm.MaxTokens, pct, len(history))
