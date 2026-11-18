@@ -525,3 +525,73 @@ func TestConfig_StreamUsageKey(t *testing.T) {
 		t.Error("stream_usage did not round-trip")
 	}
 }
+
+func TestConfig_ContextAutoCompactDefaultsAndRoundTrip(t *testing.T) {
+	def := DefaultConfig()
+	if !def.Context.AutoCompact {
+		t.Error("default auto_compact must be true")
+	}
+	if def.Context.KeepRecentTokens != 20000 {
+		t.Errorf("default keep_recent_tokens = %d, want 20000", def.Context.KeepRecentTokens)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[context]\nauto_compact = false\nkeep_recent_tokens = 12345\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.Context.AutoCompact {
+		t.Error("auto_compact = false was not applied")
+	}
+	if loaded.Context.KeepRecentTokens != 12345 {
+		t.Errorf("keep_recent_tokens = %d, want 12345", loaded.Context.KeepRecentTokens)
+	}
+
+	// Both keys are contracts, so they must survive a write as well.
+	outFile := filepath.Join(t.TempDir(), "roundtrip.toml")
+	if err := SaveToPath(loaded, outFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	again, err := LoadFromPath(outFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if again.Context.AutoCompact {
+		t.Error("auto_compact did not round-trip")
+	}
+	if again.Context.KeepRecentTokens != 12345 {
+		t.Errorf("keep_recent_tokens did not round-trip: %d", again.Context.KeepRecentTokens)
+	}
+}
+
+func TestConfig_ContextDefaultsSurviveUnrelatedFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\ndefault = \"openai\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !loaded.Context.AutoCompact || loaded.Context.KeepRecentTokens != 20000 {
+		t.Fatalf("context defaults lost: %+v", loaded.Context)
+	}
+}
+
+func TestConfig_ContextUnknownKeyRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[context]\nauto_compct = true\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("misspelled [context] key must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown keys") || !strings.Contains(err.Error(), "auto_compct") {
+		t.Fatalf("error does not name the unknown key: %v", err)
+	}
+}

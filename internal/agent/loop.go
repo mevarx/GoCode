@@ -296,13 +296,24 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 		// next request instead of at startup only.
 		a.ContextManager.ResolveBudget(a.Registry, model)
 
+		// Pre-request maintenance: automatic compaction runs before Truncate,
+		// which stays the last resort and now reports what it dropped.
+		a.autoCompactNow(ctx, false)
+
 		// Truncation happens here, once, for every UI.
-		history := a.ContextManager.Truncate(a.Session.History())
+		history, droppedTurns := a.ContextManager.TruncateReport(a.Session.History())
+		if droppedTurns > 0 && !m.truncationNoticed {
+			m.truncationNoticed = true
+			a.emit(LoopEvent{
+				Kind: EventNotice,
+				Text: fmt.Sprintf("[Context limit: %d earlier turns were dropped without summarization.]", droppedTurns),
+			})
+		}
 		m.addPromptTokens(history)
 
-		ch, err := p.Stream(ctx, model, history, providerToolSpecs)
+		ch, err := a.openStream(ctx, p, model, providerToolSpecs, history, m)
 		if err != nil {
-			return fmt.Errorf("stream error: %w", err)
+			return err
 		}
 
 		var fullResponse strings.Builder
@@ -391,6 +402,9 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 					Text: fmt.Sprintf("[Warning: the provider stopped at the token limit (finish_reason %q); the answer may be incomplete.]", finishReason),
 				})
 			}
+			// Post-turn maintenance: keep the window inside the compaction
+			// threshold before the next user message arrives.
+			a.autoCompactNow(ctx, false)
 			return nil
 		}
 

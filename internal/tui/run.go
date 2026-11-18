@@ -25,6 +25,8 @@ func Run(
 	workspaceRoot string,
 	guardCfg agent.LoopGuardConfig,
 	maxContextTokens int,
+	autoCompact bool,
+	keepRecentTokens int,
 	plan *tools.PlanStore,
 	scratchpad *tools.ScratchpadStore,
 	verifyCommand string,
@@ -37,6 +39,8 @@ func Run(
 	engine.WorkspaceRoot = workspaceRoot
 	engine.GuardConfig = guardCfg
 	engine.ContextManager = agent.NewContextManager(maxContextTokens)
+	engine.ContextManager.AutoCompact = autoCompact
+	engine.ContextManager.KeepRecentTokens = keepRecentTokens
 	engine.Plan = plan
 	engine.Scratchpad = scratchpad
 	engine.VerifyCommand = verifyCommand

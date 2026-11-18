@@ -23,6 +23,14 @@ type ContextManager struct {
 	// tokenizer differences, provider-side rewriting), so accounting uses the
 	// larger of the two; see EffectiveTokens.
 	ProviderReportedContext int
+	// AutoCompact enables automatic compaction when the effective context
+	// crosses AutoCompactThreshold. The zero value is off so tests and older
+	// callers keep explicit-only behavior; the application wires it from
+	// [context] auto_compact (on by default).
+	AutoCompact bool
+	// KeepRecentTokens is the approximate verbatim tail automatic compaction
+	// preserves. Zero or negative means DefaultKeepRecentTokens.
+	KeepRecentTokens int
 	// Compactions counts every compacted history, so a turn's metrics can
 	// report the delta without threading a counter through commands.
 	Compactions atomic.Int64
@@ -435,8 +443,16 @@ func trimHistory(messages []provider.Message, keepTurns int) []provider.Message 
 // It always returns history satisfying EnsureToolPairing's invariant: resumed
 // transcripts and compaction can leave orphaned calls or results behind.
 func (cm *ContextManager) Truncate(history []provider.Message) []provider.Message {
+	out, _ := cm.TruncateReport(history)
+	return out
+}
+
+// TruncateReport is Truncate plus the number of whole turns it dropped, so the
+// agent loop can report a silent last-resort drop instead of hiding it. A
+// history that already fits reports zero.
+func (cm *ContextManager) TruncateReport(history []provider.Message) ([]provider.Message, int) {
 	if len(history) == 0 {
-		return history
+		return history, 0
 	}
 
 	// Pairing is a wire requirement, so repair even when the budget already fits.
@@ -458,23 +474,23 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		budget = scaled
 	}
 	if local <= budget {
-		return EnsureToolPairing(history)
+		return EnsureToolPairing(history), 0
 	}
 
 	systemMsg, nonSystem := splitSystemMessages(history)
 	if len(nonSystem) == 0 {
 		if systemMsg != nil {
-			return []provider.Message{*systemMsg}
+			return []provider.Message{*systemMsg}, 0
 		}
-		return nil
+		return nil, 0
 	}
 
 	turns := groupIntoTurns(nonSystem)
 	if len(turns) == 0 {
 		if systemMsg != nil {
-			return []provider.Message{*systemMsg}
+			return []provider.Message{*systemMsg}, 0
 		}
-		return nil
+		return nil, 0
 	}
 
 	sysTokens := 0
@@ -482,6 +498,7 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		sysTokens = cm.EstimateTokens(*systemMsg)
 	}
 
+	originalTurns := len(turns)
 	for len(turns) > 1 {
 		totalTokens := sysTokens
 		for _, t := range turns {
@@ -501,7 +518,7 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		result = append(result, t.Messages...)
 	}
 
-	return EnsureToolPairing(result)
+	return EnsureToolPairing(result), originalTurns - len(turns)
 }
 
 // Compact retains the system prompt, a summary of omitted turns, and the last N turns.

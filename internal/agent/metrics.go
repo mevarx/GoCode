@@ -79,6 +79,10 @@ type turnMetrics struct {
 
 	truncations int
 
+	// truncationNoticed suppresses repeat last-resort truncation notices
+	// within one turn: every round re-truncates the same unchanged session.
+	truncationNoticed bool
+
 	// slashCommand marks a turn that ran a command instead of a model call,
 	// so zero token counts read as expected rather than as a bug.
 	slashCommand bool

@@ -450,6 +450,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	loop.WorkspaceRoot = workspaceRoot
 	loop.GuardConfig = guardCfg
 	loop.ContextManager = agent.NewContextManager(cfg.Tools.MaxContextTokens)
+	loop.ContextManager.AutoCompact = cfg.Context.AutoCompact
+	loop.ContextManager.KeepRecentTokens = cfg.Context.KeepRecentTokens
 	loop.Plan = planStore
 	loop.Scratchpad = scratchpadStore
 	loop.VerifyCommand = verifyCommand
@@ -462,7 +464,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout)
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, cfg.Context.AutoCompact, cfg.Context.KeepRecentTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout)
 	}
 
 	return loop.Run(ctx)

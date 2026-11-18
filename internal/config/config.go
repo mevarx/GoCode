@@ -18,7 +18,19 @@ type Config struct {
 	Permissions PermissionsConfig `toml:"permissions"`
 	Session     SessionConfig     `toml:"session"`
 	Tools       ToolsConfig       `toml:"tools"`
+	Context     ContextConfig     `toml:"context"`
 	MCP         MCPConfig         `toml:"mcp"`
+}
+
+// ContextConfig specifies automatic context management.
+type ContextConfig struct {
+	// AutoCompact summarizes older turns before the provider window overflows.
+	// Truncation remains the last resort. On by default.
+	AutoCompact bool `toml:"auto_compact"`
+	// KeepRecentTokens is the approximate verbatim tail automatic compaction
+	// preserves. Zero or negative uses the built-in default of 20000; it does
+	// not affect manual /compact, which stays at two turns.
+	KeepRecentTokens int `toml:"keep_recent_tokens"`
 }
 
 // ProviderConfig specifies provider settings.
@@ -253,6 +265,12 @@ func DefaultConfig() Config {
 		},
 		Session: SessionConfig{
 			Persist: true,
+		},
+		Context: ContextConfig{
+			AutoCompact: true,
+			// Mirrors agent.DefaultKeepRecentTokens; config cannot import the
+			// agent package without a cycle, so the value is repeated here.
+			KeepRecentTokens: 20000,
 		},
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
