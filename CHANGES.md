@@ -1,5 +1,9 @@
 # GoCode Changelog
 
+### Unreleased
+
+- **omp Reverse-Engineering Research** — added `docs/omp-reverse-engineering.md`, a source-cited synthesis of oh-my-pi's harness, TUI/animations, and command surface (analyzed at commit `840cc4b`), with the three detailed evidence audits under `docs/research/`. This is the design reference for the GoCode harness/TUI upgrade plan.
+
 ### v0.7.4 — 2026-11-13
 
 A security- and harness-focused release: approval previews now use a real diff engine, model/tool text is sanitized before rendering, secrets are scrubbed from child process environments and transcripts, session storage is owner-only and workspace-scoped, and the agent gains context compaction, parallel read-only tools, session-scoped approval grants, a plan tool, auto-verification, per-turn metrics, headless mode, and an eval suite. Full notes: `docs/releases/v0.7.4.md`.
