@@ -393,3 +393,65 @@ func TestAnthropicStream_SendsRequiredHeaders(t *testing.T) {
 		t.Error("expected anthropic-version header to be set")
 	}
 }
+
+// Anthropic announces the call at content_block_start and streams argument
+// fragments as input_json_delta; both must surface as deltas while the
+// content_block_stop flush stays complete.
+func TestAnthropicStream_ToolUseEmitsDeltas(t *testing.T) {
+	srv := newAnthropicTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+
+		fmt.Fprint(w, sseLine(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"file_read"}}`))
+		for _, part := range []string{`{"path":"vic`, `tim.tx`, `t"}`} {
+			payload, _ := json.Marshal(map[string]any{
+				"type":  "content_block_delta",
+				"index": 1,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": part},
+			})
+			fmt.Fprint(w, sseLine(string(payload)))
+			flusher.Flush()
+		}
+		fmt.Fprint(w, sseLine(`{"type":"content_block_stop","index":1}`))
+		fmt.Fprint(w, sseLine(`{"type":"message_stop"}`))
+		flusher.Flush()
+	})
+
+	p := anthropicProviderFor(srv.URL)
+	ch, err := p.Stream(context.Background(), "claude-test", []Message{{Role: "user", Content: "read it"}}, nil)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	var deltas []ToolCallDelta
+	var calls []ToolCall
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error: %v", chunk.Err)
+		}
+		if chunk.ToolCallDelta != nil {
+			deltas = append(deltas, *chunk.ToolCallDelta)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+
+	if len(deltas) != 4 {
+		t.Fatalf("expected start + 3 fragment deltas, got %d: %+v", len(deltas), deltas)
+	}
+	if deltas[0].ID != "toolu_1" || deltas[0].Name != "file_read" || deltas[0].ArgsDelta != "" {
+		t.Errorf("start delta should announce identity only: %+v", deltas[0])
+	}
+	var args strings.Builder
+	for _, d := range deltas[1:] {
+		if d.ID != "toolu_1" || d.Name != "file_read" {
+			t.Errorf("fragment delta lost identity: %+v", d)
+		}
+		args.WriteString(d.ArgsDelta)
+	}
+	if args.String() != `{"path":"victim.txt"}` {
+		t.Errorf("accumulated deltas = %q", args.String())
+	}
+	if len(calls) != 1 || string(calls[0].Args) != `{"path":"victim.txt"}` {
+		t.Fatalf("complete flush changed: %+v", calls)
+	}
+}

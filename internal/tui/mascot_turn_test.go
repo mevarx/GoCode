@@ -13,7 +13,7 @@ func TestMascotSurvivesAWholeTurn(t *testing.T) {
 	const model = "hf.co/dealignai/Ornith-1.5-9B-UNCENSORED-GGUF:Q4_K_M"
 
 	m := NewModel("ollama", model, "v0.6.1", "D:/CODING/GoCode", nil,
-		make(chan string, 4), make(chan tea.Msg, 64), make(chan struct{}), nil)
+		make(chan string, 4), nil, make(chan tea.Msg, 64), make(chan struct{}), nil)
 	m = drive(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	bar := func() string { return stripANSI(m.renderStatusBar()) }
@@ -64,7 +64,7 @@ func TestMascotSurvivesAWholeTurn(t *testing.T) {
 // Drive real frames and count distinct spring positions.
 func TestMascotActuallyMovesWhileWorking(t *testing.T) {
 	m := NewModel("ollama", "llama3", "v0.6.1", "D:/CODING/GoCode", nil,
-		make(chan string, 4), make(chan tea.Msg, 64), make(chan struct{}), nil)
+		make(chan string, 4), nil, make(chan tea.Msg, 64), make(chan struct{}), nil)
 	m = drive(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.textarea.SetValue("go")
 	m = drive(m, tea.KeyPressMsg{Code: tea.KeyEnter})

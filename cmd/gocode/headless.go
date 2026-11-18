@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/tools"
@@ -111,7 +113,9 @@ type headlessToolResult struct {
 }
 
 type headlessWriter struct {
+	mu  sync.Mutex
 	enc *json.Encoder
+	err error
 }
 
 func newHeadlessWriter(out io.Writer) *headlessWriter {
@@ -122,19 +126,66 @@ func newHeadlessWriter(out io.Writer) *headlessWriter {
 	return &headlessWriter{enc: enc}
 }
 
+// encode serialises one record. A turn runs on its own goroutine while the
+// reader keeps accepting steering, so every write is serialised; the first
+// failure is sticky and surfaced once the turn ends.
+func (w *headlessWriter) encode(rec any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return w.err
+	}
+	if err := w.enc.Encode(rec); err != nil {
+		w.err = err
+		return err
+	}
+	return nil
+}
+
 func (w *headlessWriter) write(rec headlessRecord) error {
-	return w.enc.Encode(rec)
+	return w.encode(rec)
 }
 
 // protocolToolResult records whether the tool failed, so a driver never has to
 // parse the result text.
 func (w *headlessWriter) toolResult(tool, text string, isError bool) error {
-	return w.enc.Encode(headlessToolResult{Type: "tool_result", Tool: tool, Text: text, IsError: isError})
+	return w.encode(headlessToolResult{Type: "tool_result", Tool: tool, Text: text, IsError: isError})
+}
+
+// failed reports the first write error, if any.
+func (w *headlessWriter) failed() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+// headlessToolDelta is the additive tool_delta frame: args_so_far is the
+// accumulated, sanitized argument preview, never a partial JSON value a driver
+// should execute. Drivers that ignore it keep working.
+type headlessToolDelta struct {
+	Type       string `json:"type"`
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	ArgsSoFar  string `json:"args_so_far"`
+}
+
+// Steering refusals are notices, not errors: an idle steer is a no-op, not a
+// protocol violation.
+const headlessSteerIdleNotice = "[Steering not applied: no turn is running.]"
+
+// headlessTurnResult reports how a background turn ended.
+type headlessTurnResult struct {
+	exit bool
+	err  error
 }
 
 // runHeadless drives one AgentLoop over a JSONL protocol: requests on in,
 // records on out. It never writes human text to out, so stdout carries only
 // protocol. Returning an error makes the process exit non-zero.
+//
+// A user record starts its turn on a goroutine so the reader stays free to
+// accept steer records while the model is streaming; turn_done still closes
+// every turn exactly once.
 func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.AgentLoop) error {
 	if loop == nil {
 		return errors.New("headless mode requires an agent loop")
@@ -152,39 +203,33 @@ func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.A
 	}
 	loop.AskApproval = func(string) bool { return false }
 
-	// Observe cannot report errors, so the first write failure is stashed and
-	// surfaced after the turn; events arrive on one goroutine, so no lock.
-	var writeErr error
 	// lastTurn holds the metrics from the turn that just ended, so turn_done
-	// can carry them. Captured before the write-error guard: a broken write
-	// must not leave a turn_done without its summary.
+	// can carry them. Observe and the turn-completion write run on the turn
+	// goroutine, so this needs no lock.
 	var lastTurn *headlessTurnMetrics
 	loop.Observe = func(ev agent.LoopEvent) {
 		switch ev.Kind {
 		case agent.EventDelta:
-			if writeErr == nil {
-				writeErr = w.write(headlessRecord{Type: "delta", Text: ev.Text})
-			}
+			_ = w.write(headlessRecord{Type: "delta", Text: ev.Text})
 		case agent.EventNotice:
-			if writeErr == nil {
-				writeErr = w.write(headlessRecord{Type: "notice", Text: ev.Text})
-			}
+			_ = w.write(headlessRecord{Type: "notice", Text: ev.Text})
 		case agent.EventToolStart:
 			var args json.RawMessage
 			if len(ev.Args) > 0 && json.Valid([]byte(ev.Args)) {
 				args = json.RawMessage(ev.Args)
 			}
-			if writeErr == nil {
-				writeErr = w.write(headlessRecord{Type: "tool_start", Tool: ev.Tool, Args: args})
-			}
+			_ = w.write(headlessRecord{Type: "tool_start", Tool: ev.Tool, Args: args})
+		case agent.EventToolDelta:
+			_ = w.encode(headlessToolDelta{
+				Type:       "tool_delta",
+				ToolCallID: ev.ToolCallID,
+				Name:       ev.Tool,
+				ArgsSoFar:  ev.Args,
+			})
 		case agent.EventToolResult:
-			if writeErr == nil {
-				writeErr = w.toolResult(ev.Tool, ev.Text, ev.IsError)
-			}
+			_ = w.toolResult(ev.Tool, ev.Text, ev.IsError)
 		case agent.EventError:
-			if writeErr == nil {
-				writeErr = w.write(headlessRecord{Type: "error", Text: ev.Text})
-			}
+			_ = w.write(headlessRecord{Type: "error", Text: ev.Text})
 		case agent.EventTurnEnd:
 			lastTurn = headlessMetrics(ev.Metrics)
 		}
@@ -198,53 +243,166 @@ func runHeadless(ctx context.Context, in io.Reader, out io.Writer, loop *agent.A
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxHeadlessLine)
 
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
+	lines := make(chan []byte)
+	scanErr := make(chan error, 1)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case lines <- line:
+			case <-stop:
+				return
+			}
 		}
+		scanErr <- scanner.Err()
+		close(lines)
+	}()
 
-		var msg struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(line, &msg); err != nil {
-			text := fmt.Sprintf("invalid input: %v", err)
-			_ = w.write(headlessRecord{Type: "error", Text: text})
-			return errors.New(text)
-		}
+	// results is non-nil exactly while a turn goroutine is running. A nil
+	// channel disables its select case.
+	var results chan headlessTurnResult
+	// pending holds user records that arrived while a turn was running; they
+	// run in order after it, preserving piped-input semantics.
+	var pending []string
 
-		switch msg.Type {
-		case "user":
-			lastTurn = nil
-			if err := loop.RunTurn(ctx, msg.Text); err != nil {
-				if agent.IsExitRequest(err) {
-					_ = w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn})
-					return nil
-				}
+	startTurn := func(text string) {
+		lastTurn = nil
+		resCh := make(chan headlessTurnResult, 1)
+		results = resCh
+		go func() {
+			err := loop.RunTurn(ctx, text)
+			switch {
+			case err == nil:
+				_ = w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn})
+				resCh <- headlessTurnResult{}
+			case agent.IsExitRequest(err):
+				_ = w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn})
+				resCh <- headlessTurnResult{exit: true}
+			default:
 				_ = w.write(headlessRecord{Type: "error", Text: err.Error()})
-				return err
+				resCh <- headlessTurnResult{err: err}
 			}
-			if writeErr != nil {
-				return writeErr
-			}
-			if err := w.write(headlessRecord{Type: "turn_done", Metrics: lastTurn}); err != nil {
-				return err
-			}
-		case "exit":
-			return nil
-		default:
-			text := fmt.Sprintf("unknown input type %q", msg.Type)
-			_ = w.write(headlessRecord{Type: "error", Text: text})
-			return errors.New(text)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		text := fmt.Sprintf("failed to read input: %v", err)
-		_ = w.write(headlessRecord{Type: "error", Text: text})
-		return errors.New(text)
+		}()
 	}
 
-	// EOF is a clean shutdown, like exit.
-	return nil
+	// handleResult consumes one finished turn and starts the next queued one.
+	// It reports an exit request or the first failure.
+	handleResult := func(res headlessTurnResult) (bool, error) {
+		results = nil
+		if res.err != nil {
+			return false, res.err
+		}
+		if err := w.failed(); err != nil {
+			return false, err
+		}
+		if res.exit {
+			return true, nil
+		}
+		if len(pending) > 0 {
+			text := pending[0]
+			pending = pending[1:]
+			startTurn(text)
+		}
+		return false, nil
+	}
+
+	advance := func() (bool, error) {
+		return handleResult(<-results)
+	}
+
+	// finishTurns drains the running turn and everything queued behind it.
+	finishTurns := func() error {
+		for results != nil {
+			exit, err := advance()
+			if err != nil {
+				return err
+			}
+			if exit {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	for {
+		select {
+		case raw, ok := <-lines:
+			if !ok {
+				// EOF is a clean shutdown like exit, but a running turn must
+				// finish first so its records are not truncated.
+				if err := finishTurns(); err != nil {
+					return err
+				}
+				if err := <-scanErr; err != nil {
+					text := fmt.Sprintf("failed to read input: %v", err)
+					_ = w.write(headlessRecord{Type: "error", Text: text})
+					return errors.New(text)
+				}
+				return nil
+			}
+
+			line := bytes.TrimSpace(raw)
+			if len(line) == 0 {
+				continue
+			}
+
+			var msg struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(line, &msg); err != nil {
+				text := fmt.Sprintf("invalid input: %v", err)
+				_ = w.write(headlessRecord{Type: "error", Text: text})
+				return errors.New(text)
+			}
+
+			switch msg.Type {
+			case "user":
+				// A turn may have completed while this line was in flight;
+				// consume that result first so the next turn starts cleanly.
+				select {
+				case res := <-results:
+					exit, err := handleResult(res)
+					if err != nil {
+						return err
+					}
+					if exit {
+						return nil
+					}
+				default:
+				}
+				if results != nil {
+					pending = append(pending, msg.Text)
+					continue
+				}
+				startTurn(msg.Text)
+
+			case "steer":
+				if strings.TrimSpace(msg.Text) == "" {
+					continue
+				}
+				if !loop.Steer(msg.Text) {
+					_ = w.write(headlessRecord{Type: "notice", Text: headlessSteerIdleNotice})
+				}
+
+			case "exit":
+				if err := finishTurns(); err != nil {
+					return err
+				}
+				return nil
+
+			default:
+				text := fmt.Sprintf("unknown input type %q", msg.Type)
+				_ = w.write(headlessRecord{Type: "error", Text: text})
+				return errors.New(text)
+			}
+
+		case res := <-results:
+			if _, err := handleResult(res); err != nil {
+				return err
+			}
+		}
+	}
 }

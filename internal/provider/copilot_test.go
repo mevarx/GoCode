@@ -673,3 +673,90 @@ func TestBuildOpenAIMessagesReplaysReasoning(t *testing.T) {
 		t.Errorf("reasoning_content must be on the wire, got %s", encoded)
 	}
 }
+
+// Tool arguments stream as fragments before the complete flush, and the flush
+// itself stays byte-identical so existing consumers are unaffected.
+func TestStreamOpenAISEEToolCallDeltas(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"file_write","arguments":"{\"path\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a.txt\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	chunks := collectSSE(t, body)
+
+	var deltas []ToolCallDelta
+	var calls []ToolCall
+	for _, chunk := range chunks {
+		if chunk.ToolCallDelta != nil {
+			deltas = append(deltas, *chunk.ToolCallDelta)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 argument deltas, got %d: %+v", len(deltas), deltas)
+	}
+	if deltas[0].Index != 0 || deltas[0].ID != "call_1" || deltas[0].Name != "file_write" {
+		t.Errorf("first delta lost identity: %+v", deltas[0])
+	}
+	if deltas[0].ArgsDelta != `{"path":` {
+		t.Errorf("first fragment = %q, want %q", deltas[0].ArgsDelta, `{"path":`)
+	}
+	// The second fragment carries only arguments; identity must be carried
+	// forward so one card keys both fragments.
+	if deltas[1].ID != "call_1" || deltas[1].Name != "file_write" {
+		t.Errorf("second delta lost accumulated identity: %+v", deltas[1])
+	}
+	if deltas[1].ArgsDelta != `"a.txt"}` {
+		t.Errorf("second fragment = %q, want %q", deltas[1].ArgsDelta, `"a.txt"}`)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected the complete call flush, got %d calls", len(calls))
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "file_write" || string(calls[0].Args) != `{"path":"a.txt"}` {
+		t.Errorf("complete flush changed: %+v", calls[0])
+	}
+}
+
+// Some gateways send arguments before the id or name; the parser must not
+// invent an identity, and the later fragment must carry the real one.
+func TestStreamOpenAISEEToolCallDeltaLateIdentity(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_late","function":{"name":"plan","arguments":"1}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	chunks := collectSSE(t, body)
+
+	var deltas []ToolCallDelta
+	var calls []ToolCall
+	for _, chunk := range chunks {
+		if chunk.ToolCallDelta != nil {
+			deltas = append(deltas, *chunk.ToolCallDelta)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 deltas, got %d: %+v", len(deltas), deltas)
+	}
+	if deltas[0].ID != "" || deltas[0].Name != "" {
+		t.Errorf("identity was invented before the provider sent it: %+v", deltas[0])
+	}
+	if deltas[0].ArgsDelta != `{"a":` {
+		t.Errorf("first fragment = %q", deltas[0].ArgsDelta)
+	}
+	if deltas[1].ID != "call_late" || deltas[1].Name != "plan" {
+		t.Errorf("late identity not surfaced: %+v", deltas[1])
+	}
+	if len(calls) != 1 || string(calls[0].Args) != `{"a":1}` {
+		t.Fatalf("complete flush changed: %+v", calls)
+	}
+}

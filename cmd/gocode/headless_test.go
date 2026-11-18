@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -462,5 +463,176 @@ func TestRunHeadlessTurnDoneCarriesMetrics(t *testing.T) {
 	}
 	if got, ok := second["completion_tokens"].(float64); !ok || got < 1 {
 		t.Errorf("completion_tokens = %v, want a positive estimate", second["completion_tokens"])
+	}
+}
+
+// Streamed tool arguments surface as an additive tool_delta frame; the
+// complete tool_start record is unchanged.
+func TestRunHeadlessEmitsToolDeltaFrame(t *testing.T) {
+	p := &headlessScriptProvider{scripts: [][]provider.StreamChunk{{
+		{ToolCallDelta: &provider.ToolCallDelta{Index: 0, ID: "call_1", Name: "probe", ArgsDelta: `{"a":`}},
+		{ToolCallDelta: &provider.ToolCallDelta{Index: 0, ID: "call_1", Name: "probe", ArgsDelta: `1}`}},
+		{ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "probe", Args: json.RawMessage(`{"a":1}`)}}},
+		{Done: true},
+	}}}
+	tool := &headlessFakeTool{name: "probe", output: "ok"}
+	loop := newHeadlessLoop(t, p, nil, tool)
+
+	input := strings.Join([]string{
+		`{"type":"user","text":"go"}`,
+		`{"type":"exit"}`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := runHeadless(context.Background(), strings.NewReader(input), &out, loop); err != nil {
+		t.Fatalf("runHeadless returned error: %v", err)
+	}
+
+	records := decodeHeadlessRecords(t, out.String())
+	var deltas []map[string]any
+	for _, rec := range records {
+		if rec["type"] == "tool_delta" {
+			deltas = append(deltas, rec)
+		}
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 tool_delta records, got %d (%q)", len(deltas), out.String())
+	}
+	if deltas[0]["tool_call_id"] != "call_1" {
+		t.Errorf("tool_call_id = %v", deltas[0]["tool_call_id"])
+	}
+	if deltas[0]["name"] != "probe" {
+		t.Errorf("name = %v", deltas[0]["name"])
+	}
+	if deltas[0]["args_so_far"] != `{"a":` {
+		t.Errorf("first args_so_far = %v", deltas[0]["args_so_far"])
+	}
+	if deltas[1]["args_so_far"] != `{"a":1}` {
+		t.Errorf("accumulated args_so_far = %v", deltas[1]["args_so_far"])
+	}
+	if got := countRecords(records, "tool_start"); got != 1 {
+		t.Errorf("tool_start count = %d, want 1", got)
+	}
+}
+
+// A steer with no turn running is a notice, not a protocol error.
+func TestRunHeadlessSteerWithoutTurnIsNotice(t *testing.T) {
+	p := &headlessScriptProvider{}
+	loop := newHeadlessLoop(t, p, nil)
+
+	input := strings.Join([]string{
+		`{"type":"steer","text":"focus"}`,
+		`{"type":"exit"}`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := runHeadless(context.Background(), strings.NewReader(input), &out, loop); err != nil {
+		t.Fatalf("runHeadless returned error: %v", err)
+	}
+
+	records := decodeHeadlessRecords(t, out.String())
+	if got := countRecords(records, "error"); got != 0 {
+		t.Errorf("idle steer produced %d error records", got)
+	}
+	var notice string
+	for _, rec := range records {
+		if rec["type"] == "notice" {
+			notice, _ = rec["text"].(string)
+		}
+	}
+	if notice != headlessSteerIdleNotice {
+		t.Errorf("notice = %q, want %q", notice, headlessSteerIdleNotice)
+	}
+}
+
+// headlessBlockingProvider holds its first round open so a steer record can be
+// read and queued while the turn is genuinely running.
+type headlessBlockingProvider struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu        sync.Mutex
+	round     int
+	histories [][]provider.Message
+}
+
+func (p *headlessBlockingProvider) Name() string { return "headless-blocking" }
+
+func (p *headlessBlockingProvider) Models(context.Context) ([]string, error) {
+	return []string{"test-model"}, nil
+}
+
+func (p *headlessBlockingProvider) Stream(_ context.Context, _ string, history []provider.Message, _ []provider.ToolSpec) (<-chan provider.StreamChunk, error) {
+	p.mu.Lock()
+	p.round++
+	round := p.round
+	p.histories = append(p.histories, append([]provider.Message(nil), history...))
+	p.mu.Unlock()
+
+	ch := make(chan provider.StreamChunk, 4)
+	if round == 1 {
+		close(p.started)
+		<-p.release
+		ch <- provider.StreamChunk{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "probe"}}}
+	} else {
+		ch <- provider.StreamChunk{Delta: "done"}
+		ch <- provider.StreamChunk{Done: true}
+	}
+	close(ch)
+	return ch, nil
+}
+
+// A steer record accepted mid-turn is applied at the next round boundary and
+// reported as the standard notice frame.
+func TestRunHeadlessSteerAppliesMidTurn(t *testing.T) {
+	p := &headlessBlockingProvider{started: make(chan struct{}), release: make(chan struct{})}
+	tool := &headlessFakeTool{name: "probe", output: "ok"}
+	loop := newHeadlessLoop(t, p, nil, tool)
+
+	pr, pw := io.Pipe()
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		_, _ = pw.Write([]byte(`{"type":"user","text":"start"}` + "\n"))
+		<-p.started
+		_, _ = pw.Write([]byte(`{"type":"steer","text":"focus on tests"}` + "\n"))
+		close(p.release)
+		_, _ = pw.Write([]byte(`{"type":"exit"}` + "\n"))
+		_ = pw.Close()
+	}()
+
+	var out bytes.Buffer
+	if err := runHeadless(context.Background(), pr, &out, loop); err != nil {
+		t.Fatalf("runHeadless returned error: %v", err)
+	}
+	<-writerDone
+
+	records := decodeHeadlessRecords(t, out.String())
+	var steered bool
+	for _, rec := range records {
+		if rec["type"] == "notice" && rec["text"] == agent.SteeringNotice {
+			steered = true
+		}
+	}
+	if !steered {
+		t.Errorf("missing steering notice in %q", out.String())
+	}
+
+	found := false
+	for _, msg := range loop.Session.History() {
+		if msg.Role == "user" && msg.Content == "[steering] focus on tests" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("steering never reached history: %+v", loop.Session.History())
+	}
+	p.mu.Lock()
+	rounds := p.round
+	p.mu.Unlock()
+	if rounds != 2 {
+		t.Errorf("provider rounds = %d, want 2", rounds)
 	}
 }

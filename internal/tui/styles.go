@@ -137,6 +137,11 @@ var (
 	inputHintStyle = lipgloss.NewStyle().
 			Foreground(colorMutedFg).
 			Italic(true)
+
+	// Queued-steering indicator: visible but quieter than the input border.
+	steerChipStyle = lipgloss.NewStyle().
+			Foreground(colorAccent).
+			PaddingLeft(rowPadCompact)
 )
 
 // Neutral panel; danger signal lives in title/deny button only.

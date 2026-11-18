@@ -330,6 +330,15 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 						id:   event.ContentBlock.ID,
 						name: event.ContentBlock.Name,
 					}
+					// Announce the call as soon as its identity is known; the
+					// arguments stream in input_json_delta fragments.
+					if !emitChunk(ctx, ch, StreamChunk{ToolCallDelta: &ToolCallDelta{
+						Index: event.Index,
+						ID:    event.ContentBlock.ID,
+						Name:  event.ContentBlock.Name,
+					}}) {
+						return
+					}
 				}
 
 			case "content_block_delta":
@@ -348,6 +357,16 @@ func (p *AnthropicProvider) Stream(ctx context.Context, model string, history []
 				case "input_json_delta":
 					if pt, ok := pendingTools[event.Index]; ok {
 						pt.args.WriteString(delta.PartialJSON)
+						if delta.PartialJSON != "" {
+							if !emitChunk(ctx, ch, StreamChunk{ToolCallDelta: &ToolCallDelta{
+								Index:     event.Index,
+								ID:        pt.id,
+								Name:      pt.name,
+								ArgsDelta: delta.PartialJSON,
+							}}) {
+								return
+							}
+						}
 					}
 				}
 

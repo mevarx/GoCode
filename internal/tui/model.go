@@ -56,10 +56,21 @@ type agentToolMsg struct {
 	isError    bool
 	toolCallID string
 	diff       string
+	// steeringApplied marks the engine's "queued steering applied" notice so
+	// the model can clear the queued-steering chip.
+	steeringApplied bool
 }
 
 // Opens a pending card so the UI shows the call while awaiting approval.
 type agentToolStartMsg struct {
+	name       string
+	args       string
+	toolCallID string
+}
+
+// agentToolDeltaMsg carries a streamed argument fragment; the pending card is
+// upserted by toolCallID, so deltas never create duplicate cards.
+type agentToolDeltaMsg struct {
 	name       string
 	args       string
 	toolCallID string
@@ -116,6 +127,11 @@ type Model struct {
 	// Maps tool call ID to transcript index so results replace pending cards.
 	pendingTools map[string]int
 
+	// steerCh carries input typed while a turn is streaming to the engine's
+	// steering queue; queuedSteer drives the chip above the input area.
+	steerCh     chan string
+	queuedSteer int
+
 	// lastTurn is the most recent finished turn's summary, shown in the status
 	// bar; turnStarted is when the running turn began (zero when idle).
 	lastTurn    agent.TurnMetrics
@@ -124,7 +140,7 @@ type Model struct {
 	cancelRequested bool
 }
 
-func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
+func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, steerCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -147,6 +163,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		modelPicker:   picker,
 		bridge:        bridge,
 		inputCh:       inputCh,
+		steerCh:       steerCh,
 		outputCh:      outputCh,
 		cancelCh:      cancelCh,
 		pendingTools:  make(map[string]int),
@@ -190,12 +207,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(max(1, boxWidth-2*rowPadCompact-2))
 
 		// Measure chrome instead of hardcoding; widget height drifts with text.
-		footerH := lipgloss.Height(m.renderInputArea()) + lipgloss.Height(m.renderHelpLine())
-		headerH := lipgloss.Height(m.renderStatusBar())
-		vpH := m.height - headerH - footerH
-		if vpH < 1 {
-			vpH = 1
-		}
+		vpH := m.viewportHeight()
 
 		atBottom := m.ready && m.viewport.AtBottom()
 		if !m.ready {
@@ -279,6 +291,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			if m.streaming {
+				// Mid-turn input queues as steering: it is applied at the next
+				// provider round boundary, never injected into this stream.
+				if input := strings.TrimSpace(m.textarea.Value()); input != "" {
+					m.textarea.Reset()
+					m.queuedSteer++
+					m.reflow()
+					if steerCh := m.steerCh; steerCh != nil {
+						go func() { steerCh <- input }()
+					}
+				}
 				return m, nil
 			}
 			input := strings.TrimSpace(m.textarea.Value())
@@ -328,6 +350,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.streaming = false
 		m.cancelRequested = false
+		// Any steering the last round never drained is gone with the turn.
+		if m.queuedSteer != 0 {
+			m.queuedSteer = 0
+			m.reflow()
+		}
 		m.streamBuf.Reset()
 		// Cancelled turn is user action, not failure: relax to idle.
 		switch {
@@ -358,27 +385,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
-		trimmed := safetext.Sanitize(strings.TrimSpace(msg.args))
-		if len(trimmed) > 200 {
-			trimmed = trimmed[:197] + "..."
-		}
-		content := "running…"
-		if trimmed != "" {
-			content += "\n" + trimmed
-		}
-		m.messages = append(m.messages, ChatMessage{
-			Role:    RoleTool,
-			Label:   "🔧 " + safetext.Sanitize(msg.name),
-			Content: content,
-		})
-		if msg.toolCallID != "" {
-			m.pendingTools[msg.toolCallID] = len(m.messages) - 1
-		}
+		// Reuse a card created by an argument delta; no duplicate card.
+		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
 		m.viewport.SetContent(m.renderMessages())
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
+	case agentToolDeltaMsg:
+		if m.streaming {
+			m.mascot.setState(mascotWorking, msgNow())
+		}
+		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
+		m.viewport.SetContent(m.renderMessages())
+		if m.viewport.AtBottom() {
+			m.viewport.GotoBottom()
+		}
+		cmds = append(cmds, m.listenOutput())
+
 	case agentToolMsg:
+		if msg.steeringApplied {
+			m.queuedSteer = 0
+			m.reflow()
+		}
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
@@ -554,8 +582,13 @@ func (m Model) render() string {
 	base := lipgloss.JoinVertical(lipgloss.Left,
 		m.renderStatusBar(),
 		m.viewport.View(),
-		m.renderInputArea(),
 	)
+	// The queued-steering chip sits directly above the input area and only
+	// takes a row while something is queued.
+	if chip := m.renderSteerChip(); chip != "" {
+		base = lipgloss.JoinVertical(lipgloss.Left, base, chip)
+	}
+	base = lipgloss.JoinVertical(lipgloss.Left, base, m.renderInputArea())
 
 	hint := m.renderHelpLine()
 	base = lipgloss.JoinVertical(lipgloss.Left, base, hint)
@@ -675,6 +708,46 @@ func (m *Model) renderInputArea() string {
 		style = inputBoxBlurStyle
 	}
 	return style.Width(max(1, m.width-2)).Render(m.textarea.View())
+}
+
+// renderSteerChip shows how many mid-turn messages are queued for the next
+// round. Empty when nothing is queued, so it costs no row while idle.
+func (m *Model) renderSteerChip() string {
+	if m.queuedSteer <= 0 {
+		return ""
+	}
+	label := "1 steered message queued"
+	if m.queuedSteer > 1 {
+		label = fmt.Sprintf("%d steered messages queued", m.queuedSteer)
+	}
+	return steerChipStyle.Render("↳ " + label + " · applied at the next round")
+}
+
+// viewportHeight is the transcript height left after the measured chrome,
+// including the steering chip when it is visible.
+func (m *Model) viewportHeight() int {
+	footerH := lipgloss.Height(m.renderInputArea()) + lipgloss.Height(m.renderHelpLine())
+	if chip := m.renderSteerChip(); chip != "" {
+		footerH += lipgloss.Height(chip)
+	}
+	vpH := m.height - lipgloss.Height(m.renderStatusBar()) - footerH
+	if vpH < 1 {
+		return 1
+	}
+	return vpH
+}
+
+// reflow resizes the viewport after chrome appears or disappears mid-turn,
+// without waiting for the next WindowSizeMsg.
+func (m *Model) reflow() {
+	if !m.ready {
+		return
+	}
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetHeight(m.viewportHeight())
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 // Shows only keys that work now; mid-turn that's just interrupt.
@@ -871,6 +944,48 @@ func (m *Model) addMessage(msg ChatMessage) {
 	}
 	m.messages = append(m.messages, msg)
 	m.viewport.SetContent(m.renderMessages())
+}
+
+// toolCardContent renders a pending tool card's body: the same 200-character
+// argument preview the start card has always shown, now updated per delta.
+func toolCardContent(args string) string {
+	trimmed := safetext.Sanitize(strings.TrimSpace(args))
+	if len(trimmed) > 200 {
+		trimmed = trimmed[:197] + "..."
+	}
+	content := "running…"
+	if trimmed != "" {
+		content += "\n" + trimmed
+	}
+	return content
+}
+
+// upsertPendingToolCard creates or updates the card for one tool call. Deltas,
+// the start event and the result all share the ToolCallID, so a call owns
+// exactly one card from its first fragment until its result replaces it.
+func (m *Model) upsertPendingToolCard(name, args, toolCallID string) {
+	if toolCallID == "" {
+		// Without an id the card cannot be reused; still show the call.
+		m.messages = append(m.messages, ChatMessage{
+			Role:    RoleTool,
+			Label:   "🔧 " + safetext.Sanitize(name),
+			Content: toolCardContent(args),
+		})
+		return
+	}
+	if idx, ok := m.pendingTools[toolCallID]; ok && idx < len(m.messages) {
+		m.messages[idx].Content = toolCardContent(args)
+		if name != "" {
+			m.messages[idx].Label = "🔧 " + safetext.Sanitize(name)
+		}
+		return
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Role:    RoleTool,
+		Label:   "🔧 " + safetext.Sanitize(name),
+		Content: toolCardContent(args),
+	})
+	m.pendingTools[toolCallID] = len(m.messages) - 1
 }
 
 func (m *Model) setStreamingMessage(content string) {

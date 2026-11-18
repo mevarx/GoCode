@@ -28,13 +28,28 @@ type Usage struct {
 	CompletionTokens int
 }
 
+// ToolCallDelta is one streamed fragment of a tool call. Index identifies the
+// call inside the assistant message; ID and Name are best-effort, because some
+// dialects deliver them on a later fragment (a consumer must handle empties).
+// ArgsDelta is the raw JSON fragment to append to the call's argument buffer.
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Name      string
+	ArgsDelta string
+}
+
 type StreamChunk struct {
 	Delta string
 	// Reasoning streams separately and is replayed next turn; MiniMax/DeepSeek require the full chain.
 	Reasoning string
 	ToolCalls []ToolCall
-	Done      bool
-	Err       error
+	// ToolCallDelta, when non-nil, carries one fragment of a tool call as it
+	// streams. ToolCalls still arrives complete for compatibility: a consumer
+	// that ignores deltas sees exactly the behaviour it saw before.
+	ToolCallDelta *ToolCallDelta
+	Done          bool
+	Err           error
 	// FinishReason is the provider stop reason; empty if unreported. "length"/"max_tokens" means truncated.
 	FinishReason string
 	// Usage, when non-nil, carries provider-reported token counts. Parsing is

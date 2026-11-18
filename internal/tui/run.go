@@ -57,6 +57,9 @@ func Run(
 	}
 
 	inputCh := make(chan string, 1)
+	// Steering is a separate channel so a message typed mid-turn can never be
+	// mistaken for a new turn submission.
+	steerCh := make(chan string, 8)
 	outputCh := make(chan tea.Msg, 256)
 	cancelCh := make(chan struct{}, 1)
 
@@ -75,11 +78,11 @@ func Run(
 		})
 	}
 
-	m := NewModel(registry.ActiveName(), session.Model(), version, workspaceRoot, bridge, inputCh, outputCh, cancelCh, pickerItems)
+	m := NewModel(registry.ActiveName(), session.Model(), version, workspaceRoot, bridge, inputCh, steerCh, outputCh, cancelCh, pickerItems)
 	m.agentSession = session
 	m.registry = registry
 
-	go runEngineGoroutine(tuiCtx, engine, inputCh, outputCh, cancelCh)
+	go runEngineGoroutine(tuiCtx, engine, inputCh, steerCh, outputCh, cancelCh)
 
 	// AltScreen/mouse declared by View in v2, not program options.
 	p := tea.NewProgram(m)
@@ -164,12 +167,14 @@ func toTeaMsg(ev agent.LoopEvent) tea.Msg {
 		return agentChunkMsg{delta: ev.Text}
 	case agent.EventToolStart:
 		return agentToolStartMsg{name: ev.Tool, args: ev.Args, toolCallID: ev.ToolCallID}
+	case agent.EventToolDelta:
+		return agentToolDeltaMsg{name: ev.Tool, args: ev.Args, toolCallID: ev.ToolCallID}
 	case agent.EventToolResult:
 		return agentToolMsg{name: ev.Tool, result: ev.Text, isError: ev.IsError, toolCallID: ev.ToolCallID, diff: ev.Diff}
 	case agent.EventError:
 		return agentToolMsg{name: "GoCode", result: ev.Text, isError: true}
 	case agent.EventNotice:
-		return agentToolMsg{name: "GoCode", result: ev.Text}
+		return agentToolMsg{name: "GoCode", result: ev.Text, steeringApplied: ev.Text == agent.SteeringNotice}
 	case agent.EventExit:
 		return agentExitMsg{notice: ev.Text}
 	default:
@@ -191,6 +196,7 @@ func runEngineGoroutine(
 	ctx context.Context,
 	engine *agent.AgentLoop,
 	inputCh <-chan string,
+	steerCh <-chan string,
 	outputCh chan<- tea.Msg,
 	cancelCh <-chan struct{},
 ) {
@@ -210,10 +216,14 @@ func runEngineGoroutine(
 		case input := <-inputCh:
 			// Re-drain: interrupt may land while parked waiting for input (HIGH-9).
 			drainCancelCh(cancelCh)
+			// A steer typed after the previous turn ended belongs to no turn.
+			drainSteerCh(steerCh)
 
 			turnCtx, turnCancel := context.WithCancel(ctx)
 			cancelWatcherDone := make(chan struct{})
 			go watchCancelSignal(cancelCh, turnCtx, turnCancel, cancelWatcherDone)
+			steerDone := make(chan struct{})
+			go pumpSteering(turnCtx, engine, steerCh, steerDone)
 
 			err := engine.RunTurn(turnCtx, input)
 			if err != nil && !agent.IsExitRequest(err) {
@@ -222,7 +232,34 @@ func runEngineGoroutine(
 			sendMsg(ctx, outputCh, agentDoneMsg{err: err})
 
 			turnCancel()
+			<-steerDone
 			<-cancelWatcherDone
+		}
+	}
+}
+
+// pumpSteering hands mid-turn input to the engine while a turn runs. Steer
+// rejects it once the turn is over, so a late send is harmless.
+func pumpSteering(ctx context.Context, engine *agent.AgentLoop, steerCh <-chan string, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case text := <-steerCh:
+			engine.Steer(text)
+		}
+	}
+}
+
+// drainSteerCh drops steering that outlived its turn, so it can't be applied
+// to an unrelated later request.
+func drainSteerCh(steerCh <-chan string) {
+	for {
+		select {
+		case <-steerCh:
+		default:
+			return
 		}
 	}
 }

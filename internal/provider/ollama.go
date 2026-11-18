@@ -449,8 +449,19 @@ func (o *OllamaProvider) Stream(ctx context.Context, model string, history []Mes
 					emitChunk(ctx, ch, StreamChunk{Err: fmt.Errorf("failed to marshal tool call args: %w", err), Done: true})
 					return
 				}
+				id := fmt.Sprintf("call_%s_%d", tc.Function.Name, i)
+				// Ollama delivers a call complete, so the uniform delta path
+				// carries the whole argument string in one fragment.
+				if !emitChunk(ctx, ch, StreamChunk{ToolCallDelta: &ToolCallDelta{
+					Index:     i,
+					ID:        id,
+					Name:      tc.Function.Name,
+					ArgsDelta: string(args),
+				}}) {
+					return
+				}
 				chunk.ToolCalls = append(chunk.ToolCalls, ToolCall{
-					ID:   fmt.Sprintf("call_%s_%d", tc.Function.Name, i),
+					ID:   id,
 					Name: tc.Function.Name,
 					Args: args,
 				})

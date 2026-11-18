@@ -611,6 +611,21 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 				if pt.id == "" && pt.name != "" {
 					pt.id = fmt.Sprintf("call_%s_%d", pt.name, idx)
 				}
+				// Tap the existing per-index accumulation: emit the fragment
+				// with the best-known identity so a UI can upsert a live card
+				// keyed by ToolCallID. Identity may be empty on the first
+				// fragment and filled in later; the complete flush below is
+				// unchanged.
+				if tc.ID != "" || tc.Function.Name != "" || tc.Function.Arguments != "" {
+					if !emitChunk(ctx, ch, StreamChunk{ToolCallDelta: &ToolCallDelta{
+						Index:     idx,
+						ID:        pt.id,
+						Name:      pt.name,
+						ArgsDelta: tc.Function.Arguments,
+					}}) {
+						return
+					}
+				}
 			}
 
 			if choice.FinishReason != "" {

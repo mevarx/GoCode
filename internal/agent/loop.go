@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mevarx/GoCode/internal/provider"
+	"github.com/mevarx/GoCode/internal/safetext"
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
@@ -27,6 +28,10 @@ const (
 	EventDelta
 	// EventToolStart reports a tool call before approval/execution so a UI can show pending state.
 	EventToolStart
+	// EventToolDelta reports streamed tool-call arguments before the call is
+	// complete. It is display-only: approval and execution still wait for the
+	// complete ToolCalls flush, so partial JSON can never be acted on.
+	EventToolDelta
 	// EventToolResult reports the outcome of a single tool call.
 	EventToolResult
 	// EventNotice is informational output that is not an error.
@@ -54,6 +59,8 @@ type LoopEvent struct {
 	ToolCallID string
 	// Args carries raw JSON arguments on EventToolStart so a card can show the
 	// request without waiting for execution; the UI decides how much to show.
+	// On EventToolDelta it carries the accumulated, sanitized argument preview
+	// so far, so a card can update in place.
 	Args string
 	// Diff carries a unified diff on EventToolResult; kept separate from Text
 	// so a UI can colour added/removed lines instead of parsing prose.
@@ -92,6 +99,18 @@ const toolExecutionLimit = 4
 // interruptedToolResult closes out a call a canceled turn never reached.
 const interruptedToolResult = "Error: tool call interrupted before it could execute."
 
+// SteeringNotice is emitted once for every drained steering batch. Front-ends
+// key their queued-steering indicator off this exact text.
+const SteeringNotice = "[Queued steering applied to the next request.]"
+
+// steeringMarker prefixes a queued message so history shows why a user turn
+// appeared mid-request. The model reads it as ordinary user guidance.
+const steeringMarker = "[steering] "
+
+// maxToolArgPreview bounds the accumulated argument preview on EventToolDelta,
+// so a large streamed write cannot flood a front-end with repeated payloads.
+const maxToolArgPreview = 4096
+
 // AgentLoop is the single agent engine. Both the plain terminal loop and the
 // TUI drive this same type: Run for the plain loop, RunTurn for the TUI.
 type AgentLoop struct {
@@ -124,6 +143,12 @@ type AgentLoop struct {
 	// AskApproval prompts for slash commands needing confirmation (e.g. /commit).
 	// The plain loop supplies stdin backing; the TUI uses the approval gate instead.
 	AskApproval func(prompt string) bool
+
+	// steerMu guards the live-steering queue and the running-turn flag. Steer
+	// is called from a front-end goroutine while a turn runs on another.
+	steerMu     sync.Mutex
+	steerQueue  []string
+	turnRunning bool
 }
 
 func NewAgentLoop(registry *provider.Registry, session *Session, toolReg *tools.Registry, approval *tools.ApprovalGate) *AgentLoop {
@@ -153,6 +178,75 @@ func isTruncationFinish(reason string) bool {
 
 func (a *AgentLoop) emitDelta(text string) {
 	a.emit(LoopEvent{Kind: EventDelta, Text: text})
+}
+
+// Steer queues user guidance for the turn that is running. It is accepted
+// only while a turn is in flight: the queue is drained at the next provider
+// round boundary and never injected into a stream already in progress.
+func (a *AgentLoop) Steer(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	if !a.turnRunning {
+		return false
+	}
+	a.steerQueue = append(a.steerQueue, text)
+	return true
+}
+
+// beginTurn opens the steering window for a turn. A queue left over from a
+// previous turn is discarded: it could no longer be applied to that turn.
+func (a *AgentLoop) beginTurn() {
+	a.steerMu.Lock()
+	a.turnRunning = true
+	a.steerQueue = nil
+	a.steerMu.Unlock()
+}
+
+// endTurn closes the steering window. A steer that raced the last round
+// boundary is dropped rather than leaking into the next turn.
+func (a *AgentLoop) endTurn() {
+	a.steerMu.Lock()
+	a.turnRunning = false
+	a.steerQueue = nil
+	a.steerMu.Unlock()
+}
+
+// drainSteering applies queued steering messages as user messages, using the
+// same session path normal input takes, and reports one notice per batch.
+func (a *AgentLoop) drainSteering() int {
+	a.steerMu.Lock()
+	queued := a.steerQueue
+	a.steerQueue = nil
+	a.steerMu.Unlock()
+
+	applied := 0
+	for _, text := range queued {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		a.Session.AddMessage(provider.Message{Role: "user", Content: steeringMarker + text})
+		applied++
+	}
+	if applied > 0 {
+		a.emit(LoopEvent{Kind: EventNotice, Text: SteeringNotice})
+	}
+	return applied
+}
+
+// toolArgPreview sanitizes and bounds an accumulated argument buffer before it
+// leaves the loop. Deltas are never logged raw.
+func toolArgPreview(raw string) string {
+	preview := safetext.Sanitize(raw)
+	if len(preview) > maxToolArgPreview {
+		// Do not split a multi-byte rune when cutting a long buffer.
+		preview = strings.ToValidUTF8(preview[:maxToolArgPreview], "")
+	}
+	return preview
 }
 
 func (a *AgentLoop) toolSpecsAsProvider() []provider.ToolSpec {
@@ -193,6 +287,11 @@ func (a *AgentLoop) RunTurn(ctx context.Context, input string) (err error) {
 	if input == "" {
 		return nil
 	}
+
+	// Live steering is legal only while a turn runs. The window closes on
+	// every exit path, including cancellation and slash commands.
+	a.beginTurn()
+	defer a.endTurn()
 
 	// One record per turn, slash command or model turn: the profile must be
 	// measured from before the work so compaction and retry deltas are right.
@@ -285,6 +384,17 @@ func (a *AgentLoop) observeApprovals(m *turnMetrics) func() {
 
 func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard, m *turnMetrics) error {
 	for {
+		// Cancellation short-circuits before any queue drain: an aborted turn
+		// must not absorb steering it will never send.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// A round boundary is the only place steering enters the request.
+		// Draining here, before compaction and truncation, means the steered
+		// text is accounted for by both.
+		a.drainSteering()
+
 		p, err := a.Registry.Active()
 		if err != nil {
 			return err
@@ -324,6 +434,8 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 		// sends cumulative counts, so later reports supersede earlier ones.
 		var roundUsage provider.Usage
 		var roundHasUsage bool
+		// Per-call argument buffers for the delta preview, keyed by call id.
+		toolArgBufs := make(map[string]*strings.Builder)
 
 		for chunk := range ch {
 			if chunk.Err != nil {
@@ -352,6 +464,31 @@ func (a *AgentLoop) streamResponseGuarded(ctx context.Context, guard *LoopGuard,
 
 			if len(chunk.ToolCalls) > 0 {
 				toolCalls = append(toolCalls, chunk.ToolCalls...)
+			}
+
+			// Streamed arguments are display-only. They never enter approval
+			// or execution: those still wait for the complete flush below.
+			if d := chunk.ToolCallDelta; d != nil {
+				id := d.ID
+				if id == "" {
+					// A dialect may deliver identity late; key the preview by
+					// index so fragments still accumulate instead of colliding.
+					id = fmt.Sprintf("tool_delta_%d", d.Index)
+				}
+				buf := toolArgBufs[id]
+				if buf == nil {
+					buf = &strings.Builder{}
+					toolArgBufs[id] = buf
+				}
+				if d.ArgsDelta != "" {
+					buf.WriteString(d.ArgsDelta)
+				}
+				a.emit(LoopEvent{
+					Kind:       EventToolDelta,
+					Tool:       d.Name,
+					ToolCallID: id,
+					Args:       toolArgPreview(buf.String()),
+				})
 			}
 
 			// Honor cancellation promptly, so Ctrl+C and Esc stop a turn

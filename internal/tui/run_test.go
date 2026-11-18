@@ -59,7 +59,7 @@ func TestInterruptCancelsRunningTurn(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		runEngineGoroutine(ctx, engine, inputCh, outputCh, cancelCh)
+		runEngineGoroutine(ctx, engine, inputCh, nil, outputCh, cancelCh)
 		close(done)
 	}()
 
@@ -112,7 +112,7 @@ func TestEngineGoroutinePreservesObserver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	inputCh := make(chan string, 1)
-	go runEngineGoroutine(ctx, engine, inputCh, make(chan tea.Msg, 8), make(chan struct{}, 1))
+	go runEngineGoroutine(ctx, engine, inputCh, nil, make(chan tea.Msg, 8), make(chan struct{}, 1))
 
 	inputCh <- "hi"
 	time.Sleep(150 * time.Millisecond)
@@ -191,7 +191,7 @@ func TestParkedInterruptDoesNotCancelNextTurn(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runEngineGoroutine(ctx, engine, inputCh, outputCh, cancelCh)
+	go runEngineGoroutine(ctx, engine, inputCh, nil, outputCh, cancelCh)
 
 	// Park stale interrupt first, then submit message.
 	cancelCh <- struct{}{}
@@ -293,6 +293,7 @@ func TestToTeaMsgCoversEveryEventKind(t *testing.T) {
 		{agent.LoopEvent{Kind: agent.EventTurnStart}, "agentTurnStartMsg"},
 		{agent.LoopEvent{Kind: agent.EventDelta, Text: "hi"}, "agentChunkMsg"},
 		{agent.LoopEvent{Kind: agent.EventToolStart, Tool: "t", ToolCallID: "id1", Args: "{}"}, "agentToolStartMsg"},
+		{agent.LoopEvent{Kind: agent.EventToolDelta, Tool: "t", ToolCallID: "id1", Args: "{}"}, "agentToolDeltaMsg"},
 		{agent.LoopEvent{Kind: agent.EventToolResult, Tool: "t", Text: "out"}, "agentToolMsg"},
 		{agent.LoopEvent{Kind: agent.EventError, Text: "bad"}, "agentToolMsg"},
 		{agent.LoopEvent{Kind: agent.EventNotice, Text: "note"}, "agentToolMsg"},
@@ -333,6 +334,8 @@ func typeName(v any) string {
 		return "agentChunkMsg"
 	case agentToolStartMsg:
 		return "agentToolStartMsg"
+	case agentToolDeltaMsg:
+		return "agentToolDeltaMsg"
 	case agentToolMsg:
 		return "agentToolMsg"
 	case agentExitMsg:
