@@ -17,7 +17,7 @@
 | P5 — animation system | ✓ done | `ebad4e7` |
 | P6 — command registry + palette | ✓ done | `716e7b5` |
 | P7 — live cards + pickers | ✓ done | `4dcec3f` |
-| P8 — docs + final verification | ✓ done | (docs commit) |
+| P8 — docs + final verification | ✓ done | `62492e1` |
 
 ## 0. Mechanism mapping (omp → GoCode)
 
