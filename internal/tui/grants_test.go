@@ -19,7 +19,7 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 	m = updated.(Model)
 
 	choiceCh := make(chan tools.ApprovalChoice, 1)
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "shell_exec",
 		Args:     json.RawMessage(`{"command":"ls"}`),
@@ -37,7 +37,7 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'a'})
 	m = updated.(Model)
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		t.Fatal("modal stayed open after 'a'")
 	}
 	if !m.sessionGrants["shell_exec"] {
@@ -54,7 +54,7 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 	}
 
 	// Reopening the modal shows the used grant in the footer.
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "file_write",
 		Args:     json.RawMessage(`{"path":"a.go"}`),
@@ -75,7 +75,7 @@ func TestApprovalModalReadOnlyKey(t *testing.T) {
 	m = updated.(Model)
 
 	choiceCh := make(chan tools.ApprovalChoice, 1)
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "mcp_search",
 		Args:     json.RawMessage(`{"query":"x"}`),
@@ -85,7 +85,7 @@ func TestApprovalModalReadOnlyKey(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'r'})
 	m = updated.(Model)
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		t.Fatal("modal stayed open after 'r'")
 	}
 
@@ -120,7 +120,7 @@ func TestApprovalChoiceBridgeRoundTrip(t *testing.T) {
 	msg := pollApproval(bridge)()
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
-	if !m.approvalActive {
+	if !m.overlays.has(overlayApproval) {
 		t.Fatal("choice request did not open the modal")
 	}
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

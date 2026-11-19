@@ -166,11 +166,11 @@ func TestViewDeclaresAltScreenAndMouseOnEveryPath(t *testing.T) {
 		{"normal", func(m Model) Model { return m }},
 		{"streaming", func(m Model) Model { m.streaming = true; return m }},
 		{"approval", func(m Model) Model {
-			m.approvalActive = true
+			m.overlays.push(overlayApproval)
 			m.approvalReq = ApprovalRequest{ToolName: "file_write", Args: json.RawMessage(`{"path":"a.go"}`)}
 			return m
 		}},
-		{"picker", func(m Model) Model { m.modelPickerActive = true; return m }},
+		{"picker", func(m Model) Model { m.overlays.push(overlayPicker); return m }},
 		{"not ready", func(m Model) Model { m.ready = false; return m }},
 	}
 	for _, p := range paths {

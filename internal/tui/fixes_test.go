@@ -20,7 +20,7 @@ func TestApprovalModalClampsToTerminalSize(t *testing.T) {
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 14})
 		m = updated.(Model)
 		m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: "transcript-marker"})
-		m.approvalActive = true
+		m.overlays.push(overlayApproval)
 		m.approvalReq = ApprovalRequest{
 			ToolName: "file_write",
 			Args:     json.RawMessage(`{"path":"a.go","content":"x"}`),
@@ -46,7 +46,7 @@ func TestApprovalModalClampsToTerminalSize(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 24})
 	m = updated.(Model)
 	m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: "transcript-marker"})
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "file_write",
 		Args:     json.RawMessage(`{"path":"a.go","content":"x"}`),
@@ -77,7 +77,7 @@ func TestApprovalPromptRendersFromTheBridge(t *testing.T) {
 	msg := pollApproval(bridge)()
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
-	if !m.approvalActive {
+	if !m.overlays.has(overlayApproval) {
 		t.Fatal("approval modal not active after bridge request")
 	}
 	view := stripANSI(m.View().Content)
@@ -90,7 +90,7 @@ func TestApprovalPromptRendersFromTheBridge(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		t.Fatal("approval modal still active after Enter")
 	}
 	select {

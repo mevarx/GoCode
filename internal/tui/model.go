@@ -111,12 +111,21 @@ type Model struct {
 	// Incremented per turn so stale frames can't re-arm the ticker.
 	animEpoch int
 
-	modelPickerActive bool
-	modelPicker       list.Model
+	// Modal surfaces share one focus stack (overlay.go); approval always wins.
+	overlays     overlayStack
+	modelPicker  list.Model
+	palette      list.Model
+	paletteItems []list.Item
 
-	approvalActive bool
-	approvalReq    ApprovalRequest
-	approvalFocus  int
+	// completion is the in-progress Tab cycle and its help-line echo.
+	completion     completionState
+	completionHint string
+
+	// promptHistory is the in-memory Alt+P/Alt+N recall list.
+	promptHistory promptHistory
+
+	approvalReq   ApprovalRequest
+	approvalFocus int
 	// Tools the user granted exact-args approval for during this UI session,
 	// displayed in the modal footer. The authoritative copy lives in the gate.
 	sessionGrants map[string]bool
@@ -179,6 +188,9 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
 
 	picker := NewModelPicker(pickerItems, 80, 24)
+	specs := agent.Commands()
+	paletteItems := commandPaletteItems(specs)
+	palette := NewCommandPalette(specs, 80, 24)
 
 	return Model{
 		streamBuf:     &strings.Builder{},
@@ -189,6 +201,8 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		version:       version,
 		workspaceRoot: workspaceRoot,
 		modelPicker:   picker,
+		palette:       palette,
+		paletteItems:  paletteItems,
 		bridge:        bridge,
 		inputCh:       inputCh,
 		steerCh:       steerCh,
@@ -269,127 +283,92 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dirty = false
 		m.modelPicker.SetWidth(max(1, m.width-10))
 		m.modelPicker.SetHeight(max(1, m.height-6))
+		m.resizePalette()
 
 	case tea.KeyPressMsg:
-		if m.modelPickerActive {
-			switch msg.String() {
-			case "ctrl+l", "esc":
-				m.modelPickerActive = false
-				return m, nil
-			case "enter":
-				if !m.modelPicker.SettingFilter() {
-					if sel := m.modelPicker.SelectedItem(); sel != nil {
-						if item, ok := sel.(ModelItem); ok {
-							m.providerName = item.Provider
-							m.modelName = item.Model
-							m.modelPickerActive = false
-							inputCh := m.inputCh
-							go func() {
-								inputCh <- "/provider " + item.Provider
-								inputCh <- "/model " + item.Model
-							}()
-							return m, m.listenOutput()
-						}
-					}
-				}
-			}
-			var pCmd tea.Cmd
-			m.modelPicker, pCmd = m.modelPicker.Update(msg)
-			return m, pCmd
-		}
-
-		if m.approvalActive {
+		// Modal surfaces own focus in priority order. Approval is always
+		// first: an approval request that arrived while the picker or palette
+		// was open has already displaced it in the stack.
+		if m.overlays.has(overlayApproval) {
 			return m.updateApproval(msg)
 		}
+		if kind, ok := m.overlays.top(); ok {
+			switch kind {
+			case overlayPalette:
+				return m.updatePalette(msg)
+			case overlayPicker:
+				return m.updatePicker(msg)
+			}
+		}
 
-		switch msg.String() {
-		case "ctrl+l":
-			m.modelPickerActive = true
-			m.modelPicker.SetWidth(max(1, m.width-10))
-			m.modelPicker.SetHeight(max(1, m.height-6))
-			return m, nil
+		// Any key other than Tab abandons an in-progress completion cycle, so
+		// its candidate hint never outlives the keystroke that left it.
+		if msg.String() != "tab" {
+			m.clearCompletion()
+		}
 
-		case "ctrl+c":
-			if m.streaming {
+		contexts := []keyContext{keyCtxIdle}
+		if m.streaming {
+			contexts = []keyContext{keyCtxStreaming}
+		}
+		contexts = append(contexts, keyCtxGlobal, keyCtxTranscript)
+
+		if binding, ok := lookupBindingIn(msg.String(), contexts...); ok {
+			switch binding.Action {
+			case actOpenPicker:
+				m.openModelPicker()
+				return m, nil
+			case actPaletteOpen:
+				m.openCommandPalette()
+				return m, nil
+			case actComplete:
+				m.handleTabCompletion()
+				return m, nil
+			case actHistoryPrev:
+				m.recallHistory(true)
+				return m, nil
+			case actHistoryNext:
+				m.recallHistory(false)
+				return m, nil
+			case actRecallPrev:
+				// Up recalls history only from an empty, focused prompt;
+				// otherwise the textarea keeps the key for cursor movement.
+				if m.textarea.Focused() && m.textarea.Value() == "" {
+					m.recallHistory(true)
+					return m, nil
+				}
+			case actCancelOrQuit:
 				if m.cancelRequested {
 					return m, tea.Quit
 				}
 				m.cancelRequested = true
 				m.interruptTurn()
 				return m, nil
-			}
-			return m, tea.Quit
-
-		case "esc":
-			if m.streaming {
-				if m.cancelRequested {
-					return m, tea.Quit
-				}
-				m.cancelRequested = true
-				m.interruptTurn()
-				return m, nil
-			}
-			if m.textarea.Value() != "" {
-				m.textarea.Reset()
-			}
-			return m, nil
-
-		case "enter":
-			if m.streaming {
-				// Mid-turn input queues as steering: it is applied at the next
-				// provider round boundary, never injected into this stream.
-				if input := strings.TrimSpace(m.textarea.Value()); input != "" {
-					m.textarea.Reset()
-					m.queuedSteer++
-					m.reflow()
-					if steerCh := m.steerCh; steerCh != nil {
-						go func() { steerCh <- input }()
-					}
-				}
-				return m, nil
-			}
-			input := strings.TrimSpace(m.textarea.Value())
-			if input == "" {
-				return m, nil
-			}
-			switch strings.ToLower(input) {
-			case "exit", "quit", "/exit", "/quit":
+			case actQuit:
 				return m, tea.Quit
+			case actClearInput:
+				if m.textarea.Value() != "" {
+					m.textarea.Reset()
+				}
+				return m, nil
+			case actSubmit:
+				return m, m.submitPrompt()
+			case actSteer:
+				m.steerPrompt()
+				return m, nil
+			case actScrollUp:
+				if !m.textarea.Focused() {
+					m.viewport.ScrollUp(3)
+				}
+			case actScrollDown:
+				if !m.textarea.Focused() {
+					m.viewport.ScrollDown(3)
+				}
+			case actScrollPageUp:
+				m.viewport.ScrollUp(m.viewport.Height() / 2)
+			case actScrollPageDn:
+				m.viewport.ScrollDown(m.viewport.Height() / 2)
 			}
-			m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: input})
-			m.textarea.Reset()
-			m.streaming = true
-			m.streamBuf.Reset()
-			m.revealShown = 0
-			// No tokens yet, so show thinking rather than streaming.
-			m.mascot.setState(mascotThinking, msgNow())
-			// Advance the epoch every turn so stale frames can't match later,
-			// and reset the spinner latch so this turn's chain can arm.
-			m.animEpoch++
-			m.spinnerArmed = false
-			m.animating = m.decorativeMotion()
-			inputCh := m.inputCh
-			go func() { inputCh <- input }()
-			cmds = append(cmds, m.listenOutput())
-			if tick := m.animationTick(mascotThinking); tick != nil {
-				cmds = append(cmds, tick)
-			}
-			if tick := m.armSpinnerTick(); tick != nil {
-				cmds = append(cmds, tick)
-			}
-
-		case "up":
-			if !m.textarea.Focused() {
-				m.viewport.ScrollUp(3)
-			}
-		case "down":
-			if !m.textarea.Focused() {
-				m.viewport.ScrollDown(3)
-			}
-		case "pgup":
-			m.viewport.ScrollUp(m.viewport.Height() / 2)
-		case "pgdown":
-			m.viewport.ScrollDown(m.viewport.Height() / 2)
 		}
 
 	case agentChunkMsg:
@@ -523,10 +502,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case approvalRequestMsg:
-		if m.approvalActive {
+		if m.overlays.has(overlayApproval) {
 			return m, pollApproval(m.bridge)
 		}
-		m.approvalActive = true
+		// Approval always wins focus: an open picker or palette is dropped,
+		// not stacked under the modal where its keys would go nowhere.
+		m.clearCompletion()
+		m.overlays.push(overlayApproval)
 		m.approvalReq = msg.req
 		m.approvalReq.ToolName = safetext.Sanitize(msg.req.ToolName)
 		m.approvalReq.Preview = safetext.Sanitize(msg.req.Preview)
@@ -572,6 +554,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.armSpinnerTick())
 
+	case list.FilterMatchesMsg:
+		// Fuzzy filtering is asynchronous: the list hands back a command that
+		// produces matches, and they only apply when the message is fed back.
+		// Forward them to whichever filtered overlay is on top.
+		if m.overlays.has(overlayApproval) {
+			break
+		}
+		if kind, ok := m.overlays.top(); ok {
+			var cmd tea.Cmd
+			switch kind {
+			case overlayPalette:
+				m.palette, cmd = m.palette.Update(msg)
+			case overlayPicker:
+				m.modelPicker, cmd = m.modelPicker.Update(msg)
+			}
+			cmds = append(cmds, cmd)
+		}
+
 	case tea.MouseMsg:
 		// MouseModeCellMotion is declared on every frame, so wheel events do
 		// arrive. The transcript owns them: three lines per notch, exactly like
@@ -592,7 +592,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if !m.approvalActive && forwardToTextarea(msg) {
+	if !m.overlays.has(overlayApproval) && forwardToTextarea(msg) {
 		var taCmd tea.Cmd
 		m.textarea, taCmd = m.textarea.Update(msg)
 		cmds = append(cmds, taCmd)
@@ -606,23 +606,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
-	switch msg.String() {
-	case "left", "right", "tab":
+	binding, ok := lookupBinding(keyCtxApproval, msg.String())
+	if !ok {
+		return m, nil
+	}
+	switch binding.Action {
+	case actApprovalToggle:
 		if m.approvalFocus == 0 {
 			m.approvalFocus = 1
 		} else {
 			m.approvalFocus = 0
 		}
-	case "enter":
+	case actApprovalConfirm:
 		if m.approvalFocus == 0 {
 			return m.resolveApproval(tools.ApprovalOnce, "✓ Approved", RoleSystem), nil
 		}
 		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
-	case "y":
+	case actApprovalAllow:
 		return m.resolveApproval(tools.ApprovalOnce, "✓ Approved", RoleSystem), nil
-	case "n":
+	case actApprovalReject:
 		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
-	case "a":
+	case actApprovalGrant:
 		if m.sessionGrants == nil {
 			m.sessionGrants = make(map[string]bool)
 		}
@@ -632,18 +636,123 @@ func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			m.sessionGrants[m.approvalReq.ToolName] = true
 		}
 		return m.resolveApproval(tools.ApprovalGrantExact, "✓ Approved (exact args this session)", RoleSystem), nil
-	case "r":
+	case actApprovalReadOnly:
 		return m.resolveApproval(tools.ApprovalReadOnlyTurn, "✓ Read-only tools allowed this turn", RoleSystem), nil
-	case "esc":
-		return m.resolveApproval(tools.ApprovalDeny, "✗ Denied", RoleError), nil
-	case "ctrl+c":
+	case actApprovalDenyQuit:
 		// Quit without approving; the requester sees a denial.
 		req := m.approvalReq
-		m.approvalActive = false
+		m.overlays.pop(overlayApproval)
 		m.sendApprovalReply(req, tools.ApprovalDeny)
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// openModelPicker opens the model picker over whatever is open below it.
+func (m *Model) openModelPicker() {
+	m.overlays.push(overlayPicker)
+	m.modelPicker.SetWidth(max(1, m.width-10))
+	m.modelPicker.SetHeight(max(1, m.height-6))
+}
+
+// updatePicker routes keys to the model picker; everything it does not claim
+// stays with the bubbles list (filter input, paging, vim cursor keys).
+func (m *Model) updatePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+l", "esc":
+		m.overlays.pop(overlayPicker)
+		return *m, nil
+	case "enter":
+		if !m.modelPicker.SettingFilter() {
+			if sel := m.modelPicker.SelectedItem(); sel != nil {
+				if item, ok := sel.(ModelItem); ok {
+					m.providerName = item.Provider
+					m.modelName = item.Model
+					m.overlays.pop(overlayPicker)
+					inputCh := m.inputCh
+					go func() {
+						inputCh <- "/provider " + item.Provider
+						inputCh <- "/model " + item.Model
+					}()
+					return *m, m.listenOutput()
+				}
+			}
+		}
+	}
+	var cmd tea.Cmd
+	m.modelPicker, cmd = m.modelPicker.Update(msg)
+	return *m, cmd
+}
+
+// submitPrompt sends the prompt as a new turn. History records the prompt
+// before any command alias quits, so recall behaves like submission.
+func (m *Model) submitPrompt() tea.Cmd {
+	input := strings.TrimSpace(m.textarea.Value())
+	if input == "" {
+		return nil
+	}
+	m.promptHistory.add(input)
+	m.promptHistory.resetNavigation()
+
+	switch strings.ToLower(input) {
+	case "exit", "quit", "/exit", "/quit":
+		return tea.Quit
+	}
+
+	m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: input})
+	m.textarea.Reset()
+	m.streaming = true
+	m.streamBuf.Reset()
+	m.revealShown = 0
+	// No tokens yet, so show thinking rather than streaming.
+	m.mascot.setState(mascotThinking, msgNow())
+	// Advance the epoch every turn so stale frames can't match later, and
+	// reset the spinner latch so this turn's chain can arm.
+	m.animEpoch++
+	m.spinnerArmed = false
+	m.animating = m.decorativeMotion()
+	inputCh := m.inputCh
+	go func() { inputCh <- input }()
+	return tea.Batch(
+		m.listenOutput(),
+		m.animationTick(mascotThinking),
+		m.armSpinnerTick(),
+	)
+}
+
+// steerPrompt queues mid-turn input as steering: it is applied at the next
+// provider round boundary, never injected into this stream.
+func (m *Model) steerPrompt() {
+	input := strings.TrimSpace(m.textarea.Value())
+	if input == "" {
+		return
+	}
+	m.promptHistory.add(input)
+	m.promptHistory.resetNavigation()
+	m.textarea.Reset()
+	m.queuedSteer++
+	m.reflow()
+	if steerCh := m.steerCh; steerCh != nil {
+		go func() { steerCh <- input }()
+	}
+}
+
+// recallHistory moves through the in-memory prompt history. older=true walks
+// back (Alt+P / empty Up), older=false forward (Alt+N).
+func (m *Model) recallHistory(older bool) {
+	var (
+		text string
+		ok   bool
+	)
+	if older {
+		text, ok = m.promptHistory.prev(m.textarea.Value())
+	} else {
+		text, ok = m.promptHistory.next()
+	}
+	if !ok {
+		return
+	}
+	m.setText(text)
 }
 
 // resolveApproval closes the modal, records the outcome in the transcript, and
@@ -651,7 +760,7 @@ func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // ApprovalBridge.RequestApprovalChoice for that limitation.
 func (m Model) resolveApproval(choice tools.ApprovalChoice, label string, role ChatRole) Model {
 	req := m.approvalReq
-	m.approvalActive = false
+	m.overlays.pop(overlayApproval)
 	m.addMessage(ChatMessage{Role: role, Label: label, Content: req.ToolName})
 	m.viewport.GotoBottom()
 	m.sendApprovalReply(req, choice)
@@ -725,12 +834,17 @@ func (m Model) render() string {
 	hint := m.renderHelpLine()
 	base = lipgloss.JoinVertical(lipgloss.Left, base, hint)
 
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		return placeModal(base, m.renderApprovalModal(), m.width, m.height)
 	}
 
-	if m.modelPickerActive {
-		return placeModal(base, modalOverlayStyle.Render(m.modelPicker.View()), m.width, m.height)
+	if kind, ok := m.overlays.top(); ok {
+		switch kind {
+		case overlayPalette:
+			return placeModal(base, modalOverlayStyle.Render(m.palette.View()), m.width, m.height)
+		case overlayPicker:
+			return placeModal(base, modalOverlayStyle.Render(m.modelPicker.View()), m.width, m.height)
+		}
 	}
 
 	return base
@@ -901,21 +1015,26 @@ func (m *Model) reflow() {
 	}
 }
 
-// Shows only keys that work now; mid-turn that's just interrupt.
+// Shows only keys that work now; mid-turn that's just interrupt. The hint
+// text is rendered from the keymap table, so it cannot drift from dispatch.
 func (m *Model) renderHelpLine() string {
+	if m.completionHint != "" {
+		return inputHintStyle.Render(truncateToWidth(m.completionHint, m.width))
+	}
+
 	var text string
 	switch {
 	case m.streaming:
-		text = "Ctrl+C stop · press again to quit · PgUp/PgDn scroll"
+		text = helpFor(actCancelOrQuit, actScrollPageUp)
 		if m.cancelRequested {
 			text = "Ctrl+C again to quit"
 		}
 	case m.width < 48:
-		text = "Enter send · Esc clear · Ctrl+C quit"
+		text = helpFor(actSubmit, actClearInput, actQuit)
 	case m.width < 72:
-		text = "Enter send · Shift+Enter newline · Esc clear · Ctrl+C quit"
+		text = helpFor(actSubmit, actNewline, actClearInput, actQuit)
 	default:
-		text = "Enter send · Shift+Enter newline · Ctrl+L models · Esc clear · Ctrl+C quit · PgUp/PgDn scroll"
+		text = helpFor(actSubmit, actNewline, actPaletteOpen, actOpenPicker, actClearInput, actQuit, actScrollPageUp)
 	}
 	return inputHintStyle.Render(truncateToWidth(text, m.width))
 }
