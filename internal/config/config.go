@@ -19,7 +19,31 @@ type Config struct {
 	Session     SessionConfig     `toml:"session"`
 	Tools       ToolsConfig       `toml:"tools"`
 	Context     ContextConfig     `toml:"context"`
+	TUI         TUIConfig         `toml:"tui"`
 	MCP         MCPConfig         `toml:"mcp"`
+}
+
+// TUI motion modes, in decreasing order of movement.
+const (
+	// TUIMotionAuto follows the terminal's own reduced-motion signal.
+	TUIMotionAuto = "auto"
+	// TUIMotionReduced stops decorative motion but keeps functional
+	// indicators, which degrade to static glyphs.
+	TUIMotionReduced = "reduced"
+	// TUIMotionOff is the strictest setting: no decoration at all.
+	TUIMotionOff = "off"
+)
+
+// TUIConfig controls the rich TUI's animation and input behaviour.
+type TUIConfig struct {
+	// Motion gates animation: "auto" honours the terminal's reduced-motion
+	// signal, while "reduced" and "off" force it down. Decorative motion
+	// (shimmer, mascot springs) stops; functional indicators (the spinner
+	// glyph, elapsed badges) become static rather than disappearing.
+	Motion string `toml:"motion"`
+	// SmoothStreaming paces streamed text and tool-argument previews into the
+	// transcript instead of appending raw provider bursts. On by default.
+	SmoothStreaming bool `toml:"smooth_streaming"`
 }
 
 // ContextConfig specifies automatic context management.
@@ -272,6 +296,12 @@ func DefaultConfig() Config {
 			// agent package without a cycle, so the value is repeated here.
 			KeepRecentTokens: 20000,
 		},
+		TUI: TUIConfig{
+			Motion: TUIMotionAuto,
+			// Pacing is what makes a burst of tokens readable; opt out only
+			// when a pipe needs the raw rate.
+			SmoothStreaming: true,
+		},
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
 				TimeoutSeconds: 30,
@@ -477,6 +507,27 @@ func decodeConfig(data []byte, cfg *Config, path string) error {
 			keys = append(keys, k.String())
 		}
 		return fmt.Errorf("config file %s contains unknown keys: %s", path, strings.Join(keys, ", "))
+	}
+	if err := normalizeTUIMotion(cfg); err != nil {
+		return fmt.Errorf("config file %s: %w", path, err)
+	}
+	return nil
+}
+
+// normalizeTUIMotion validates the [tui] motion mode and fills an empty value
+// with the default. Strict config rejects unknown keys so a typo cannot
+// silently do nothing; a wrong value deserves the same treatment.
+func normalizeTUIMotion(cfg *Config) error {
+	switch mode := strings.ToLower(strings.TrimSpace(cfg.TUI.Motion)); mode {
+	case "", TUIMotionAuto:
+		cfg.TUI.Motion = TUIMotionAuto
+	case TUIMotionReduced:
+		cfg.TUI.Motion = TUIMotionReduced
+	case TUIMotionOff:
+		cfg.TUI.Motion = TUIMotionOff
+	default:
+		return fmt.Errorf("tui.motion must be %q, %q or %q, got %q",
+			TUIMotionAuto, TUIMotionReduced, TUIMotionOff, cfg.TUI.Motion)
 	}
 	return nil
 }

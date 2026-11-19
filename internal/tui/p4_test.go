@@ -103,7 +103,7 @@ func TestToolCardMutationInvalidatesOnlyThatBlock(t *testing.T) {
 		{Role: RoleTool, Label: "🔧 file_read", Content: "running…"},
 		{Role: RoleAssistant, Label: "GoCode", Content: "done"},
 	}
-	m.pendingTools["c2"] = 1
+	m.pendingTools["c2"] = &toolCard{index: 1, since: time.Now()}
 	m.renderMessages()
 
 	m.cache.renders = 0

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textarea"
@@ -80,6 +81,11 @@ type agentToolDeltaMsg struct {
 type agentExitMsg struct{ notice string }
 type approvalRequestMsg struct{ req ApprovalRequest }
 
+// mouseWheelLines is how far one wheel notch scrolls the transcript. Three
+// lines matches a terminal's own line scroll and the PgUp/PgDn granularity the
+// help line advertises.
+const mouseWheelLines = 3
+
 type Model struct {
 	width  int
 	height int
@@ -124,8 +130,9 @@ type Model struct {
 	agentSession *agent.Session
 	registry     *provider.Registry
 
-	// Maps tool call ID to transcript index so results replace pending cards.
-	pendingTools map[string]int
+	// Maps tool call id to the live card so results replace pending cards, and
+	// deltas never create duplicates.
+	pendingTools map[string]*toolCard
 
 	// steerCh carries input typed while a turn is streaming to the engine's
 	// steering queue; queuedSteer drives the chip above the input area.
@@ -136,6 +143,16 @@ type Model struct {
 	// bar; turnStarted is when the running turn began (zero when idle).
 	lastTurn    agent.TurnMetrics
 	turnStarted time.Time
+
+	// motion is the [tui] animation preference; the live policy is resolved
+	// per call against the terminal's reduced-motion signal.
+	motion MotionSettings
+	// revealShown is how many bytes of streamBuf the transcript displays while
+	// streamed text is paced; the rest is revealed one tick at a time.
+	revealShown int
+	// spinnerArmed dedupes the shared spinner chain: one tick in flight, for
+	// every live spinner.
+	spinnerArmed bool
 
 	// Rendered-block cache: settled transcript messages render once; only the
 	// live assistant tail and mutating tool cards render again.
@@ -151,7 +168,7 @@ type Model struct {
 	cancelRequested bool
 }
 
-func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, steerCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item) Model {
+func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, steerCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item, motion MotionSettings) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
@@ -177,8 +194,9 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		steerCh:       steerCh,
 		outputCh:      outputCh,
 		cancelCh:      cancelCh,
-		pendingTools:  make(map[string]int),
+		pendingTools:  make(map[string]*toolCard),
 		sessionGrants: make(map[string]bool),
+		motion:        motion,
 		focused:       true,
 	}
 }
@@ -194,11 +212,11 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// animationTick arms one mascot frame chain. Reduced motion turns decorative
+// animationTick arms one mascot frame chain. The motion gate turns decorative
 // motion off at the source: no chain is started at all, and the static pose
 // plus the status-bar state word remain the functional indicators.
 func (m *Model) animationTick(s mascotState) tea.Cmd {
-	if capabilities.ReducedMotion {
+	if !m.decorativeMotion() {
 		return nil
 	}
 	return tickUntil(cadence(s), m.animEpoch)
@@ -235,6 +253,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		atBottom := m.ready && m.viewport.AtBottom()
 		if !m.ready {
 			m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(vpH))
+			// The transcript owns wheel scrolling (see the tea.MouseMsg case),
+			// so the widget must not scroll a second time for the same notch.
+			m.viewport.MouseWheelEnabled = false
 			m.viewport.SetContent(m.renderMessages())
 			m.ready = true
 		} else {
@@ -339,15 +360,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.streaming = true
 			m.streamBuf.Reset()
+			m.revealShown = 0
 			// No tokens yet, so show thinking rather than streaming.
 			m.mascot.setState(mascotThinking, msgNow())
-			// Advance the epoch every turn so stale frames can't match later.
+			// Advance the epoch every turn so stale frames can't match later,
+			// and reset the spinner latch so this turn's chain can arm.
 			m.animEpoch++
-			m.animating = !capabilities.ReducedMotion
+			m.spinnerArmed = false
+			m.animating = m.decorativeMotion()
 			inputCh := m.inputCh
 			go func() { inputCh <- input }()
 			cmds = append(cmds, m.listenOutput())
 			if tick := m.animationTick(mascotThinking); tick != nil {
+				cmds = append(cmds, tick)
+			}
+			if tick := m.armSpinnerTick(); tick != nil {
 				cmds = append(cmds, tick)
 			}
 
@@ -369,10 +396,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mascot.setState(mascotWorking, msgNow())
 		// Strip escapes at ingestion so the stream buffer never holds them.
 		m.streamBuf.WriteString(safetext.Sanitize(msg.delta))
-		// Mutate the live tail and mark the transcript dirty; the viewport is
-		// updated by the coalescing tick, at most 30 times a second, so a fast
-		// token stream never re-renders per token.
-		m.setStreamingMessage(m.streamBuf.String())
+		// Adopt the new text into the display buffer without revealing it yet:
+		// the coalescing tick advances the reveal and applies one viewport
+		// update, so a fast token stream never re-renders per token.
+		if m.refreshLiveContent(msgNow(), false) {
+			m.markDirty()
+		}
 		if tick := m.armFlushTick(); tick != nil {
 			cmds = append(cmds, tick)
 		}
@@ -386,7 +415,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queuedSteer = 0
 			m.reflow()
 		}
+		// A turn end snaps the reveal: the last frame of the turn shows the
+		// whole answer, not whatever the pacer had reached.
+		if m.streamBuf.Len() > 0 {
+			m.updateStreamingTail(m.streamBuf.String())
+		}
 		m.streamBuf.Reset()
+		m.revealShown = 0
 		// Cancelled turn is user action, not failure: relax to idle.
 		switch {
 		case msg.err != nil && !errors.Is(msg.err, context.Canceled):
@@ -397,6 +432,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mascot.setState(mascotIdle, msgNow())
 		}
 		m.animating = false
+		m.spinnerArmed = false
+		// Settle the live widgets once with pacing and the clock off: a card
+		// still pending stops on a static glyph and shows its whole preview.
+		if m.refreshLiveContent(msgNow(), false) {
+			m.markDirty()
+		}
 		// Revert optimistic picker pick to engine truth.
 		if m.agentSession != nil && m.registry != nil {
 			m.providerName = m.registry.ActiveName()
@@ -458,7 +499,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			role = RoleError
 			label = toolName
 		}
-		if idx, ok := m.pendingTools[msg.toolCallID]; ok && idx < len(m.messages) {
+		if card, ok := m.pendingTools[msg.toolCallID]; ok && card.index < len(m.messages) {
+			idx := card.index
 			m.messages[idx].Role = role
 			m.messages[idx].Label = label
 			m.messages[idx].Content = result
@@ -493,11 +535,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, pollApproval(m.bridge)
 
 	case transcriptFlushMsg:
-		// The coalescing tick fired; chunks that arrived since the last flush
-		// are applied now, in one viewport update.
+		// The coalescing tick fired. One tick does both jobs: it advances the
+		// reveal by one step and applies everything buffered since the last
+		// flush in a single viewport update.
 		m.flushArmed = false
+		if m.refreshLiveContent(msgNow(), true) {
+			m.markDirty()
+		}
 		if m.dirty {
 			m.flushTranscript(true)
+		}
+		if m.revealPending() {
+			// More text is still hidden; keep the 30 fps chain going.
+			cmds = append(cmds, m.armFlushTick())
+		} else {
+			// The burst is drained: hand the repaint cadence back to the
+			// spinner clock, or stop entirely when nothing is live.
+			cmds = append(cmds, m.armSpinnerTick())
+		}
+
+	case spinnerTickMsg:
+		// A tick from a previous turn is stale; the turn that replaced it owns
+		// its own chain, so this one neither re-arms nor rewrites content.
+		if msg.epoch != m.animEpoch {
+			break
+		}
+		m.spinnerArmed = false
+		// The frame phase is read from the wall clock at render time, so this
+		// tick only has to refresh what is baked into text: the elapsed badges
+		// and the revealed previews.
+		if m.refreshLiveContent(msg.at, true) {
+			m.markDirty()
+		}
+		if m.dirty {
+			m.flushTranscript(true)
+		}
+		cmds = append(cmds, m.armSpinnerTick())
+
+	case tea.MouseMsg:
+		// MouseModeCellMotion is declared on every frame, so wheel events do
+		// arrive. The transcript owns them: three lines per notch, exactly like
+		// Up/Down, and a user parked in scrollback stays there because the
+		// autoscroll contract only follows a viewport already at the bottom.
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.viewport.ScrollUp(mouseWheelLines)
+		case tea.MouseWheelDown:
+			m.viewport.ScrollDown(mouseWheelLines)
 		}
 
 	case frameMsg:
@@ -657,14 +741,17 @@ const minModelWidth = 12
 
 func (m *Model) renderStatusBar() string {
 	contentWidth := max(1, m.width-2)
+	// One clock sample for every animated part of the bar, so the mascot, the
+	// spinner and the shimmer band can never disagree about the frame.
+	now := msgNow()
 
 	// Mascot has no textual fallback, so it's dropped last; model id truncates first.
-	head := m.mascot.inline(msgNow(), mascotFaceStyles) +
+	head := m.mascot.inline(now, mascotFaceStyles) +
 		statusSeparator + statusProviderStyle.Render(m.providerName)
 
 	var suffix string
 	if m.streaming {
-		suffix = statusSeparator + statusStreamingStyle.Render(m.mascot.state.String())
+		suffix = statusSeparator + m.renderWorkingState(now)
 	}
 
 	// Metrics appear only while a turn runs and only when they fit: the
@@ -705,6 +792,22 @@ func (m *Model) renderStatusBar() string {
 		left += statusBarStyle.Render(strings.Repeat(" ", gap))
 	}
 	return left + right
+}
+
+// renderWorkingState is the status bar's working row: the shared spinner glyph
+// followed by the state word. Motion on, the word carries the shimmer band;
+// motion off, the same cells render in the plain streaming colour. Either way
+// the glyph and the word are present — a functional indicator degrades, it
+// never disappears.
+func (m *Model) renderWorkingState(now time.Time) string {
+	glyph := m.spinnerGlyph(now)
+	label := m.mascot.state.String()
+	if !m.decorativeMotion() {
+		return statusStreamingStyle.Render(glyph + " " + label)
+	}
+	// Splitting the padding off keeps both branches exactly the same width, so
+	// toggling motion never reflows the bar.
+	return statusStreamingStyle.Render(glyph) + renderShimmer(" "+label, now)
 }
 
 // renderTurnMetrics builds the compact "elapsed · tokens · ctx%" cluster. A
@@ -984,67 +1087,129 @@ func (m *Model) addMessage(msg ChatMessage) {
 	m.flushNow()
 }
 
-// toolCardContent renders a pending tool card's body: the same 200-character
-// argument preview the start card has always shown, now updated per delta.
-func toolCardContent(args string) string {
-	trimmed := safetext.Sanitize(strings.TrimSpace(args))
-	if len(trimmed) > 200 {
-		trimmed = trimmed[:197] + "..."
+// toolCard is the live state of one pending tool call: where its card sits in
+// the transcript, when the call started (the elapsed badge) and how much of
+// its argument preview has been revealed.
+type toolCard struct {
+	index int
+	since time.Time
+	args  string
+	shown int
+}
+
+// toolPreviewRunes is the argument preview width the card has always shown.
+const toolPreviewRunes = 200
+
+// truncateToolPreview caps a preview, rune-wise so a multi-byte argument can
+// never be cut mid-character. Only the surviving window is decoded: a tool
+// that streams a megabyte of arguments must not cost a megabyte-sized rune
+// conversion on every reveal frame.
+func truncateToolPreview(preview string) string {
+	preview = strings.TrimSpace(preview)
+	if len(preview) <= toolPreviewRunes {
+		return preview
 	}
-	content := "running…"
-	if trimmed != "" {
-		content += "\n" + trimmed
+	window := preview
+	if budget := toolPreviewRunes * utf8.UTFMax; len(window) > budget {
+		window = window[:budget]
 	}
-	return content
+	runes := []rune(window)
+	if len(window) == len(preview) && len(runes) <= toolPreviewRunes {
+		return preview
+	}
+	return string(runes[:toolPreviewRunes-3]) + "..."
+}
+
+// toolCardContent renders a pending card's body: the shared spinner glyph, the
+// intent text, an elapsed badge once a second has passed, and the revealed
+// argument preview. Every refresh goes through this one composer, so a card's
+// glyph, badge and text always belong to the same frame.
+func toolCardContent(glyph string, elapsed time.Duration, preview string) string {
+	head := glyph + " running…"
+	if elapsed >= time.Second {
+		head += " · " + formatTurnElapsed(elapsed)
+	}
+	if preview = truncateToolPreview(preview); preview != "" {
+		return head + "\n" + preview
+	}
+	return head
 }
 
 // upsertPendingToolCard creates or updates the card for one tool call. Deltas,
-// the start event and the result all share the ToolCallID, so a call owns
+// the start event and the result all share the tool call id, so a call owns
 // exactly one card from its first fragment until its result replaces it.
 func (m *Model) upsertPendingToolCard(name, args, toolCallID string) {
+	args = safetext.Sanitize(args)
+	now := msgNow()
 	if toolCallID == "" {
-		// Without an id the card cannot be reused; still show the call.
+		// Without an id the card cannot be reused or refreshed, so it shows the
+		// whole preview at once instead of a reveal that would never advance.
 		m.messages = append(m.messages, ChatMessage{
 			Role:    RoleTool,
 			Label:   "🔧 " + safetext.Sanitize(name),
-			Content: toolCardContent(args),
+			Content: toolCardContent(m.spinnerGlyph(now), 0, args),
 		})
 		return
 	}
-	if idx, ok := m.pendingTools[toolCallID]; ok && idx < len(m.messages) {
-		m.messages[idx].Content = toolCardContent(args)
-		if name != "" {
-			m.messages[idx].Label = "🔧 " + safetext.Sanitize(name)
+	if card, ok := m.pendingTools[toolCallID]; ok && card.index < len(m.messages) {
+		card.args = args
+		if card.shown > len(args) {
+			card.shown = len(args)
 		}
+		prefix, shown := m.revealPrefix(card.args, card.shown, false)
+		card.shown = shown
+		m.messages[card.index].Content = toolCardContent(m.spinnerGlyph(now), cardElapsed(card.since, now), prefix)
+		if name != "" {
+			m.messages[card.index].Label = "🔧 " + safetext.Sanitize(name)
+		}
+		m.pendingTools[toolCallID] = card
 		return
 	}
+	prefix, shown := m.revealPrefix(args, 0, false)
 	m.messages = append(m.messages, ChatMessage{
 		Role:    RoleTool,
 		Label:   "🔧 " + safetext.Sanitize(name),
-		Content: toolCardContent(args),
+		Content: toolCardContent(m.spinnerGlyph(now), 0, prefix),
 	})
-	m.pendingTools[toolCallID] = len(m.messages) - 1
+	m.pendingTools[toolCallID] = &toolCard{
+		index: len(m.messages) - 1,
+		since: now,
+		args:  args,
+		shown: shown,
+	}
 }
 
-func (m *Model) setStreamingMessage(content string) {
+// updateStreamingTail writes the revealed prefix into the live assistant
+// block, appending the block when the turn's first tokens arrive. It reports
+// whether the transcript changed, so callers mark the viewport dirty once per
+// frame instead of once per widget.
+func (m *Model) updateStreamingTail(content string) bool {
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == RoleAssistant {
+		if m.messages[len(m.messages)-1].Content == content {
+			return false
+		}
 		m.messages[len(m.messages)-1].Content = content
-	} else {
-		m.messages = append(m.messages, ChatMessage{
-			Role:    RoleAssistant,
-			Label:   "GoCode",
-			Content: content,
-		})
+		return true
 	}
-	// The caller decides when the viewport catches up: chunks mark dirty and
-	// ride the coalescing tick, so this must not call SetContent itself.
-	m.markDirty()
+	if content == "" {
+		// Nothing revealed yet: do not open an empty bubble.
+		return false
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Role:    RoleAssistant,
+		Label:   "GoCode",
+		Content: content,
+	})
+	return true
 }
 
 func (m *Model) finalizeStreamingMessage() {
 	if m.streamBuf.Len() > 0 {
 		content := m.streamBuf.String()
 		m.streamBuf.Reset()
+		// The buffer restarts at zero for the next assistant block, so the
+		// reveal offset has to restart with it.
+		m.revealShown = 0
 		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == RoleAssistant {
 			m.messages[len(m.messages)-1].Content = content
 		}
@@ -1060,7 +1225,7 @@ func forwardToTextarea(msg tea.Msg) bool {
 	switch msg.(type) {
 	case agentChunkMsg, agentToolDeltaMsg, agentToolStartMsg, agentToolMsg,
 		agentDoneMsg, agentTurnStartMsg, agentTurnMetricsMsg, agentExitMsg,
-		approvalRequestMsg, transcriptFlushMsg, frameMsg:
+		approvalRequestMsg, transcriptFlushMsg, spinnerTickMsg, frameMsg:
 		return false
 	}
 	return true

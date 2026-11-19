@@ -595,3 +595,126 @@ func TestConfig_ContextUnknownKeyRejected(t *testing.T) {
 		t.Fatalf("error does not name the unknown key: %v", err)
 	}
 }
+
+func TestConfig_TUIDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.TUI.Motion != TUIMotionAuto {
+		t.Errorf("default motion = %q, want %q", cfg.TUI.Motion, TUIMotionAuto)
+	}
+	if !cfg.TUI.SmoothStreaming {
+		t.Error("smooth_streaming must be on by default: pacing is what makes a burst readable")
+	}
+}
+
+// Both keys are contracts: a value written to disk must come back unchanged.
+func TestConfig_TUIKeysRoundTrip(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[tui]\nmotion = \"reduced\"\nsmooth_streaming = false\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.TUI.Motion != TUIMotionReduced {
+		t.Errorf("motion = %q, want %q", loaded.TUI.Motion, TUIMotionReduced)
+	}
+	if loaded.TUI.SmoothStreaming {
+		t.Error("smooth_streaming = false was not applied")
+	}
+
+	outFile := filepath.Join(t.TempDir(), "roundtrip.toml")
+	if err := SaveToPath(loaded, outFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	again, err := LoadFromPath(outFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if again.TUI.Motion != TUIMotionReduced || again.TUI.SmoothStreaming {
+		t.Fatalf("tui keys did not round-trip: %+v", again.TUI)
+	}
+}
+
+func TestConfig_TUIDefaultsSurviveUnrelatedFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\ndefault = \"openai\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.TUI.Motion != TUIMotionAuto || !loaded.TUI.SmoothStreaming {
+		t.Fatalf("tui defaults lost: %+v", loaded.TUI)
+	}
+}
+
+func TestConfig_TUIUnknownKeyRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[tui]\nmotionn = \"off\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("misspelled [tui] key must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown keys") || !strings.Contains(err.Error(), "motionn") {
+		t.Fatalf("error does not name the unknown key: %v", err)
+	}
+}
+
+// A wrong value is the same class of mistake as a wrong key: it would silently
+// do nothing, so it is an error rather than a fallback.
+func TestConfig_TUIMotionValueRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[tui]\nmotion = \"wobbly\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("an unknown motion mode must be rejected")
+	}
+	if !strings.Contains(err.Error(), "tui.motion") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+	for _, want := range []string{TUIMotionAuto, TUIMotionReduced, TUIMotionOff} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not list %q among the accepted values: %v", want, err)
+		}
+	}
+}
+
+// Every accepted spelling normalizes to one of the three modes, so the TUI
+// never has to guess.
+func TestConfig_TUIMotionValues(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", TUIMotionAuto},
+		{"auto", TUIMotionAuto},
+		{" AUTO ", TUIMotionAuto},
+		{"reduced", TUIMotionReduced},
+		{"Reduced", TUIMotionReduced},
+		{"off", TUIMotionOff},
+		{"OFF", TUIMotionOff},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			tmpFile := filepath.Join(t.TempDir(), "config.toml")
+			contents := "[tui]\nmotion = \"" + tc.in + "\"\n"
+			if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write failed: %v", err)
+			}
+			loaded, err := LoadFromPath(tmpFile)
+			if err != nil {
+				t.Fatalf("load failed: %v", err)
+			}
+			if loaded.TUI.Motion != tc.want {
+				t.Errorf("motion %q loaded as %q, want %q", tc.in, loaded.TUI.Motion, tc.want)
+			}
+		})
+	}
+}

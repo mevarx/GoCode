@@ -13,7 +13,13 @@ func newTestModel(cancelCh chan struct{}) Model {
 	if cancelCh == nil {
 		cancelCh = make(chan struct{}, 1)
 	}
-	return NewModel("ollama", "llama3", "0.4.0", "", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
+	return NewModel("ollama", "llama3", "0.4.0", "", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{}, testMotion())
+}
+
+// testMotion is the production default: motion follows the terminal and
+// streamed text is paced.
+func testMotion() MotionSettings {
+	return MotionSettings{Mode: MotionAuto, SmoothStreaming: true}
 }
 
 func cmdQuits(t *testing.T, cmd tea.Cmd) bool {
@@ -88,7 +94,7 @@ func TestWindowResizeFitsSmallTerminal(t *testing.T) {
 }
 
 func TestStatusBarShowsWorkspace(t *testing.T) {
-	m := NewModel("deepseek", "deepseek-flash", "0.4.0", "/work/my-project", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), make(chan struct{}, 1), []list.Item{})
+	m := NewModel("deepseek", "deepseek-flash", "0.4.0", "/work/my-project", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), make(chan struct{}, 1), []list.Item{}, testMotion())
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	if got := m.renderStatusBar(); !strings.Contains(got, "my-project") {

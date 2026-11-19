@@ -464,7 +464,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, cfg.Context.AutoCompact, cfg.Context.KeepRecentTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout)
+		motion := tui.MotionSettings{Mode: cfg.TUI.Motion, SmoothStreaming: cfg.TUI.SmoothStreaming}
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, cfg.Context.AutoCompact, cfg.Context.KeepRecentTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout, motion)
 	}
 
 	return loop.Run(ctx)

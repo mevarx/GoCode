@@ -15,6 +15,11 @@ import (
 
 // A call owns one card from its first argument fragment through its result;
 // repeated deltas and the later start event must not append duplicates.
+//
+// P5 changed what the body shows mid-stream: the card is paced by the reveal
+// law, so a delta only grows the card's target and the preview appears over
+// the next few frames. The identity and ownership contract is unchanged; the
+// preview is asserted once the reveal drains.
 func TestToolDeltaUpsertsOnePendingCard(t *testing.T) {
 	m := newTestModel(nil)
 	m = drive(m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -30,8 +35,20 @@ func TestToolDeltaUpsertsOnePendingCard(t *testing.T) {
 	if card.Role != RoleTool || card.Label != "🔧 file_write" {
 		t.Errorf("card identity = %+v", card)
 	}
-	if card.Content != "running…\n"+`{"path":"a.txt"}` {
-		t.Errorf("card preview = %q", card.Content)
+	if strings.Contains(card.Content, "a.txt") {
+		t.Errorf("the preview appeared before the reveal advanced: %q", card.Content)
+	}
+
+	m = revealAll(t, m)
+	head, preview, ok := strings.Cut(m.messages[0].Content, "\n")
+	if !ok {
+		t.Fatalf("card has no preview line: %q", m.messages[0].Content)
+	}
+	if preview != `{"path":"a.txt"}` {
+		t.Errorf("card preview = %q", preview)
+	}
+	if glyph := strings.TrimSuffix(head, " running…"); !isBrailleFrame(glyph) {
+		t.Errorf("card head %q does not lead with a spinner frame", head)
 	}
 
 	m = drive(m, agentToolStartMsg{name: "file_write", args: `{"path":"a.txt"}`, toolCallID: "c1"})
@@ -51,15 +68,22 @@ func TestToolDeltaUpsertsOnePendingCard(t *testing.T) {
 	}
 }
 
-// The delta preview keeps the same 200-character cap the start card had.
+// The delta preview keeps the same 200-character cap the start card had. The
+// body now leads with the shared spinner glyph, so the preview is the line
+// after the header rather than the whole body.
 func TestToolDeltaPreviewTruncates(t *testing.T) {
 	m := newTestModel(nil)
 	m = drive(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.streaming = true
 
 	long := strings.Repeat("x", 500)
 	m = drive(m, agentToolDeltaMsg{name: "file_write", args: long, toolCallID: "c1"})
+	m = revealAll(t, m)
 
-	body := strings.TrimPrefix(m.messages[0].Content, "running…\n")
+	_, body, ok := strings.Cut(m.messages[0].Content, "\n")
+	if !ok {
+		t.Fatalf("card has no preview line: %q", m.messages[0].Content)
+	}
 	if len(body) != 200 {
 		t.Fatalf("preview length = %d, want 200", len(body))
 	}

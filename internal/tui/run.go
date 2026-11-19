@@ -31,6 +31,7 @@ func Run(
 	scratchpad *tools.ScratchpadStore,
 	verifyCommand string,
 	verifyTimeout time.Duration,
+	motion MotionSettings,
 ) error {
 	bridge := NewApprovalBridge()
 	approval.OnPresentChoice = bridge.RequestApprovalChoice
@@ -78,7 +79,7 @@ func Run(
 		})
 	}
 
-	m := NewModel(registry.ActiveName(), session.Model(), version, workspaceRoot, bridge, inputCh, steerCh, outputCh, cancelCh, pickerItems)
+	m := NewModel(registry.ActiveName(), session.Model(), version, workspaceRoot, bridge, inputCh, steerCh, outputCh, cancelCh, pickerItems, motion)
 	m.agentSession = session
 	m.registry = registry
 
