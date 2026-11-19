@@ -137,6 +137,17 @@ type Model struct {
 	lastTurn    agent.TurnMetrics
 	turnStarted time.Time
 
+	// Rendered-block cache: settled transcript messages render once; only the
+	// live assistant tail and mutating tool cards render again.
+	cache renderCache
+
+	// dirty marks transcript content the viewport has not seen yet; flushArmed
+	// dedupes the coalescing tick so a chunk burst cannot stack tick chains.
+	dirty      bool
+	flushArmed bool
+	// viewportFlushes counts transcript applications; coalescing tests read it.
+	viewportFlushes int
+
 	cancelRequested bool
 }
 
@@ -172,13 +183,25 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 	}
 }
 
+// Init arms only the commands that must run at startup. There is deliberately
+// no mascot tick: the idle pose is static, and animation chains arm when a turn
+// starts, so an open session costs no CPU while nothing moves.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
-		tickUntil(cadence(mascotIdle), m.animEpoch),
 		pollApproval(m.bridge),
 		m.listenOutput(),
 	)
+}
+
+// animationTick arms one mascot frame chain. Reduced motion turns decorative
+// motion off at the source: no chain is started at all, and the static pose
+// plus the status-bar state word remain the functional indicators.
+func (m *Model) animationTick(s mascotState) tea.Cmd {
+	if capabilities.ReducedMotion {
+		return nil
+	}
+	return tickUntil(cadence(s), m.animEpoch)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -222,6 +245,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoBottom()
 			}
 		}
+		m.dirty = false
 		m.modelPicker.SetWidth(max(1, m.width-10))
 		m.modelPicker.SetHeight(max(1, m.height-6))
 
@@ -317,11 +341,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamBuf.Reset()
 			// No tokens yet, so show thinking rather than streaming.
 			m.mascot.setState(mascotThinking, msgNow())
-			m.animating = true
+			// Advance the epoch every turn so stale frames can't match later.
 			m.animEpoch++
+			m.animating = !capabilities.ReducedMotion
 			inputCh := m.inputCh
 			go func() { inputCh <- input }()
-			cmds = append(cmds, m.listenOutput(), tickUntil(cadence(mascotThinking), m.animEpoch))
+			cmds = append(cmds, m.listenOutput())
+			if tick := m.animationTick(mascotThinking); tick != nil {
+				cmds = append(cmds, tick)
+			}
 
 		case "up":
 			if !m.textarea.Focused() {
@@ -341,9 +369,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mascot.setState(mascotWorking, msgNow())
 		// Strip escapes at ingestion so the stream buffer never holds them.
 		m.streamBuf.WriteString(safetext.Sanitize(msg.delta))
+		// Mutate the live tail and mark the transcript dirty; the viewport is
+		// updated by the coalescing tick, at most 30 times a second, so a fast
+		// token stream never re-renders per token.
 		m.setStreamingMessage(m.streamBuf.String())
-		if m.viewport.AtBottom() {
-			m.viewport.GotoBottom()
+		if tick := m.armFlushTick(); tick != nil {
+			cmds = append(cmds, tick)
 		}
 		cmds = append(cmds, m.listenOutput())
 
@@ -378,6 +409,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addMessage(ChatMessage{Role: RoleError, Label: "Error", Content: safetext.Sanitize(msg.err.Error())})
 			}
 		}
+		// The last chunks may still be waiting on the coalescing tick; a turn
+		// end is discrete, so its final text appears now.
+		if m.dirty {
+			m.flushNow()
+		}
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
@@ -387,7 +423,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Reuse a card created by an argument delta; no duplicate card.
 		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
-		m.viewport.SetContent(m.renderMessages())
+		// Tool start is discrete: show it now rather than on the next tick.
+		m.flushNow()
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
@@ -396,9 +433,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
 		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
-		m.viewport.SetContent(m.renderMessages())
-		if m.viewport.AtBottom() {
-			m.viewport.GotoBottom()
+		// Argument previews stream like assistant text, so they ride the same
+		// coalesced flush instead of redrawing per fragment.
+		m.markDirty()
+		if tick := m.armFlushTick(); tick != nil {
+			cmds = append(cmds, tick)
 		}
 		cmds = append(cmds, m.listenOutput())
 
@@ -425,7 +464,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages[idx].Content = result
 			m.messages[idx].Diff = diff
 			delete(m.pendingTools, msg.toolCallID)
-			m.viewport.SetContent(m.renderMessages())
+			// A finished card is discrete: its result is visible immediately.
+			m.flushNow()
 		} else {
 			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff})
 		}
@@ -452,6 +492,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalFocus = 0
 		return m, pollApproval(m.bridge)
 
+	case transcriptFlushMsg:
+		// The coalescing tick fired; chunks that arrived since the last flush
+		// are applied now, in one viewport update.
+		m.flushArmed = false
+		if m.dirty {
+			m.flushTranscript(true)
+		}
+
 	case frameMsg:
 		m.mascot.step(msg.at)
 		// Re-arm only current turn so late frames can't keep old chains ticking.
@@ -460,7 +508,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if !m.approvalActive {
+	if !m.approvalActive && forwardToTextarea(msg) {
 		var taCmd tea.Cmd
 		m.textarea, taCmd = m.textarea.Update(msg)
 		cmds = append(cmds, taCmd)
@@ -797,17 +845,6 @@ func truncateToWidth(text string, width int) string {
 	return result.String() + "…"
 }
 
-func (m *Model) renderMessages() string {
-	if len(m.messages) == 0 {
-		return renderBanner(m.providerName, m.modelName, m.version, m.width)
-	}
-	parts := make([]string, 0, len(m.messages)*3)
-	for _, msg := range m.messages {
-		parts = append(parts, m.renderMessage(msg))
-	}
-	return strings.Join(parts, "\n")
-}
-
 func (m *Model) renderMessage(msg ChatMessage) string {
 	switch msg.Role {
 	case RoleUser:
@@ -943,7 +980,8 @@ func (m *Model) addMessage(msg ChatMessage) {
 		m.finalizeStreamingMessage()
 	}
 	m.messages = append(m.messages, msg)
-	m.viewport.SetContent(m.renderMessages())
+	// A message append is discrete: it appears in this frame, not the next tick.
+	m.flushNow()
 }
 
 // toolCardContent renders a pending tool card's body: the same 200-character
@@ -998,7 +1036,9 @@ func (m *Model) setStreamingMessage(content string) {
 			Content: content,
 		})
 	}
-	m.viewport.SetContent(m.renderMessages())
+	// The caller decides when the viewport catches up: chunks mark dirty and
+	// ride the coalescing tick, so this must not call SetContent itself.
+	m.markDirty()
 }
 
 func (m *Model) finalizeStreamingMessage() {
@@ -1011,9 +1051,27 @@ func (m *Model) finalizeStreamingMessage() {
 	}
 }
 
+// forwardToTextarea reports whether a message can affect the input box. Agent
+// traffic (streamed tokens, tool deltas, animation frames) cannot, and bubbles'
+// textarea re-renders its value on every message it sees: forwarding a token
+// stream costs tens of microseconds and hundreds of allocations per chunk for
+// no visible change.
+func forwardToTextarea(msg tea.Msg) bool {
+	switch msg.(type) {
+	case agentChunkMsg, agentToolDeltaMsg, agentToolStartMsg, agentToolMsg,
+		agentDoneMsg, agentTurnStartMsg, agentTurnMetricsMsg, agentExitMsg,
+		approvalRequestMsg, transcriptFlushMsg, frameMsg:
+		return false
+	}
+	return true
+}
+
 func (m Model) listenOutput() tea.Cmd {
+	// Capture the channel, not the model: a closure over the receiver copies
+	// the whole ~96 KB Model, and this runs once per streamed chunk.
+	ch := m.outputCh
 	return func() tea.Msg {
-		return <-m.outputCh
+		return <-ch
 	}
 }
 
