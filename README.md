@@ -64,7 +64,7 @@ go build -o gocode ./cmd/gocode/
 
 Pre-built binaries are available on the [Releases page](https://github.com/mevarx/GoCode/releases).
 
-Building from source requires Go 1.26.8 or newer (see `go.mod`).
+Building from source uses the Go version pinned in `go.mod` (1.26.11); an older installed toolchain downloads it automatically (`GOTOOLCHAIN=auto`).
 
 </details>
 
@@ -110,7 +110,7 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
 | `/help` | Show all in-session commands |
 
-TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
+TUI keys: `Ctrl+K` opens the command palette, `Ctrl+L` the model picker, `Tab` completes slash commands and their arguments, `Alt+P`/`Alt+N` recall prompt history, and the mouse wheel scrolls the transcript. `Enter` while the agent is streaming queues a steering message instead of interrupting; `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
 
 ---
 
@@ -130,6 +130,21 @@ TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears 
 
 Change which tools need approval with the `[permissions]` section of `config.toml`. See [Security](#security) before auto-approving anything.
 
+### Context that manages itself
+
+Long sessions stay usable without manual housekeeping:
+
+- **Automatic compaction** summarizes earlier turns before the context window fills, cutting only at turn boundaries so a tool result never separates from its call. Old tool output is elided to token-count placeholders, and a provider context-overflow error triggers compaction and one retry instead of silently dropping history. Tune it with `[context]` in `config.toml`; `/compact` still works on demand.
+- **Mid-turn steering**: press `Enter` while the agent is working to queue guidance; it is applied at the next model round — no cancel needed.
+- **Provider-reported usage**: token counts come from the provider when it reports them (opt-in `stream_usage` for OpenAI-compatible gateways), and the status line shows context usage, last-turn tokens and elapsed time.
+
+### A terminal UI that keeps up
+
+- Tool calls render as live cards: arguments stream in as the model writes them, with spinner, elapsed time and clear pending/running/done/error states. Diffs keep their dedicated preview.
+- Streamed text reveals smoothly instead of landing in bursts; spinners across the status bar and tool cards share one clock.
+- `Ctrl+K` command palette, `Tab` completion, prompt history, a session picker (`/sessions`) and a model picker that refreshes when opened.
+- Motion is configurable (`[tui] motion = "auto" | "reduced" | "off"`, `smooth_streaming`), and terminal reduced-motion preferences are honored — functional indicators degrade to static glyphs, never disappear.
+
 ### Providers
 
 Switch providers and models at any time with `/provider` and `/model`. GoCode ships with gateways for:
@@ -141,7 +156,7 @@ Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, M
 | Google Gemini | `gemini` | `GEMINI_API_KEY` |
 | Anthropic Claude | `anthropic` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai` | `OPENAI_API_KEY` |
-| GitHub Copilot | `copilot` | `GITHUB_COPILOT_TOKEN` (or `gocode auth copilot`) |
+| GitHub Copilot | `copilot` | `GITHUB_COPILOT_TOKEN` (or `gocode auth copilot --client-id <oauth-app-id>`) |
 | xAI | `xai` | `XAI_API_KEY` |
 | Mistral | `mistral` | `MISTRAL_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
@@ -156,10 +171,10 @@ Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, M
 | Qwen (DashScope) | `qwen` | `DASHSCOPE_API_KEY` |
 | Kimi (Moonshot) | `kimi` | `MOONSHOT_API_KEY` |
 | Hermes Agent | `hermes` | `HERMES_API_SERVER_KEY` |
-| OmniRoute | `omniroute` | `OMNIROUTE_API_KEY` |
+| OmniRoute | `omniroute` | none (local gateway at `127.0.0.1:20128`) |
 | Ollama (local) | `ollama` | none |
 
-Model catalogs change often. Use `/providers` to list the models a provider currently exposes and `/model <id>` to select one. Availability still depends on your account, region, and plan.
+Model catalogs change often. Use `/providers` to list all providers plus the active provider's current models, and `/model <id>` to select one. Availability still depends on your account, region, and plan.
 
 **Add any OpenAI-compatible endpoint** (company gateways, llama.cpp, OpenCode Zen, and others):
 
@@ -188,6 +203,8 @@ Conversations are saved to SQLite and the last session resumes automatically.
 /sessions <id>       # switch to a session (alias: /resume <id>)
 /new                 # start fresh
 ```
+
+In the TUI, `/sessions` opens an interactive picker (type to filter, arrows to move, Enter to resume); the plain terminal keeps the text list.
 
 #### Exporting sessions
 
@@ -300,6 +317,7 @@ A minimal example:
 ```toml
 [provider]
 default = "gemini"
+# stream_usage = true       # ask OpenAI-compatible gateways for token usage
 
 [provider.gemini]
 api_key_env = "GEMINI_API_KEY"   # preferred: the key stays in the environment, not in this file
@@ -312,6 +330,14 @@ sensitive_patterns = ["*.vault"]             # extra patterns hidden from the AI
 
 [session]
 persist = true
+
+[context]
+auto_compact = true         # summarize earlier turns before the window fills
+keep_recent_tokens = 20000  # verbatim tail automatic compaction keeps
+
+[tui]
+motion = "auto"             # auto | reduced | off (decorative motion)
+smooth_streaming = true     # pace streamed text instead of bursty dumps
 
 [tools]
 max_tool_iterations = 50      # provider round-trips per turn
@@ -340,14 +366,17 @@ Release builds are configured with GoReleaser for Linux, macOS, and Windows on A
 
 ```
 cmd/gocode/        CLI entry point, flags, subcommands
-internal/agent/    agent loop, session memory, slash commands
-internal/config/   platform directories, TOML parsing
+internal/agent/    agent loop, context management, slash-command registry
+internal/config/   platform directories, strict TOML parsing
 internal/provider/ provider registry (Ollama, OpenAI-compatible, Anthropic)
 internal/tools/    tool registry, shell execution, patch engine, approval gates
 internal/session/  SQLite session persistence
 internal/mcp/      MCP stdio client
 internal/ignore/   .gocodeignore / .gitignore matching
-internal/tui/      Bubble Tea interface
+internal/safetext/ terminal text sanitization
+internal/eval/     deterministic eval suite (make eval)
+internal/version/  build version metadata
+internal/tui/      Bubble Tea interface (render cache, overlays, animation)
 ```
 
 A deeper walkthrough is in [docs/architecture.md](docs/architecture.md).

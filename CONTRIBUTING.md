@@ -83,7 +83,7 @@ GoCode is designed around modular Go interfaces (`provider.Provider` and `tools.
 
 ### Prerequisites
 
-- **Go**: 1.22 or higher installed ([golang.org](https://golang.org/dl/)).
+- **Go**: 1.26.11 or newer — the version pinned in `go.mod` ([golang.org](https://golang.org/dl)). An older installed toolchain downloads it automatically (`GOTOOLCHAIN=auto`).
 - **Git**: Installed and configured.
 - **Ollama**: (Optional but recommended for local testing) Running locally on port `11434` ([ollama.com](https://ollama.com)).
 
@@ -120,7 +120,13 @@ gocode/
 │   ├── config/           # Configuration management (TOML, XDG paths)
 │   ├── provider/         # LLM Provider interfaces and implementations (Ollama, etc.)
 │   ├── tools/            # Tool interfaces, approval gate, and tool implementations
-│   └── tui/              # Interactive TUI (Bubble Tea model, styles & approval modal)
+│   ├── session/          # SQLite session persistence and export
+│   ├── mcp/              # MCP stdio client
+│   ├── ignore/           # .gocodeignore / .gitignore matching
+│   ├── safetext/         # Terminal text sanitization
+│   ├── eval/             # Deterministic eval suite (make eval)
+│   ├── version/          # Build version metadata
+│   └── tui/              # Interactive TUI (Bubble Tea model, render cache, overlays, animation)
 ├── .goreleaser.yaml      # GoReleaser release configuration
 ├── CONTRIBUTING.md       # Contribution guide
 ├── LICENSE               # MIT License
@@ -136,7 +142,7 @@ gocode/
 
 ### Adding a New Tool
 
-All tools must implement the `tools.Tool` interface defined in [`internal/tools/tool.go`](file:///d:/CODING/GoCode/internal/tools/tool.go):
+All tools must implement the `tools.Tool` interface defined in [`internal/tools/tool.go`](internal/tools/tool.go):
 
 ```go
 type Tool interface {

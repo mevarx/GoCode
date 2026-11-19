@@ -6,6 +6,19 @@
 - Baseline (measured): `go build ./...`, `go vet ./...`, `go test ./...` all clean — 11 packages ok, 579 top-level tests, 816 pass lines incl. subtests, 23 environment-driven skips (Windows), 0 failures. 145 `.go` files, ~33k LOC. Toolchain: go1.26.11 (auto-downloaded; host go1.26.5 satisfies `GOTOOLCHAIN`).
 - Priority per request: **TUI and harness first**. Everything below attaches to existing seams — no rewrites of the engine, the approval model, or the security boundaries.
 
+## Status
+
+| Phase | State | Commit |
+|---|---|---|
+| P1 — turn lifecycle + usage events | ✓ done | `59e8ba8` |
+| P2 — automatic compaction | ✓ done | `8380959` |
+| P3 — tool-arg streaming + steering | ✓ done | `555561c` |
+| P4 — render cache + coalescing | ✓ done | `3d0c9e3` |
+| P5 — animation system | ✓ done | `ebad4e7` |
+| P6 — command registry + palette | ✓ done | `716e7b5` |
+| P7 — live cards + pickers | ✓ done | `4dcec3f` |
+| P8 — docs + final verification | ✓ done | (docs commit) |
+
 ## 0. Mechanism mapping (omp → GoCode)
 
 | omp mechanism | GoCode today | Target phase |
