@@ -7,3 +7,14 @@ dist/
 coverage.out
 
 npm/vendor/
+
+# Local SQLite artifacts (session/test databases and WAL sidecars)
+*.db
+*.db-shm
+*.db-wal
+
+# Go test binaries
+*.test
+
+# npm launcher dependencies
+npm/node_modules/
