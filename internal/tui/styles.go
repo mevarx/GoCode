@@ -105,6 +105,12 @@ var (
 			Foreground(colorToolFg).
 			Bold(true)
 
+	// A finished tool card leads with its ✓, so the label carries the success
+	// role instead of the tool hue; the body stays in the tool bubble.
+	toolDoneLabelStyle = lipgloss.NewStyle().
+				Foreground(colorSuccess).
+				Bold(true)
+
 	toolBubbleStyle = lipgloss.NewStyle().
 			Foreground(colorToolFg).
 			Background(colorToolBg).

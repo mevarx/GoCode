@@ -93,12 +93,29 @@ func Run(
 	return err
 }
 
-// Concurrent with deadline; sequential fetch let one stalled server defer startup.
+// Model collection bounds. Startup and the picker's refresh-on-open share
+// them: one stalled provider must never defer the UI, and a refresh must never
+// leave the list empty for longer than a glance.
+const (
+	pickerProviderTimeout = 2 * time.Second
+	pickerOverallTimeout  = 3 * time.Second
+)
+
+// collectPickerItems queries every provider concurrently, bounded by a
+// per-provider timeout and an overall deadline. It is the one collection path:
+// startup builds the initial snapshot with it and the picker refreshes with it,
+// so both can never disagree about what "a model list" is. A provider that
+// fails or times out contributes nothing; the caller decides whether the result
+// is worth installing.
 func collectPickerItems(ctx context.Context, registry *provider.Registry) []list.Item {
 	names := registry.List()
 	if len(names) == 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, pickerOverallTimeout)
+	defer cancel()
+	// Buffered for every provider so a goroutine that finishes after the
+	// deadline can always deliver and exit instead of leaking.
 	ch := make(chan []list.Item, len(names))
 	for _, name := range names {
 		go func(name string) {
@@ -107,8 +124,8 @@ func collectPickerItems(ctx context.Context, registry *provider.Registry) []list
 				ch <- nil
 				return
 			}
-			mctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			defer cancel()
+			mctx, mcancel := context.WithTimeout(ctx, pickerProviderTimeout)
+			defer mcancel()
 			models, err := p.Models(mctx)
 			var items []list.Item
 			if err == nil {
@@ -119,13 +136,12 @@ func collectPickerItems(ctx context.Context, registry *provider.Registry) []list
 			ch <- items
 		}(name)
 	}
-	deadline := time.After(3 * time.Second)
 	var items []list.Item
 	for range names {
 		select {
 		case batch := <-ch:
 			items = append(items, batch...)
-		case <-deadline:
+		case <-ctx.Done():
 			return sortedPickerItems(items)
 		}
 	}

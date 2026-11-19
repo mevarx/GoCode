@@ -47,7 +47,9 @@ func TestToolDeltaUpsertsOnePendingCard(t *testing.T) {
 	if preview != `{"path":"a.txt"}` {
 		t.Errorf("card preview = %q", preview)
 	}
-	if glyph := strings.TrimSuffix(head, " running…"); !isBrailleFrame(glyph) {
+	// A delta-only card is in the pending phase: it waits for the engine's
+	// start event before it claims to be running.
+	if glyph := strings.TrimSuffix(head, " pending…"); !isBrailleFrame(glyph) {
 		t.Errorf("card head %q does not lead with a spinner frame", head)
 	}
 
@@ -133,7 +135,7 @@ func TestEnterWhileStreamingQueuesSteering(t *testing.T) {
 func TestTurnDoneClearsSteeringChip(t *testing.T) {
 	m := newTestModel(nil)
 	m.queuedSteer = 2
-	if chip := m.renderSteerChip(); !strings.Contains(chip, "2 steered messages queued") {
+	if chip := m.renderSteerChip(); !strings.Contains(chip, "2 queued") {
 		t.Fatalf("chip = %q", chip)
 	}
 	m = drive(m, agentDoneMsg{})

@@ -38,6 +38,9 @@ type ChatMessage struct {
 	Label   string
 	Content string
 	Diff    string
+	// Done marks a successful tool result, so its settled label uses the
+	// success style. RoleError already carries failure styling.
+	Done bool
 }
 
 type agentChunkMsg struct{ delta string }
@@ -117,6 +120,18 @@ type Model struct {
 	palette      list.Model
 	paletteItems []list.Item
 
+	// sessionPicker is the /sessions overlay. Its rows come from the same store
+	// listing the engine's text command prints, loaded off the update loop.
+	sessionPicker list.Model
+	sessionItems  []list.Item
+
+	// pickerRefreshInFlight dedupes the model-picker refresh: opening the
+	// picker while a collection is still running must not start a second one.
+	pickerRefreshInFlight bool
+	// pickerKeep is the model a refresh should re-select once an active
+	// filter's matches land; nil when no filtered refresh is pending.
+	pickerKeep *ModelItem
+
 	// completion is the in-progress Tab cycle and its help-line echo.
 	completion     completionState
 	completionHint string
@@ -191,6 +206,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 	specs := agent.Commands()
 	paletteItems := commandPaletteItems(specs)
 	palette := NewCommandPalette(specs, 80, 24)
+	sessions := NewSessionPicker(nil, 80, 24)
 
 	return Model{
 		streamBuf:     &strings.Builder{},
@@ -203,6 +219,7 @@ func NewModel(providerName, modelName, version, workspaceRoot string, bridge *Ap
 		modelPicker:   picker,
 		palette:       palette,
 		paletteItems:  paletteItems,
+		sessionPicker: sessions,
 		bridge:        bridge,
 		inputCh:       inputCh,
 		steerCh:       steerCh,
@@ -284,6 +301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelPicker.SetWidth(max(1, m.width-10))
 		m.modelPicker.SetHeight(max(1, m.height-6))
 		m.resizePalette()
+		m.resizeSessionPicker()
 
 	case tea.KeyPressMsg:
 		// Modal surfaces own focus in priority order. Approval is always
@@ -298,6 +316,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updatePalette(msg)
 			case overlayPicker:
 				return m.updatePicker(msg)
+			case overlaySession:
+				return m.updateSessionPicker(msg)
 			}
 		}
 
@@ -316,8 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if binding, ok := lookupBindingIn(msg.String(), contexts...); ok {
 			switch binding.Action {
 			case actOpenPicker:
-				m.openModelPicker()
-				return m, nil
+				return m, m.openModelPicker()
 			case actPaletteOpen:
 				m.openCommandPalette()
 				return m, nil
@@ -441,8 +460,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
-		// Reuse a card created by an argument delta; no duplicate card.
-		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
+		// Reuse a card created by an argument delta; no duplicate card. The start
+		// event arrives when the engine commits to the call, which is the edge
+		// between "arguments still streaming" and "call in flight".
+		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID, toolCardRunning)
 		// Tool start is discrete: show it now rather than on the next tick.
 		m.flushNow()
 		m.viewport.GotoBottom()
@@ -452,7 +473,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streaming {
 			m.mascot.setState(mascotWorking, msgNow())
 		}
-		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID)
+		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID, toolCardPending)
 		// Argument previews stream like assistant text, so they ride the same
 		// coalesced flush instead of redrawing per fragment.
 		m.markDirty()
@@ -474,9 +495,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		diff := safetext.Sanitize(msg.diff)
 		label := "🔧 " + toolName
 		role := RoleTool
-		if msg.isError {
+		done := false
+		switch {
+		case msg.isError:
+			// RoleError renders "✗ name: result" in the danger style.
 			role = RoleError
 			label = toolName
+		case msg.toolCallID != "":
+			// A real tool result: the settled card leads with its outcome so the
+			// transcript reads done even in flattened colour.
+			label = toolDoneGlyph + " " + toolName
+			done = true
 		}
 		if card, ok := m.pendingTools[msg.toolCallID]; ok && card.index < len(m.messages) {
 			idx := card.index
@@ -484,11 +513,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages[idx].Label = label
 			m.messages[idx].Content = result
 			m.messages[idx].Diff = diff
+			m.messages[idx].Done = done
 			delete(m.pendingTools, msg.toolCallID)
 			// A finished card is discrete: its result is visible immediately.
 			m.flushNow()
 		} else {
-			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff})
+			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff, Done: done})
 		}
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
@@ -501,12 +531,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		return m, tea.Quit
 
+	case sessionListMsg:
+		cmds = append(cmds, m.applySessionList(msg))
+
+	case pickerRefreshMsg:
+		m.pickerRefreshInFlight = false
+		cmds = append(cmds, m.applyPickerRefresh(msg.items))
+
 	case approvalRequestMsg:
 		if m.overlays.has(overlayApproval) {
 			return m, pollApproval(m.bridge)
 		}
-		// Approval always wins focus: an open picker or palette is dropped,
-		// not stacked under the modal where its keys would go nowhere.
+		// Approval always wins focus: an open picker, palette or session list
+		// is dropped, not stacked under the modal where its keys go nowhere.
 		m.clearCompletion()
 		m.overlays.push(overlayApproval)
 		m.approvalReq = msg.req
@@ -568,6 +605,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.palette, cmd = m.palette.Update(msg)
 			case overlayPicker:
 				m.modelPicker, cmd = m.modelPicker.Update(msg)
+				// A filtered refresh parked the identity until the matches land;
+				// restore the cursor now that the visible rows are known.
+				if keep := m.pickerKeep; keep != nil {
+					m.pickerKeep = nil
+					m.selectModelItem(*keep)
+				}
+			case overlaySession:
+				m.sessionPicker, cmd = m.sessionPicker.Update(msg)
 			}
 			cmds = append(cmds, cmd)
 		}
@@ -648,11 +693,15 @@ func (m Model) updateApproval(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// openModelPicker opens the model picker over whatever is open below it.
-func (m *Model) openModelPicker() {
+// openModelPicker opens the model picker over whatever is open below it and
+// starts a background refresh of the startup snapshot.
+func (m *Model) openModelPicker() tea.Cmd {
 	m.overlays.push(overlayPicker)
 	m.modelPicker.SetWidth(max(1, m.width-10))
 	m.modelPicker.SetHeight(max(1, m.height-6))
+	// A parked selection belongs to the previous open; this one starts fresh.
+	m.pickerKeep = nil
+	return m.refreshModelPicker()
 }
 
 // updatePicker routes keys to the model picker; everything it does not claim
@@ -661,6 +710,7 @@ func (m *Model) updatePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+l", "esc":
 		m.overlays.pop(overlayPicker)
+		m.pickerKeep = nil
 		return *m, nil
 	case "enter":
 		if !m.modelPicker.SettingFilter() {
@@ -697,6 +747,15 @@ func (m *Model) submitPrompt() tea.Cmd {
 	switch strings.ToLower(input) {
 	case "exit", "quit", "/exit", "/quit":
 		return tea.Quit
+	}
+
+	// A bare /sessions is a TUI affordance: it opens the picker instead of
+	// printing the text list. An argument is a resume request, and the engine
+	// handler still owns it end to end. The plain REPL and headless paths do
+	// not run this code, so they keep the text listing.
+	if strings.EqualFold(input, "/sessions") {
+		m.textarea.Reset()
+		return m.openSessionPicker()
 	}
 
 	m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: input})
@@ -844,6 +903,8 @@ func (m Model) render() string {
 			return placeModal(base, modalOverlayStyle.Render(m.palette.View()), m.width, m.height)
 		case overlayPicker:
 			return placeModal(base, modalOverlayStyle.Render(m.modelPicker.View()), m.width, m.height)
+		case overlaySession:
+			return placeModal(base, modalOverlayStyle.Render(m.sessionPicker.View()), m.width, m.height)
 		}
 	}
 
@@ -976,14 +1037,16 @@ func (m *Model) renderInputArea() string {
 }
 
 // renderSteerChip shows how many mid-turn messages are queued for the next
-// round. Empty when nothing is queued, so it costs no row while idle.
+// round. Empty when nothing is queued, so it costs no row while idle. One
+// message reads as a sentence; a batch is a count, because the number is the
+// only part that changes.
 func (m *Model) renderSteerChip() string {
 	if m.queuedSteer <= 0 {
 		return ""
 	}
 	label := "1 steered message queued"
 	if m.queuedSteer > 1 {
-		label = fmt.Sprintf("%d steered messages queued", m.queuedSteer)
+		label = fmt.Sprintf("%d queued", m.queuedSteer)
 	}
 	return steerChipStyle.Render("↳ " + label + " · applied at the next round")
 }
@@ -1078,14 +1141,18 @@ func (m *Model) renderMessage(msg ChatMessage) string {
 		content := asstContentStyle.Width(max(1, m.width-4)).Render(msg.Content)
 		return label + "\n" + content + "\n"
 	case RoleTool:
-		label := toolLabelStyle.Render("  " + msg.Label)
+		labelStyle := toolLabelStyle
+		if msg.Done {
+			labelStyle = toolDoneLabelStyle
+		}
+		label := labelStyle.Render("  " + msg.Label)
 		content := toolBubbleStyle.Width(max(1, m.width-6)).Render(msg.Content)
 		if msg.Diff != "" {
 			content += "\n" + m.renderDiff(msg.Diff)
 		}
 		return label + "\n" + content + "\n"
 	case RoleError:
-		return errorStyle.Render("  ✗ "+msg.Label+": "+msg.Content) + "\n"
+		return errorStyle.Render("  "+toolErrorGlyph+" "+msg.Label+": "+msg.Content) + "\n"
 	case RoleSystem:
 		return systemStyle.Render("  "+msg.Label+" "+msg.Content) + "\n"
 	}
@@ -1206,15 +1273,48 @@ func (m *Model) addMessage(msg ChatMessage) {
 	m.flushNow()
 }
 
-// toolCard is the live state of one pending tool call: where its card sits in
-// the transcript, when the call started (the elapsed badge) and how much of
-// its argument preview has been revealed.
+// toolCard is the live state of one tool call: where its card sits in the
+// transcript, when the call started (the elapsed badge), how much of its
+// argument preview has been revealed, and which lifecycle phase it is in.
 type toolCard struct {
-	index int
-	since time.Time
-	args  string
-	shown int
+	index  int
+	since  time.Time
+	args   string
+	shown  int
+	status toolCardStatus
 }
+
+// toolCardStatus is the card's lifecycle phase. Two phases are live; done and
+// error are terminal and replace the card with a settled message.
+type toolCardStatus int
+
+const (
+	// toolCardPending: argument deltas are still arriving, nothing is executing.
+	toolCardPending toolCardStatus = iota
+	// toolCardRunning: the engine has announced the call (EventToolStart) and
+	// owns it from here — approval may still be pending above the card, then
+	// the tool runs. The engine emits no separate "approved" event, and the
+	// approval gate is the only place that could know; announcing is the last
+	// edge the UI can observe without reaching into the engine.
+	toolCardRunning
+)
+
+// stateWord is the word rendered after the spinner. Pending says what the card
+// is doing (waiting for arguments), running says it is executing.
+func (s toolCardStatus) stateWord() string {
+	if s == toolCardRunning {
+		return "running…"
+	}
+	return "pending…"
+}
+
+// Terminal card markers. A finished card is a settled transcript entry, so the
+// glyph carries the outcome in text: it survives flattened colour and it is
+// what the transcript-searchable history shows.
+const (
+	toolDoneGlyph  = "✓"
+	toolErrorGlyph = "✗"
+)
 
 // toolPreviewRunes is the argument preview width the card has always shown.
 const toolPreviewRunes = 200
@@ -1239,12 +1339,12 @@ func truncateToolPreview(preview string) string {
 	return string(runes[:toolPreviewRunes-3]) + "..."
 }
 
-// toolCardContent renders a pending card's body: the shared spinner glyph, the
-// intent text, an elapsed badge once a second has passed, and the revealed
-// argument preview. Every refresh goes through this one composer, so a card's
-// glyph, badge and text always belong to the same frame.
-func toolCardContent(glyph string, elapsed time.Duration, preview string) string {
-	head := glyph + " running…"
+// toolCardContent renders a live card's body: the shared spinner glyph, the
+// lifecycle state word, an elapsed badge once a second has passed, and the
+// revealed argument preview. Every refresh goes through this one composer, so a
+// card's glyph, word, badge and text always belong to the same frame.
+func toolCardContent(status toolCardStatus, glyph string, elapsed time.Duration, preview string) string {
+	head := glyph + " " + status.stateWord()
 	if elapsed >= time.Second {
 		head += " · " + formatTurnElapsed(elapsed)
 	}
@@ -1257,7 +1357,7 @@ func toolCardContent(glyph string, elapsed time.Duration, preview string) string
 // upsertPendingToolCard creates or updates the card for one tool call. Deltas,
 // the start event and the result all share the tool call id, so a call owns
 // exactly one card from its first fragment until its result replaces it.
-func (m *Model) upsertPendingToolCard(name, args, toolCallID string) {
+func (m *Model) upsertPendingToolCard(name, args, toolCallID string, status toolCardStatus) {
 	args = safetext.Sanitize(args)
 	now := msgNow()
 	if toolCallID == "" {
@@ -1266,18 +1366,19 @@ func (m *Model) upsertPendingToolCard(name, args, toolCallID string) {
 		m.messages = append(m.messages, ChatMessage{
 			Role:    RoleTool,
 			Label:   "🔧 " + safetext.Sanitize(name),
-			Content: toolCardContent(m.spinnerGlyph(now), 0, args),
+			Content: toolCardContent(status, m.spinnerGlyph(now), 0, args),
 		})
 		return
 	}
 	if card, ok := m.pendingTools[toolCallID]; ok && card.index < len(m.messages) {
 		card.args = args
+		card.status = status
 		if card.shown > len(args) {
 			card.shown = len(args)
 		}
 		prefix, shown := m.revealPrefix(card.args, card.shown, false)
 		card.shown = shown
-		m.messages[card.index].Content = toolCardContent(m.spinnerGlyph(now), cardElapsed(card.since, now), prefix)
+		m.messages[card.index].Content = toolCardContent(card.status, m.spinnerGlyph(now), cardElapsed(card.since, now), prefix)
 		if name != "" {
 			m.messages[card.index].Label = "🔧 " + safetext.Sanitize(name)
 		}
@@ -1288,13 +1389,14 @@ func (m *Model) upsertPendingToolCard(name, args, toolCallID string) {
 	m.messages = append(m.messages, ChatMessage{
 		Role:    RoleTool,
 		Label:   "🔧 " + safetext.Sanitize(name),
-		Content: toolCardContent(m.spinnerGlyph(now), 0, prefix),
+		Content: toolCardContent(status, m.spinnerGlyph(now), 0, prefix),
 	})
 	m.pendingTools[toolCallID] = &toolCard{
-		index: len(m.messages) - 1,
-		since: now,
-		args:  args,
-		shown: shown,
+		index:  len(m.messages) - 1,
+		since:  now,
+		args:   args,
+		shown:  shown,
+		status: status,
 	}
 }
 
@@ -1344,7 +1446,8 @@ func forwardToTextarea(msg tea.Msg) bool {
 	switch msg.(type) {
 	case agentChunkMsg, agentToolDeltaMsg, agentToolStartMsg, agentToolMsg,
 		agentDoneMsg, agentTurnStartMsg, agentTurnMetricsMsg, agentExitMsg,
-		approvalRequestMsg, transcriptFlushMsg, spinnerTickMsg, frameMsg:
+		approvalRequestMsg, transcriptFlushMsg, spinnerTickMsg, frameMsg,
+		sessionListMsg, pickerRefreshMsg:
 		return false
 	}
 	return true

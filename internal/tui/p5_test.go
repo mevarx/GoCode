@@ -529,13 +529,22 @@ func TestToolCardContentFormat(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := toolCardContent(tc.glyph, tc.elapsed, tc.preview); got != tc.want {
+			if got := toolCardContent(toolCardRunning, tc.glyph, tc.elapsed, tc.preview); got != tc.want {
 				t.Errorf("toolCardContent = %q, want %q", got, tc.want)
 			}
 		})
 	}
 
-	long := toolCardContent("⠋", 0, strings.Repeat("é", 500))
+	// Pending is the argument-streaming phase: same glyph and badge shape, a
+	// state word that says what the card is waiting for.
+	if got, want := toolCardContent(toolCardPending, "⠋", 0, ""), "⠋ pending…"; got != want {
+		t.Errorf("pending card = %q, want %q", got, want)
+	}
+	if got := toolCardContent(toolCardPending, "⠋", 2*time.Second, `{"a":1}`); !strings.Contains(got, "⠋ pending… · 2s") {
+		t.Errorf("pending card lost its badge or preview: %q", got)
+	}
+
+	long := toolCardContent(toolCardRunning, "⠋", 0, strings.Repeat("é", 500))
 	preview := strings.SplitN(long, "\n", 2)[1]
 	if n := len([]rune(preview)); n != toolPreviewRunes {
 		t.Errorf("preview is %d runes, want %d", n, toolPreviewRunes)

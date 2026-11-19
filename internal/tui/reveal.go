@@ -157,7 +157,7 @@ func (m *Model) refreshLiveContent(now time.Time, advance bool) bool {
 		}
 		prefix, next := m.revealPrefix(card.args, card.shown, advance)
 		card.shown = next
-		content := toolCardContent(glyph, cardElapsed(card.since, now), prefix)
+		content := toolCardContent(card.status, glyph, cardElapsed(card.since, now), prefix)
 		if m.messages[card.index].Content != content {
 			m.messages[card.index].Content = content
 			changed = true

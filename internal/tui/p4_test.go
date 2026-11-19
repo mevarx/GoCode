@@ -107,7 +107,7 @@ func TestToolCardMutationInvalidatesOnlyThatBlock(t *testing.T) {
 	m.renderMessages()
 
 	m.cache.renders = 0
-	m.upsertPendingToolCard("file_read", `{"path":"a.go"}`, "c2")
+	m.upsertPendingToolCard("file_read", `{"path":"a.go"}`, "c2", toolCardRunning)
 	m.renderMessages()
 
 	if m.cache.renders != 1 {

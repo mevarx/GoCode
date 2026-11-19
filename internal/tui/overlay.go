@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -9,6 +10,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/mevarx/GoCode/internal/agent"
+	"github.com/mevarx/GoCode/internal/safetext"
+	"github.com/mevarx/GoCode/internal/session"
 )
 
 // overlayKind identifies one modal surface. The stack keeps the routing and
@@ -19,7 +22,23 @@ const (
 	overlayApproval overlayKind = iota
 	overlayPicker
 	overlayPalette
+	overlaySession
 )
+
+// overlayTitle names a surface for tests and diagnostics.
+func (k overlayKind) String() string {
+	switch k {
+	case overlayApproval:
+		return "approval"
+	case overlayPicker:
+		return "picker"
+	case overlayPalette:
+		return "palette"
+	case overlaySession:
+		return "session"
+	}
+	return "unknown"
+}
 
 // overlayStack is the focus order for modal surfaces. Approval always wins:
 // pushing it drops everything else, so a tool request that arrives while the
@@ -209,27 +228,178 @@ func (m *Model) updatePalette(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	if !m.palette.SettingFilter() {
+	var cmd tea.Cmd
+	m.palette, cmd = filterListUpdate(m.palette, m.paletteItems, msg)
+	return *m, cmd
+}
+
+// filterListUpdate applies one key to a fuzzy list: the first printable key
+// starts the filter (bubbles has no public "start filtering" call, and seeding
+// the filter avoids synthesising the list's own "/" keystroke), later keys go
+// to the filter input, and backspacing to empty restores every item because
+// fuzzy-matching an empty pattern would otherwise render an empty list.
+func filterListUpdate(l list.Model, items []list.Item, msg tea.KeyPressMsg) (list.Model, tea.Cmd) {
+	if !l.SettingFilter() {
 		if text, ok := printableInput(msg); ok {
-			m.palette.SetFilterText(text)
-			m.palette.SetFilterState(list.Filtering)
-			return *m, nil
+			l.SetFilterText(text)
+			l.SetFilterState(list.Filtering)
+			return l, nil
 		}
 		// Non-printable browsing keys (page scroll, quit) stay with the list.
-		var cmd tea.Cmd
-		m.palette, cmd = m.palette.Update(msg)
-		return *m, cmd
+		return l.Update(msg)
+	}
+
+	l, cmd := l.Update(msg)
+	if l.FilterValue() == "" {
+		l.ResetFilter()
+		l.SetItems(items)
+		l.Select(0)
+	}
+	return l, cmd
+}
+
+// --- session picker -------------------------------------------------------
+
+// sessionListLimit mirrors the depth of the text listing in
+// agent.handleSessions (store.ListSessions(20)), so the picker never shows a
+// session the engine's own command would not.
+const sessionListLimit = 20
+
+// sessionListMsg carries one asynchronous listing into the picker. err is set
+// when the store is missing or the query failed; the overlay then falls back
+// to a transcript notice instead of opening an empty list.
+type sessionListMsg struct {
+	summaries []session.SessionSummary
+	err       error
+}
+
+// sessionItemsFromSummaries projects the store's listing into picker rows.
+func sessionItemsFromSummaries(summaries []session.SessionSummary) []list.Item {
+	items := make([]list.Item, 0, len(summaries))
+	for _, sum := range summaries {
+		items = append(items, SessionItem{
+			ID:        sum.ID,
+			Excerpt:   sum.Title,
+			Provider:  sum.Provider,
+			Model:     sum.Model,
+			UpdatedAt: sum.UpdatedAt,
+			Messages:  sum.MessageCount,
+		})
+	}
+	return items
+}
+
+// openSessionPicker shows the overlay immediately (the list fills in when the
+// listing lands) and returns the command that performs the listing off the
+// update loop.
+func (m *Model) openSessionPicker() tea.Cmd {
+	m.clearCompletion()
+	m.overlays.push(overlaySession)
+	m.sessionItems = nil
+	m.sessionPicker.ResetFilter()
+	m.sessionPicker.SetItems(nil)
+	m.resizeSessionPicker()
+	return m.loadSessions()
+}
+
+func (m *Model) resizeSessionPicker() {
+	w, h := pickerFrame(m.width, m.height)
+	m.sessionPicker.SetWidth(w)
+	m.sessionPicker.SetHeight(h)
+}
+
+func (m *Model) closeSessionPicker() {
+	m.overlays.pop(overlaySession)
+	m.sessionPicker.ResetFilter()
+	m.sessionPicker.SetItems(nil)
+	m.sessionPicker.Select(0)
+}
+
+// loadSessions reads the listing through the same store method /sessions uses.
+// The store does synchronous SQLite work, so it runs in the command goroutine;
+// a nil session or store reports through the message instead of blocking.
+func (m *Model) loadSessions() tea.Cmd {
+	sess := m.agentSession
+	if sess == nil || sess.Store() == nil {
+		return func() tea.Msg {
+			return sessionListMsg{err: errSessionStoreUnavailable}
+		}
+	}
+	store := sess.Store()
+	return func() tea.Msg {
+		summaries, err := store.ListSessions(sessionListLimit)
+		return sessionListMsg{summaries: summaries, err: err}
+	}
+}
+
+// errSessionStoreUnavailable is surfaced in the transcript when the picker has
+// no store to read; it matches the engine's own wording.
+var errSessionStoreUnavailable = errors.New("session store is not enabled")
+
+// applySessionList installs a listing, or falls back to a transcript notice
+// when the store is missing, the query failed, or nothing is saved. A closed
+// picker drops the result: the user already moved on.
+func (m *Model) applySessionList(msg sessionListMsg) tea.Cmd {
+	if msg.err != nil {
+		if m.overlays.has(overlaySession) {
+			m.closeSessionPicker()
+			content := "Session listing failed: " + safetext.Sanitize(msg.err.Error())
+			if errors.Is(msg.err, errSessionStoreUnavailable) {
+				// Same wording as the engine's text command, so the two paths
+				// never describe a missing store differently.
+				content = "Session store is not enabled."
+			}
+			m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: content})
+			m.viewport.GotoBottom()
+		}
+		return nil
+	}
+	m.sessionItems = sessionItemsFromSummaries(msg.summaries)
+	if !m.overlays.has(overlaySession) {
+		return nil
+	}
+	if len(m.sessionItems) == 0 {
+		m.closeSessionPicker()
+		m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: "No saved sessions found."})
+		m.viewport.GotoBottom()
+		return nil
+	}
+	cmd := m.sessionPicker.SetItems(m.sessionItems)
+	m.sessionPicker.Select(0)
+	return cmd
+}
+
+// updateSessionPicker routes keys to the session list. Esc closes, Enter
+// resumes the highlighted session by handing "/resume <id>" to the engine
+// (which owns validation), and printable input filters like the palette.
+func (m *Model) updateSessionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.closeSessionPicker()
+		return *m, nil
+	case "enter":
+		if !m.sessionPicker.SettingFilter() {
+			if sel, ok := m.sessionPicker.SelectedItem().(SessionItem); ok {
+				m.closeSessionPicker()
+				// Same engine path as typing the command: store lookup,
+				// provider switch and transcript load all stay in one place.
+				if inputCh := m.inputCh; inputCh != nil {
+					go func() { inputCh <- "/resume " + sel.ID }()
+				}
+				return *m, m.listenOutput()
+			}
+			return *m, nil
+		}
+	case "up":
+		m.sessionPicker.CursorUp()
+		return *m, nil
+	case "down":
+		m.sessionPicker.CursorDown()
+		return *m, nil
 	}
 
 	var cmd tea.Cmd
-	m.palette, cmd = m.palette.Update(msg)
-	if m.palette.FilterValue() == "" {
-		// Backspacing to an empty query must show every command again; fuzzy
-		// matching an empty pattern would otherwise render an empty list.
-		m.palette.ResetFilter()
-		m.palette.SetItems(m.paletteItems)
-		m.palette.Select(0)
-	}
+	m.sessionPicker, cmd = filterListUpdate(m.sessionPicker, m.sessionItems, msg)
 	return *m, cmd
 }
 
@@ -252,6 +422,13 @@ func (m *Model) runPaletteSelection() (Model, tea.Cmd) {
 		return *m, nil
 	}
 	m.closeCommandPalette()
+
+	// /sessions takes an optional id, but staging the prompt would only ask the
+	// user to re-submit what the picker already offers.
+	if item.Name == "/sessions" {
+		m.clearCompletion()
+		return *m, m.openSessionPicker()
+	}
 
 	if commandTakesArgs(item.Usage) {
 		m.clearCompletion()
