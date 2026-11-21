@@ -31,9 +31,8 @@ const (
 // user is asked to approve — the same bytes the gate already presents, so
 // redaction stays the gate's job.
 //
-// DEVIATION (recorded): the wire keeps 's `tool`/`args` field names where
-// the spec says tool_name/params; the shape is the published contract and
-// the schema is additive-only. Path is normalized to a DIRECTORY and GrantKey
+// The wire uses `tool`/`args` field names; the shape is the published
+// contract and the schema is additive-only. Path is normalized to a DIRECTORY and GrantKey
 // narrows the grant (shell tools: the command string).
 type PermissionRequest struct {
 	ID          string          `json:"id"`

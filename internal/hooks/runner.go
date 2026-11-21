@@ -107,7 +107,7 @@ type Runner struct {
 	// hook child environments, on top of the built-in scrub.
 	EnvScrub []string
 	// DefaultTimeoutOverride and AbandonGraceOverride let tests shrink the
-	// budgets; zero selects the spec defaults (30s / 1s).
+	// budgets; zero selects the defaults (30s / 1s).
 	DefaultTimeoutOverride time.Duration
 	AbandonGraceOverride   time.Duration
 }

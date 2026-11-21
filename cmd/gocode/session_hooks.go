@@ -43,8 +43,8 @@ func fireSessionStart(runner *hooks.Runner, sessionID, cwd, source string) {
 	logHookDiagnostics(hooks.SessionStart, agg)
 }
 
-// fireSessionEnd runs the SessionEnd hooks at process exit under the spec's
-// 2s budget. The runner's per-hook timeout cannot outlive it: a spent parent
+// fireSessionEnd runs the SessionEnd hooks at process exit under a 2s
+// budget. The runner's per-hook timeout cannot outlive it: a spent parent
 // context gets no abandon grace.
 func fireSessionEnd(runner *hooks.Runner, sessionID, cwd string) {
 	if !runner.Has(hooks.SessionEnd) {

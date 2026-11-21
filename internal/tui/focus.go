@@ -44,8 +44,8 @@ func (m *Model) setFocus(f focusState) {
 // handleKey is the dispatch contract, in order:
 //
 // 1. ctrl+c BEFORE dialogs — except approval keeps ctrl+c = deny+quit (a
-// security invariant GoCode preserves as a deviation), and the quit
-// dialog's own ctrl+c quits.
+// security invariant GoCode preserves), and the quit dialog's own ctrl+c
+// quits.
 // 2. every other key goes to the open dialog first.
 // 3. esc while a turn runs cancels it.
 // 4. focus routing: editor (prompt + @popup), main (chat), sidebar.

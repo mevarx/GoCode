@@ -47,7 +47,7 @@ const (
 	PostCompact Event = "PostCompact"
 )
 
-// AllEvents lists every event in spec order. Exactly one of TurnEnd,
+// AllEvents lists every event in definition order. Exactly one of TurnEnd,
 // StopFailure and Interrupt fires per finished model turn.
 var AllEvents = []Event{
 	PreToolUse, PostToolUse, PostToolUseFailure,

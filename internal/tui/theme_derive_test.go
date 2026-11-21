@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// The CIELAB tint must land on the spec's recomputed values for the default
+// The CIELAB tint must land on the recomputed values for the default
 // theme's inks; these are the reference points the fractions were fitted to.
 func TestDiffTintMatchesRecomputedPaletteValues(t *testing.T) {
 	insertFg := lipgloss.Color("#629657")

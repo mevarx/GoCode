@@ -173,7 +173,7 @@ func Commands() []CommandSpec {
 
 // findCommand resolves a command token case-insensitively against names and
 // aliases. Tokens are matched literally, so a bare "exit" resolves through the
-// /exit spec's alias while an unregistered bare word never resolves.
+// /exit alias while an unregistered bare word never resolves.
 func findCommand(token string) *CommandSpec {
 	lower := strings.ToLower(token)
 	for i := range commandRegistry {

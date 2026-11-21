@@ -930,7 +930,7 @@ func TestSessionGrantToasts(t *testing.T) {
 	}
 }
 
-// --- keymap parity vs the spec tables ------------------------------------
+// --- keymap contract tests -----------------------------------------------
 
 func TestM4KeymapParity(t *testing.T) {
 	want := []struct {

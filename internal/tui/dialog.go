@@ -32,8 +32,7 @@ func (v dialogVariant) borderColor() color.Color {
 	return t.Primary
 }
 
-// gradientRule fills width cells with ╱ blending from→to, the spec's title
-// rule. Non-positive widths render nothing rather than a stray cell.
+// gradientRule fills width cells with ╱ blending from→to (the title rule). Non-positive widths render nothing rather than a stray cell.
 func gradientRule(from, to color.Color, width int) string {
 	if width <= 0 {
 		return ""

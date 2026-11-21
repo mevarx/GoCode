@@ -319,7 +319,7 @@ preserved.
 
 Deltas are stream **frames**, not whole-message snapshots, so they publish
 lossy-UNKEYED: keyed coalescing would deterministically drop text and break the
-headless frame contract (a recorded deviation). The coalescing lane is
+headless frame contract. The coalescing lane is
 implemented and contract-tested for snapshot-style publishers.
 
 `TurnMetrics` carries prompt/completion tokens, tool-call count, elapsed time,

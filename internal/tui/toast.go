@@ -26,7 +26,7 @@ const (
 	toastError
 )
 
-// defaultToastTTL is the spec's DefaultStatusTTL.
+// defaultToastTTL is the default status-toast lifetime.
 const defaultToastTTL = 5 * time.Second
 
 type toastState struct {

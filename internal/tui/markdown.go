@@ -167,7 +167,7 @@ func themeMarkdownStyles() ansi.StyleConfig {
 			StylePrimitive: ansi.StylePrimitive{
 				Color:           strPtr(hexOf(inlineFg)),
 				BackgroundColor: strPtr(hexOf(inlineBg)),
-				// The spec's inline-code sentinel: a no-break space + U+FE0E
+				// The inline-code sentinel: a no-break space + U+FE0E
 				// on each side — one cell, non-breaking, copy-distinguishable.
 				Prefix: "\u00a0\ufe0e",
 				Suffix: "\u00a0\ufe0e",

@@ -809,7 +809,7 @@ func TestM7CancelWhileQueuedForScope(t *testing.T) {
 
 // --- bus payloads ---
 
-// The full lifecycle rides the bus with the spec fields: requested (all
+// The full lifecycle rides the bus with the fields: requested (all
 // false) → request{id,session,tool_call_id,tool,args,danger,path,grant_key} →
 // granted/denied/cancelled.
 func TestM7BusPayloadLifecycle(t *testing.T) {

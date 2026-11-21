@@ -289,7 +289,7 @@ func (m *Model) renderThemeEditor() string {
 	width := max(40, min(70, m.width-2))
 	e := m.editor
 	var b strings.Builder
-	// A sliding window of fields keeps the dialog inside the spec's 20 rows.
+	// A sliding window of fields keeps the dialog inside 20 rows.
 	const window = 10
 	start := max(0, min(e.cursor-window/2, len(e.keys)-window))
 	end := min(len(e.keys), start+window)

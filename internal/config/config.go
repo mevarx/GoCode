@@ -54,7 +54,7 @@ type TUIConfig struct {
 	Motion string `toml:"motion"`
 	// SmoothStreaming paces streamed text and tool-argument previews into the
 	// transcript instead of rendering them on arrival. Off by default
-	// (render-on-arrival parity); opt in with smooth_streaming = true.
+	// (render-on-arrival behavior); opt in with smooth_streaming = true.
 	SmoothStreaming bool `toml:"smooth_streaming"`
 	// ActiveTheme names a built-in or user theme. Matching is
 	// case-insensitive; an unknown name falls back to the default with a
@@ -327,7 +327,7 @@ func DefaultConfig() Config {
 		},
 		TUI: TUIConfig{
 			Motion: TUIMotionAuto,
-			// Render-on-arrival parity: streamed
+			// Render-on-arrival behavior: streamed
 			// text lands as it arrives. Pacing bursts into the transcript is
 			// opt-in via smooth_streaming = true.
 			SmoothStreaming: false,

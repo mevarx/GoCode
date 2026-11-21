@@ -8,10 +8,10 @@ import (
 
 // Bus delivery classes for LoopEvent:
 //
-// - EventDelta / EventToolDelta: lossy, NO coalescing key. DEVIATION from
-// the brief's suggested Key="msg"/toolCallID, forced by the v0.7.5
-// headless contract: GoCode deltas are stream FRAMES (text fragments and
-// per-frame arg previews), not whole-message snapshots. The
+// - EventDelta / EventToolDelta: lossy, NO coalescing key. A keyed mapping
+// (Key="msg"/toolCallID) is ruled out by the headless contract: GoCode
+// deltas are stream FRAMES (text fragments and per-frame arg previews),
+// not whole-message snapshots. The
 // headless protocol delivers every frame, and coalescing same-key frames
 // deterministically drops records and streamed text (existing headless
 // tests fail under the keyed mapping). The broker's coalescing lane is

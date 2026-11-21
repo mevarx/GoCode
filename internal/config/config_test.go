@@ -602,7 +602,7 @@ func TestConfig_TUIDefaults(t *testing.T) {
 		t.Errorf("default motion = %q, want %q", cfg.TUI.Motion, TUIMotionAuto)
 	}
 	if cfg.TUI.SmoothStreaming {
-		t.Error("smooth_streaming must be off by default: render-on-arrival parity; pacing is opt-in")
+		t.Error("smooth_streaming must be off by default: render-on-arrival behavior; pacing is opt-in")
 	}
 }
 

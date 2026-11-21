@@ -62,7 +62,7 @@ type Broker[T any] struct {
 	mustDeliverDropCount atomic.Int64
 }
 
-// NewBroker returns a broker with the spec-default 4096-slot subscriber
+// NewBroker returns a broker with the default 4096-slot subscriber
 // queues and 50ms must-deliver bound.
 func NewBroker[T any]() *Broker[T] {
 	return NewBrokerWithBufferSize[T](BufferSize)

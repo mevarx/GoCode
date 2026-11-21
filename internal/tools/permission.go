@@ -21,9 +21,9 @@ import (
 // SERVER-stored parameters — a responder only ever echoes the request id and
 // a choice, so it cannot widen a grant.
 //
-// DEVIATION (recorded): sysadmin mode is OMITTED. A nothing-blocked mode
-// contradicts GoCode's unconditional deny-list/redaction invariant; normal
-// and yolo are the only modes. The deny-list outranks every mode and grant.
+// sysadmin mode is deliberately OMITTED: a nothing-blocked mode contradicts
+// GoCode's unconditional deny-list/redaction invariant; normal and yolo are
+// the only modes. The deny-list outranks every mode and grant.
 
 // PermissionMode selects the prompt policy.
 type PermissionMode string

@@ -46,7 +46,7 @@ func (b *ApprovalBridge) RequestApproval(toolName string, args json.RawMessage, 
 //
 // Limitation: the TUI has no argument editor, so ApprovalChoice.ApprovalEdit
 // is never produced here. The plain loop wires tools.ApprovalGate.EditArgs;
-// the TUI deliberately offers only y/a/r/n to avoid claiming parity.
+// the TUI deliberately offers only y/a/r/n (no argument editing).
 func (b *ApprovalBridge) RequestApprovalChoice(toolName string, args json.RawMessage, preview string) (tools.ApprovalChoice, error) {
 	choiceCh := make(chan tools.ApprovalChoice, 1)
 	b.RequestCh <- ApprovalRequest{
