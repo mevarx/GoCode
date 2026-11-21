@@ -36,18 +36,6 @@ func (m *Model) chatSpans() []itemSpan {
 	return m.spans
 }
 
-func (m *Model) itemAtLine(line int) int {
-	for i, s := range m.spans {
-		if line >= s.start && line < s.start+s.lines {
-			return i
-		}
-	}
-	if line < 0 {
-		return 0
-	}
-	return len(m.spans) - 1
-}
-
 // firstVisibleItem is the first item with any line at or below the viewport top.
 func (m *Model) firstVisibleItem() int {
 	top := m.viewport.YOffset()

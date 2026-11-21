@@ -147,11 +147,7 @@ var (
 	colorWarning color.Color
 	colorDanger  color.Color
 
-	// Stays light in both themes to keep contrast on saturated fills.
-	colorOnAccent color.Color
-
 	// Each speaker owns a hue; fills only for quoted user/tool text.
-	colorUserBg color.Color
 	colorUserFg color.Color
 	colorAsstFg color.Color
 	colorToolBg color.Color
@@ -169,9 +165,7 @@ var (
 	statusSeparator      string
 
 	userLabelStyle     lipgloss.Style
-	userBubbleStyle    lipgloss.Style
 	asstLabelStyle     lipgloss.Style
-	asstContentStyle   lipgloss.Style
 	toolLabelStyle     lipgloss.Style
 	toolDoneLabelStyle lipgloss.Style
 	toolBubbleStyle    lipgloss.Style
@@ -181,19 +175,14 @@ var (
 	errorStyle         lipgloss.Style
 	systemStyle        lipgloss.Style
 
-	inputBoxStyle     lipgloss.Style
-	inputBoxBlurStyle lipgloss.Style
-	inputHintStyle    lipgloss.Style
-	steerChipStyle    lipgloss.Style
+	inputBoxStyle  lipgloss.Style
+	inputHintStyle lipgloss.Style
+	steerChipStyle lipgloss.Style
 
 	modalOverlayStyle  lipgloss.Style
-	modalTitleStyle    lipgloss.Style
 	modalToolNameStyle lipgloss.Style
 	modalArgKeyStyle   lipgloss.Style
 	modalArgValStyle   lipgloss.Style
-	modalButtonApprove lipgloss.Style
-	modalButtonDeny    lipgloss.Style
-	modalButtonFocused lipgloss.Style
 
 	colorMascotBody  color.Color
 	colorMascotEye   color.Color
@@ -244,8 +233,6 @@ func rebuildStyles() {
 	colorSuccess = col.success
 	colorWarning = col.warning
 	colorDanger = col.danger
-	colorOnAccent = col.onAccent
-	colorUserBg = col.userBg
 	colorUserFg = col.userFg
 	colorAsstFg = col.asstFg
 	colorToolBg = col.toolBg
@@ -293,20 +280,9 @@ func rebuildStyles() {
 		Foreground(colorUserFg).
 		Bold(true)
 
-	userBubbleStyle = lipgloss.NewStyle().
-		Foreground(colorUserFg).
-		Background(colorUserBg).
-		Padding(0, rowPadCompact).
-		MarginLeft(indentGutter)
-
 	asstLabelStyle = lipgloss.NewStyle().
 		Foreground(colorAsstFg).
 		Bold(true)
-
-	// No padding or wrap width shrinks and it misaligns with quoted bubbles.
-	asstContentStyle = lipgloss.NewStyle().
-		Foreground(colorText).
-		MarginLeft(indentGutter)
 
 	toolLabelStyle = lipgloss.NewStyle().
 		Foreground(colorToolFg).
@@ -355,11 +331,6 @@ func rebuildStyles() {
 		Background(colorSurface).
 		Padding(0, rowPadCompact)
 
-	inputBoxBlurStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorBorder).
-		Padding(0, rowPadCompact)
-
 	inputHintStyle = lipgloss.NewStyle().
 		Foreground(colorMutedFg).
 		Italic(true)
@@ -376,11 +347,6 @@ func rebuildStyles() {
 		Padding(1, rowPadAction).
 		Background(colorBg)
 
-	// No margin; body already gaps after title.
-	modalTitleStyle = lipgloss.NewStyle().
-		Foreground(colorDanger).
-		Bold(true)
-
 	modalToolNameStyle = lipgloss.NewStyle().
 		Foreground(colorWarning).
 		Bold(true)
@@ -392,27 +358,7 @@ func rebuildStyles() {
 	modalArgValStyle = lipgloss.NewStyle().
 		Foreground(colorText)
 
-	modalButtonApprove = lipgloss.NewStyle().
-		Background(colorSuccess).
-		Foreground(colorOnAccent).
-		Bold(true).
-		Padding(0, rowPadAction)
-
-	modalButtonDeny = lipgloss.NewStyle().
-		Background(colorDanger).
-		Foreground(colorOnAccent).
-		Bold(true).
-		Padding(0, rowPadAction)
-
-	// Underline, not border: border misaligns; underline survives flattened colour.
-	modalButtonFocused = lipgloss.NewStyle().
-		Background(colorAccent).
-		Foreground(colorOnAccent).
-		Bold(true).
-		Padding(0, rowPadAction).
-		Underline(true)
-
-	// Same chrome as UI; only eye/tip saturated.
+		// Same chrome as UI; only eye/tip saturated.
 	colorMascotBody = col.mascotBody
 	colorMascotEye = col.mascotEye
 	colorMascotMouth = col.mascotMouth

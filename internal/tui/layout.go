@@ -123,9 +123,7 @@ func (m *Model) sidebarLines() []string {
 			sections = append(sections, "", "plan", fmt.Sprintf("%d/%d done", done, len(items)))
 		}
 	}
-	for _, s := range sections {
-		lines = append(lines, s)
-	}
+	lines = append(lines, sections...)
 	return lines
 }
 

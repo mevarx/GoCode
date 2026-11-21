@@ -1352,10 +1352,6 @@ func (m *Model) renderApprovalModal() string {
 	return dialogFrame("Tool Approval Required", dialogNormal, b.String(), modalW)
 }
 
-func (m *Model) renderDiff(diff string) string {
-	return renderDiffView(diff, max(2, m.chatContentWidth()-2))
-}
-
 func placeModal(base, modal string, totalW, totalH int) string {
 	// Clamp first; Place bails when oversized, then overlay so transcript stays visible.
 	clamped := lipgloss.NewStyle().

@@ -237,10 +237,9 @@ func pathBase(p string) string {
 }
 
 func subsequence(s, q string) bool {
-	sr := []rune(s)
 	qr := []rune(q)
 	i := 0
-	for _, r := range sr {
+	for _, r := range s {
 		if i < len(qr) && r == qr[i] {
 			i++
 		}
