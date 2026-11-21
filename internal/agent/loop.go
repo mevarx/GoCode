@@ -261,6 +261,15 @@ func (a *AgentLoop) Steer(text string) bool {
 	return true
 }
 
+// PendingSteering reports how many steering messages are queued for the
+// running turn. It is observability for front-ends and tests; the queue is
+// drained at the next provider round boundary.
+func (a *AgentLoop) PendingSteering() int {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
+	return len(a.steerQueue)
+}
+
 // beginTurn opens the steering window for a turn. A queue left over from a
 // previous turn is discarded: it could no longer be applied to that turn.
 func (a *AgentLoop) beginTurn() {

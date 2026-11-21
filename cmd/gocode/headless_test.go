@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/provider"
@@ -598,6 +599,13 @@ func TestRunHeadlessSteerAppliesMidTurn(t *testing.T) {
 		_, _ = pw.Write([]byte(`{"type":"user","text":"start"}` + "\n"))
 		<-p.started
 		_, _ = pw.Write([]byte(`{"type":"steer","text":"focus on tests"}` + "\n"))
+		// Wait until the input loop has queued the steer before releasing
+		// round 1, so round 2 is guaranteed to drain it (otherwise the steer
+		// races the turn's round-2 drain under -race).
+		deadline := time.Now().Add(2 * time.Second)
+		for loop.PendingSteering() == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 		close(p.release)
 		_, _ = pw.Write([]byte(`{"type":"exit"}` + "\n"))
 		_ = pw.Close()
