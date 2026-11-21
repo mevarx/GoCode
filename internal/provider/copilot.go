@@ -23,7 +23,7 @@ const (
 	// copilotTokenURL exchanges the GitHub OAuth token for a short-lived JWT plus API base URL.
 	copilotTokenURL = "https://api.github.com/copilot_internal/v2/token"
 
-	// Fallback when exchange returns no base URL; endpoint is undocumented and reverse-engineered, may change.
+	// Fallback when exchange returns no base URL; endpoint is undocumented and may change.
 	copilotFallbackAPI = "https://api.githubcopilot.com"
 
 	// Refresh JWT early so a long turn doesn't start with a token that dies mid-stream.
@@ -559,6 +559,17 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 			return
 		}
 
+		// Usage can arrive alone (the standard final chunk) or alongside the
+		// last choice. Missing usage is normal: never fail a stream over it.
+		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+			if !emitChunk(ctx, ch, StreamChunk{Usage: &Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+			}}) {
+				return
+			}
+		}
+
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				if !emitChunk(ctx, ch, StreamChunk{Delta: choice.Delta.Content}) {
@@ -599,6 +610,21 @@ func streamOpenAISSE(ctx context.Context, body io.Reader, ch chan<- StreamChunk,
 				}
 				if pt.id == "" && pt.name != "" {
 					pt.id = fmt.Sprintf("call_%s_%d", pt.name, idx)
+				}
+				// Tap the existing per-index accumulation: emit the fragment
+				// with the best-known identity so a UI can upsert a live card
+				// keyed by ToolCallID. Identity may be empty on the first
+				// fragment and filled in later; the complete flush below is
+				// unchanged.
+				if tc.ID != "" || tc.Function.Name != "" || tc.Function.Arguments != "" {
+					if !emitChunk(ctx, ch, StreamChunk{ToolCallDelta: &ToolCallDelta{
+						Index:     idx,
+						ID:        pt.id,
+						Name:      pt.name,
+						ArgsDelta: tc.Function.Arguments,
+					}}) {
+						return
+					}
 				}
 			}
 

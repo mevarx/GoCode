@@ -48,6 +48,7 @@ var (
 	flagFollow    bool
 	flagHeadless  bool
 	flagPolicy    string
+	flagYolo      bool
 )
 
 func main() {
@@ -69,6 +70,7 @@ func main() {
 	rootCmd.Flags().StringVar(&flagSessionID, "session", "", "Resume a specific session by ID")
 	rootCmd.Flags().BoolVar(&flagHeadless, "headless", false, "Drive the agent over a JSONL protocol on stdin/stdout (no TUI)")
 	rootCmd.Flags().StringVar(&flagPolicy, "policy", "", "Approval policy JSON for headless mode: {\"auto_approve\":[...],\"deny\":[...]}")
+	rootCmd.Flags().BoolVar(&flagYolo, "yolo", false, "Yolo permission mode: skip prompts for non-dangerous calls; dangerous calls are refused (deny-list still applies)")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable debug logging")
 
 	doctorCmd := &cobra.Command{
@@ -254,6 +256,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to configure custom providers: %w", err)
 	}
 
+	// stream_usage is a [provider]-level switch: it applies to every
+	// OpenAI-compatible gateway, built-in or custom, but not to the native
+	// Anthropic, Copilot or Ollama dialects, which report usage already.
+	applyStreamUsage(providerRegistry, cfg.Provider.StreamUsage)
+
 	// With persist=false the store is never opened, so nothing is read or written.
 	sessionStore, err := openSessionStore(cfg.Session.Persist, filepath.Join(config.SessionDir(), "sessions.db"))
 	if err != nil {
@@ -357,6 +364,20 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	ignoreMatcher := ignore.LoadMatcher(workspaceRoot)
 	sensitiveMatcher := ignore.NewSensitiveMatcher(ignoreMatcher, cfg.Permissions.SensitivePatterns)
 
+	// one hook engine for every UI path. SessionStart fires now (the
+	// session exists); SessionEnd is deferred so every exit path below —
+	// headless, TUI, plain, or a later startup error — runs it once.
+	hookRunner, err := buildHookRunner(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to configure hooks: %w", err)
+	}
+	sessionSource := "startup"
+	if activeSessionRec != nil {
+		sessionSource = "resume"
+	}
+	fireSessionStart(hookRunner, sess.ID(), workspaceRoot, sessionSource)
+	defer fireSessionEnd(hookRunner, sess.ID(), workspaceRoot)
+
 	toolRegistry := tools.NewRegistry()
 	shellTimeout := time.Duration(cfg.Tools.Shell.TimeoutSeconds) * time.Second
 	toolRegistry.Register(&tools.ShellExecTool{
@@ -431,8 +452,23 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		approval = newHeadlessApprovalGate(policy)
+		// Opt-in never-prompting session: with
+		// auto_approve_session every non-denied gated call is granted without
+		// a prompt. Default off keeps the deny-by-default policy contract.
+		if policy.AutoApproveSession {
+			approval.AutoApproveSession(sess.ID())
+		}
 	} else {
 		approval = tools.NewApprovalGateWithPermissions(cfg.Permissions.AutoApprove, cfg.Permissions.Deny)
+		approval.SetDangerTools(cfg.Permissions.DangerousTools)
+	}
+	// --yolo overrides the configured mode for this run (TUI, plain and
+	// headless alike). The mode is validated at config load; the deny-list
+	// outranks it in every case.
+	if flagYolo {
+		_ = approval.SetMode(tools.ModeYolo)
+	} else if !flagHeadless {
+		_ = approval.SetMode(tools.PermissionMode(cfg.Permissions.Mode))
 	}
 
 	// One guard config for both UI paths so they agree on when a turn may stop.
@@ -445,10 +481,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	loop.WorkspaceRoot = workspaceRoot
 	loop.GuardConfig = guardCfg
 	loop.ContextManager = agent.NewContextManager(cfg.Tools.MaxContextTokens)
+	loop.ContextManager.AutoCompact = cfg.Context.AutoCompact
+	loop.ContextManager.KeepRecentTokens = cfg.Context.KeepRecentTokens
 	loop.Plan = planStore
 	loop.Scratchpad = scratchpadStore
 	loop.VerifyCommand = verifyCommand
 	loop.VerifyTimeout = verifyTimeout
+	// tool hooks fire in every mode; headless skips TURN hooks only
+	// (NonInteractive parity). The TUI path installs the same runner below.
+	loop.Hooks = hookRunner
+	loop.NonInteractive = flagHeadless
 
 	// Headless wins over --tui: the default --tui=true must not open a TUI on a
 	// machine driven through the JSONL protocol.
@@ -457,7 +499,15 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	if flagTUI {
-		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout)
+		motion := tui.MotionSettings{Mode: cfg.TUI.Motion, SmoothStreaming: cfg.TUI.SmoothStreaming}
+		theme := tui.ThemeSettings{Name: cfg.TUI.ActiveTheme, Transparent: cfg.TUI.Transparent}
+		sidebar := tui.SidebarInfo{SessionID: sess.ID(), MCPServers: mcpServerNames(cfg)}
+		if sess.Store() != nil {
+			if rec, err := sess.Store().GetSession(sess.ID()); err == nil && rec != nil {
+				sidebar.SessionTitle = rec.Title
+			}
+		}
+		return tui.Run(ctx, providerRegistry, sess, toolRegistry, approval, version, workspaceRoot, guardCfg, cfg.Tools.MaxContextTokens, cfg.Context.AutoCompact, cfg.Context.KeepRecentTokens, planStore, scratchpadStore, verifyCommand, verifyTimeout, motion, theme, sidebar, hookRunner)
 	}
 
 	return loop.Run(ctx)
@@ -490,6 +540,20 @@ func openSessionStore(persist bool, dbPath string) (*session.SessionStore, error
 		return nil, err
 	}
 	return store, nil
+}
+
+// mcpServerNames lists configured MCP server names in a stable order for the
+// sidebar; an empty config yields nil so the section is dropped wholesale.
+func mcpServerNames(cfg config.Config) []string {
+	if len(cfg.MCP.Servers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.MCP.Servers))
+	for name := range cfg.MCP.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func runMCPAdd(cmd *cobra.Command, args []string) error {

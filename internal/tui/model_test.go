@@ -13,7 +13,13 @@ func newTestModel(cancelCh chan struct{}) Model {
 	if cancelCh == nil {
 		cancelCh = make(chan struct{}, 1)
 	}
-	return NewModel("ollama", "llama3", "0.4.0", "", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{})
+	return NewModel("ollama", "llama3", "0.4.0", "", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), cancelCh, []list.Item{}, testMotion())
+}
+
+// testMotion is the production default: motion follows the terminal and
+// streamed text is paced.
+func testMotion() MotionSettings {
+	return MotionSettings{Mode: MotionAuto, SmoothStreaming: true}
 }
 
 func cmdQuits(t *testing.T, cmd tea.Cmd) bool {
@@ -48,9 +54,20 @@ func TestEscIdleDoesNotQuit(t *testing.T) {
 
 func TestCtrlCQuitsWhenIdle(t *testing.T) {
 	m := newTestModel(nil)
-	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmdQuits(t, cmd) {
+		t.Fatal("first Ctrl+C should open the quit confirmation, not quit")
+	}
+	m = next.(Model)
+	if !m.overlays.has(overlayQuit) {
+		t.Fatal("quit confirmation not open after Ctrl+C")
+	}
+	if m.quitFocus != quitFocusNope {
+		t.Fatal("quit confirmation must default to the safe Nope button")
+	}
+	_, cmd = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !cmdQuits(t, cmd) {
-		t.Fatal("expected Ctrl+C to quit while idle")
+		t.Fatal("second Ctrl+C should quit without confirmation")
 	}
 }
 
@@ -74,7 +91,7 @@ func TestWindowResizeFitsSmallTerminal(t *testing.T) {
 	m := newTestModel(nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 32, Height: 10})
 	m = updated.(Model)
-	if m.viewport.Width() != 32 || m.viewport.Height() != 3 {
+	if m.viewport.Width() != 28 || m.viewport.Height() != 2 {
 		t.Fatalf("unexpected viewport dimensions: %dx%d", m.viewport.Width(), m.viewport.Height())
 	}
 	if got := lipgloss.Height(m.View().Content); got != 10 {
@@ -88,7 +105,7 @@ func TestWindowResizeFitsSmallTerminal(t *testing.T) {
 }
 
 func TestStatusBarShowsWorkspace(t *testing.T) {
-	m := NewModel("deepseek", "deepseek-flash", "0.4.0", "/work/my-project", NewApprovalBridge(), make(chan string, 1), make(chan tea.Msg, 16), make(chan struct{}, 1), []list.Item{})
+	m := NewModel("deepseek", "deepseek-flash", "0.4.0", "/work/my-project", NewApprovalBridge(), make(chan string, 1), make(chan string, 1), make(chan tea.Msg, 16), make(chan struct{}, 1), []list.Item{}, testMotion())
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	if got := m.renderStatusBar(); !strings.Contains(got, "my-project") {

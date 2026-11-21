@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -166,6 +167,11 @@ func (s *SessionStore) addMissingColumns() error {
 		// scratchpad holds agent-maintained working state that must survive
 		// compaction; an old database reads it back as ''.
 		{table: "sessions", column: "scratchpad", ddlType: "TEXT NOT NULL DEFAULT ''"},
+		// is_summary_message flags the assistant summary row a compaction
+		// wrote; summary_message_id anchors replay so a resumed transcript is
+		// read from the newest summary onward (older rows stay in the DB).
+		{table: "messages", column: "is_summary_message", ddlType: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "sessions", column: "summary_message_id", ddlType: "TEXT NOT NULL DEFAULT ''"},
 	}
 
 	for _, m := range migrations {
@@ -273,7 +279,33 @@ func (s *SessionStore) CreateSessionWithWorkspace(id, title, providerName, model
 func (s *SessionStore) AppendMessage(sessionID string, msg provider.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, err := s.appendMessageLocked(sessionID, msg, false)
+	return err
+}
 
+// AppendSummaryMessage persists a compaction summary as a flagged assistant
+// message and returns its row id, which becomes the session's replay
+// anchor. The flag lets a resumed transcript relabel it to a user turn.
+func (s *SessionStore) AppendSummaryMessage(sessionID string, msg provider.Message) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendMessageLocked(sessionID, msg, true)
+}
+
+// SetSummaryAnchor records the row id replay reads from. An empty anchor
+// clears it, so the full transcript is replayed.
+func (s *SessionStore) SetSummaryAnchor(sessionID, anchor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`UPDATE sessions SET summary_message_id = ? WHERE id = ?`, anchor, sessionID); err != nil {
+		return fmt.Errorf("failed to set summary anchor: %w", err)
+	}
+	return nil
+}
+
+// appendMessageLocked inserts one message and bumps the session timestamp.
+// Caller must hold s.mu. isSummary marks a compaction summary row.
+func (s *SessionStore) appendMessageLocked(sessionID string, msg provider.Message, isSummary bool) (int64, error) {
 	now := time.Now().UTC()
 
 	var toolCallsJSON string
@@ -286,21 +318,30 @@ func (s *SessionStore) AppendMessage(sessionID string, msg provider.Message) err
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
+	summaryFlag := 0
+	if isSummary {
+		summaryFlag = 1
+	}
 	insertMsg := `
-	INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, reasoning_content, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, reasoning_content, is_summary_message, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	if _, err := tx.Exec(insertMsg, sessionID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.ReasoningContent, now); err != nil {
-		return fmt.Errorf("failed to insert message: %w", err)
+	res, err := tx.Exec(insertMsg, sessionID, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.ReasoningContent, summaryFlag, now)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert message: %w", err)
+	}
+	rowID, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to read message id: %w", err)
 	}
 
 	updateSession := `UPDATE sessions SET updated_at = ? WHERE id = ?`
 	if _, err := tx.Exec(updateSession, now, sessionID); err != nil {
-		return fmt.Errorf("failed to update session timestamp: %w", err)
+		return 0, fmt.Errorf("failed to update session timestamp: %w", err)
 	}
 
 	if msg.Role == "user" && msg.Content != "" {
@@ -312,7 +353,10 @@ func (s *SessionStore) AppendMessage(sessionID string, msg provider.Message) err
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit message: %w", err)
+	}
+	return rowID, nil
 }
 
 // truncateTitle caps title at 40 runes, keeping 37 runes and appending "...".
@@ -350,6 +394,7 @@ func (s *SessionStore) SaveSession(rec *SessionRecord) error {
 		model = excluded.model,
 		workspace = CASE WHEN excluded.workspace <> '' THEN excluded.workspace ELSE sessions.workspace END,
 		scratchpad = CASE WHEN excluded.scratchpad <> '' THEN excluded.scratchpad ELSE sessions.scratchpad END,
+		summary_message_id = '',
 		updated_at = excluded.updated_at
 	`
 	if _, err := tx.Exec(upsert, rec.ID, rec.Title, rec.Provider, rec.Model, normalizeWorkspace(rec.Workspace), rec.Scratchpad, rec.CreatedAt, rec.UpdatedAt); err != nil {
@@ -388,13 +433,14 @@ func (s *SessionStore) GetSession(id string) (*SessionRecord, error) {
 // Caller must hold s.mu (read or write).
 func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	row := s.db.QueryRow(`
-		SELECT id, title, provider, model, workspace, scratchpad, created_at, updated_at
+		SELECT id, title, provider, model, workspace, scratchpad, summary_message_id, created_at, updated_at
 		FROM sessions
 		WHERE id = ?
 	`, id)
 
 	var rec SessionRecord
-	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.Workspace, &rec.Scratchpad, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+	var anchor string
+	if err := row.Scan(&rec.ID, &rec.Title, &rec.Provider, &rec.Model, &rec.Workspace, &rec.Scratchpad, &anchor, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -402,7 +448,7 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT role, content, tool_calls, tool_call_id, reasoning_content
+		SELECT id, role, content, tool_calls, tool_call_id, reasoning_content, is_summary_message
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY id ASC
@@ -412,13 +458,30 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 	}
 	defer rows.Close()
 
+	// replay reads from the summary anchor onward, sliced by row id (not
+	// timestamp). Pre-anchor rows stay in the database; they are simply not
+	// returned. The summary row itself is relabelled to a user turn so the
+	// model sees a user message containing the summary, matching the live
+	// compacted window.
+	anchorID := int64(-1)
+	if anchor != "" {
+		if parsed, perr := strconv.ParseInt(anchor, 10, 64); perr == nil {
+			anchorID = parsed
+		}
+	}
+	replaying := anchorID >= 0
 	for rows.Next() {
 		var msg provider.Message
+		var rowID int64
+		var isSummary int
 		var toolCallsJSON sql.NullString
 		var toolCallID sql.NullString
 		var reasoningContent sql.NullString
-		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &toolCallID, &reasoningContent); err != nil {
+		if err := rows.Scan(&rowID, &msg.Role, &msg.Content, &toolCallsJSON, &toolCallID, &reasoningContent, &isSummary); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		if replaying && rowID < anchorID {
+			continue
 		}
 		if toolCallID.Valid {
 			msg.ToolCallID = toolCallID.String
@@ -428,6 +491,9 @@ func (s *SessionStore) getSessionLocked(id string) (*SessionRecord, error) {
 		}
 		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 			_ = json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls)
+		}
+		if isSummary == 1 {
+			msg.Role = "user"
 		}
 		rec.Messages = append(rec.Messages, msg)
 	}
@@ -548,6 +614,19 @@ func (s *SessionStore) DeleteSession(id string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete session %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateTitle renames a session. The title goes through the same truncation
+// as creation titles so picker rows and listings stay consistent.
+func (s *SessionStore) UpdateTitle(id, title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`, truncateTitle(title), time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("failed to rename session %s: %w", id, err)
 	}
 	return nil
 }

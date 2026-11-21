@@ -104,7 +104,7 @@ func (s *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (Resu
 		cmd.Dir = s.WorkspaceRoot
 	}
 
-	// SECURITY: WaitDelay bounds Wait() so a backgrounded grandchild inheriting the pipe cannot hang Execute.
+	// SECURITY: WaitDelay bounds Wait so a backgrounded grandchild inheriting the pipe cannot hang Execute.
 	cmd.WaitDelay = waitDelayGrace
 
 	// SECURITY: cap capture during execution so a command emitting gigabytes is never fully buffered.

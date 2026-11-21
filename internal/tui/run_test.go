@@ -59,7 +59,7 @@ func TestInterruptCancelsRunningTurn(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		runEngineGoroutine(ctx, engine, inputCh, outputCh, cancelCh)
+		runEngineGoroutine(ctx, engine, inputCh, nil, outputCh, cancelCh, nil)
 		close(done)
 	}()
 
@@ -112,7 +112,7 @@ func TestEngineGoroutinePreservesObserver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	inputCh := make(chan string, 1)
-	go runEngineGoroutine(ctx, engine, inputCh, make(chan tea.Msg, 8), make(chan struct{}, 1))
+	go runEngineGoroutine(ctx, engine, inputCh, nil, make(chan tea.Msg, 8), make(chan struct{}, 1), nil)
 
 	inputCh <- "hi"
 	time.Sleep(150 * time.Millisecond)
@@ -191,7 +191,7 @@ func TestParkedInterruptDoesNotCancelNextTurn(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runEngineGoroutine(ctx, engine, inputCh, outputCh, cancelCh)
+	go runEngineGoroutine(ctx, engine, inputCh, nil, outputCh, cancelCh, nil)
 
 	// Park stale interrupt first, then submit message.
 	cancelCh <- struct{}{}
@@ -290,12 +290,15 @@ func TestToTeaMsgCoversEveryEventKind(t *testing.T) {
 		ev   agent.LoopEvent
 		want string
 	}{
+		{agent.LoopEvent{Kind: agent.EventTurnStart}, "agentTurnStartMsg"},
 		{agent.LoopEvent{Kind: agent.EventDelta, Text: "hi"}, "agentChunkMsg"},
 		{agent.LoopEvent{Kind: agent.EventToolStart, Tool: "t", ToolCallID: "id1", Args: "{}"}, "agentToolStartMsg"},
+		{agent.LoopEvent{Kind: agent.EventToolDelta, Tool: "t", ToolCallID: "id1", Args: "{}"}, "agentToolDeltaMsg"},
 		{agent.LoopEvent{Kind: agent.EventToolResult, Tool: "t", Text: "out"}, "agentToolMsg"},
 		{agent.LoopEvent{Kind: agent.EventError, Text: "bad"}, "agentToolMsg"},
 		{agent.LoopEvent{Kind: agent.EventNotice, Text: "note"}, "agentToolMsg"},
 		{agent.LoopEvent{Kind: agent.EventExit, Text: "bye"}, "agentExitMsg"},
+		{agent.LoopEvent{Kind: agent.EventTurnEnd}, "agentTurnMetricsMsg"},
 	}
 	for _, tc := range cases {
 		msg := toTeaMsg(tc.ev)
@@ -309,18 +312,30 @@ func TestToTeaMsgCoversEveryEventKind(t *testing.T) {
 	}
 }
 
-func TestToTeaMsgDropsTurnEnd(t *testing.T) {
-	if msg := toTeaMsg(agent.LoopEvent{Kind: agent.EventTurnEnd}); msg != nil {
-		t.Errorf("EventTurnEnd should map to nil, got %T", msg)
+// Turn end carries the engine's summary through to the model unchanged.
+func TestToTeaMsgCarriesTurnMetrics(t *testing.T) {
+	metrics := &agent.TurnMetrics{PromptTokens: 1200, CompletionTokens: 340, ContextTokens: 1540, ContextBudget: 10000}
+	msg, ok := toTeaMsg(agent.LoopEvent{Kind: agent.EventTurnEnd, Metrics: metrics}).(agentTurnMetricsMsg)
+	if !ok {
+		t.Fatalf("turn end mapped to %T, want agentTurnMetricsMsg", toTeaMsg(agent.LoopEvent{Kind: agent.EventTurnEnd}))
+	}
+	if msg.metrics != metrics {
+		t.Errorf("metrics pointer was not passed through: %+v", msg.metrics)
 	}
 }
 
 func typeName(v any) string {
 	switch v.(type) {
+	case agentTurnStartMsg:
+		return "agentTurnStartMsg"
+	case agentTurnMetricsMsg:
+		return "agentTurnMetricsMsg"
 	case agentChunkMsg:
 		return "agentChunkMsg"
 	case agentToolStartMsg:
 		return "agentToolStartMsg"
+	case agentToolDeltaMsg:
+		return "agentToolDeltaMsg"
 	case agentToolMsg:
 		return "agentToolMsg"
 	case agentExitMsg:

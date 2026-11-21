@@ -11,7 +11,7 @@ import (
 // Frozen instant so blink cycles can't make assertions time-dependent.
 func nowForTest() time.Time { return time.Unix(1_700_000_000, 0) }
 
-// Mid-flight bob trims antenna, so portrait must come from rest().
+// Mid-flight bob trims antenna, so portrait must come from rest.
 func TestRestPortraitIsStableAndComplete(t *testing.T) {
 	wantRows := strings.Split(stripANSI(newMascot().rest().hero(nowForTest(), mascotFaceStyles)), "\n")
 	if len(wantRows) < 6 {
@@ -38,7 +38,7 @@ func TestRestPortraitIsStableAndComplete(t *testing.T) {
 	}
 }
 
-// rest() must neutralise motion, not just reset phase.
+// rest must neutralise motion, not just reset phase.
 func TestRestClearsSpringMotion(t *testing.T) {
 	m := newMascot()
 	m.setState(mascotWorking, nowForTest())

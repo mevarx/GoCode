@@ -569,3 +569,45 @@ func TestOllamaProviderSignsRequestsWhenAuthEnabled(t *testing.T) {
 		t.Errorf("signature is not base64: %v", err)
 	}
 }
+
+// Ollama delivers complete calls, but the uniform delta path must still carry
+// the full argument string once, before the complete call.
+func TestOllamaProviderStreamToolCallDelta(t *testing.T) {
+	server := newOllamaTestServer(t, `{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"a.go"}}}]},"done":false}`+"\n"+
+		`{"model":"m","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`+"\n")
+
+	provider, err := NewOllamaProvider(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ch, err := provider.Stream(context.Background(), "m", []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var deltas []ToolCallDelta
+	var calls []ToolCall
+	for _, chunk := range drainOllamaChunks(t, ch) {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected error chunk: %v", chunk.Err)
+		}
+		if chunk.ToolCallDelta != nil {
+			deltas = append(deltas, *chunk.ToolCallDelta)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 complete call, got %d", len(calls))
+	}
+	if len(deltas) != 1 {
+		t.Fatalf("expected 1 complete delta, got %d: %+v", len(deltas), deltas)
+	}
+	if deltas[0].ID != calls[0].ID || deltas[0].Name != "read_file" {
+		t.Errorf("delta identity %+v does not match complete call %+v", deltas[0], calls[0])
+	}
+	if deltas[0].ArgsDelta != string(calls[0].Args) {
+		t.Errorf("delta args %q != complete args %q", deltas[0].ArgsDelta, calls[0].Args)
+	}
+}

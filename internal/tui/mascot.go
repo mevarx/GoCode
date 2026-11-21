@@ -58,7 +58,7 @@ type mascot struct {
 	// Phase advances continuously; springs chase it.
 	phase float64
 
-	// Eased toward amplitude() so state changes ramp instead of snapping.
+	// Eased toward amplitude so state changes ramp instead of snapping.
 	amp float64
 
 	eyes blink

@@ -43,7 +43,7 @@ var secretPatterns = []struct {
 	{"private-key-block", regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), 0},
 	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}`), 0},
 	{"aws-secret-access-key", regexp.MustCompile(`(?i)aws_?secret_?access_?key\s*[:=]\s*["']?([A-Za-z0-9/+=]{30,})`), 1},
-	// JSON-tolerant: covers {"apiKey": "..."} as well as api_key: ...
+	// JSON-tolerant: covers {"apiKey": "..."} as well as api_key:...
 	{"assigned-secret", regexp.MustCompile(`(?i)\b([a-z0-9_\-]*(?:api[_-]?key|secret|passwd|password|token|access[_-]?key)[a-z0-9_\-]*)["']?\s*[:=]\s*["']?([^\s"',;]{8,})`), 2},
 }
 

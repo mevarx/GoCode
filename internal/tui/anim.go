@@ -5,22 +5,17 @@ import (
 	"regexp"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/harmonica"
 )
 
 // Terminal redraws are expensive and motion above ~20Hz is unreadable, so the
-// mascot runs fast while working and slow when the session is quiet.
+// mascot runs fast while working and slow when the session is quiet. The
+// springs step at activeFPS; the shared 50ms clock (animclock.go) is their
+// only tick source.
 const (
 	idleFPS   = 5
 	activeFPS = 20
 )
-
-// frameMsg is one animation frame; epoch drops stale ticks from a prior turn.
-type frameMsg struct {
-	at    time.Time
-	epoch int
-}
 
 // Indirected so tests can freeze time for deterministic animation.
 var msgNow = time.Now
@@ -30,10 +25,6 @@ var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(s string) string {
 	return ansiEscape.ReplaceAllString(s, "")
-}
-
-func tickUntil(d time.Duration, epoch int) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg { return frameMsg{at: t, epoch: epoch} })
 }
 
 // Damped oscillator; retargeting mid-flight needs no easing curve.

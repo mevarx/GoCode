@@ -21,14 +21,20 @@ func TestBuildSystemPrompt_TaskScratchpadPlacement(t *testing.T) {
 		GlobalContext:  "User preference",
 	})
 
-	planIdx := strings.Index(prompt, "## Current Plan")
-	scratchIdx := strings.Index(prompt, "## Task Scratchpad")
+	planIdx := strings.Index(prompt, "### Current Plan")
+	scratchIdx := strings.Index(prompt, "### Task Scratchpad")
 	projectIdx := strings.Index(prompt, projectContextBegin)
+	globalEndIdx := strings.Index(prompt, globalContextEnd)
 	if planIdx < 0 || scratchIdx < 0 || projectIdx < 0 {
 		t.Fatalf("missing expected sections:\n%s", prompt)
 	}
-	if !(planIdx < scratchIdx && scratchIdx < projectIdx) {
-		t.Fatalf("scratchpad must follow the plan and precede untrusted context (plan=%d scratch=%d project=%d)", planIdx, scratchIdx, projectIdx)
+	// Both plan and scratchpad are per-turn state: they trail the untrusted
+	// context so the prompt prefix stays byte-identical across turns.
+	if !(projectIdx < planIdx && globalEndIdx < planIdx) {
+		t.Fatalf("plan must follow untrusted context (project=%d globalEnd=%d plan=%d)", projectIdx, globalEndIdx, planIdx)
+	}
+	if !(planIdx < scratchIdx) {
+		t.Fatalf("scratchpad must follow the plan (plan=%d scratch=%d)", planIdx, scratchIdx)
 	}
 	if !strings.Contains(prompt, "agent-maintained state, not policy") {
 		t.Fatalf("scratchpad must be labelled as state, not policy:\n%s", prompt)

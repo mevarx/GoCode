@@ -484,3 +484,237 @@ func TestInlineAPIKeyWarningsEmptyWithEnvKeys(t *testing.T) {
 		t.Errorf("expected no warnings when keys come from env vars, got %v", warnings)
 	}
 }
+
+// stream_usage is opt-in: absent means false, and the key must be registered so
+// strict decoding accepts it instead of rejecting the file as unknown.
+func TestConfig_StreamUsageKey(t *testing.T) {
+	if got := DefaultConfig().Provider.StreamUsage; got {
+		t.Errorf("default stream_usage = %v, want false (opt-in)", got)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\nstream_usage = true\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !loaded.Provider.StreamUsage {
+		t.Error("stream_usage = true was not applied")
+	}
+
+	// The key's TOML name is the contract, so it must also survive a write.
+	cfg := DefaultConfig()
+	cfg.Provider.StreamUsage = true
+	if err := SaveToPath(cfg, tmpFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if !strings.Contains(string(data), "stream_usage = true") {
+		t.Errorf("saved config lost stream_usage:\n%s", data)
+	}
+	again, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if !again.Provider.StreamUsage {
+		t.Error("stream_usage did not round-trip")
+	}
+}
+
+func TestConfig_ContextAutoCompactDefaultsAndRoundTrip(t *testing.T) {
+	def := DefaultConfig()
+	if !def.Context.AutoCompact {
+		t.Error("default auto_compact must be true")
+	}
+	if def.Context.KeepRecentTokens != 20000 {
+		t.Errorf("default keep_recent_tokens = %d, want 20000", def.Context.KeepRecentTokens)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[context]\nauto_compact = false\nkeep_recent_tokens = 12345\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.Context.AutoCompact {
+		t.Error("auto_compact = false was not applied")
+	}
+	if loaded.Context.KeepRecentTokens != 12345 {
+		t.Errorf("keep_recent_tokens = %d, want 12345", loaded.Context.KeepRecentTokens)
+	}
+
+	// Both keys are contracts, so they must survive a write as well.
+	outFile := filepath.Join(t.TempDir(), "roundtrip.toml")
+	if err := SaveToPath(loaded, outFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	again, err := LoadFromPath(outFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if again.Context.AutoCompact {
+		t.Error("auto_compact did not round-trip")
+	}
+	if again.Context.KeepRecentTokens != 12345 {
+		t.Errorf("keep_recent_tokens did not round-trip: %d", again.Context.KeepRecentTokens)
+	}
+}
+
+func TestConfig_ContextDefaultsSurviveUnrelatedFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\ndefault = \"openai\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if !loaded.Context.AutoCompact || loaded.Context.KeepRecentTokens != 20000 {
+		t.Fatalf("context defaults lost: %+v", loaded.Context)
+	}
+}
+
+func TestConfig_ContextUnknownKeyRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[context]\nauto_compct = true\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("misspelled [context] key must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown keys") || !strings.Contains(err.Error(), "auto_compct") {
+		t.Fatalf("error does not name the unknown key: %v", err)
+	}
+}
+
+func TestConfig_TUIDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.TUI.Motion != TUIMotionAuto {
+		t.Errorf("default motion = %q, want %q", cfg.TUI.Motion, TUIMotionAuto)
+	}
+	if cfg.TUI.SmoothStreaming {
+		t.Error("smooth_streaming must be off by default: render-on-arrival parity; pacing is opt-in")
+	}
+}
+
+// Both keys are contracts: a value written to disk must come back unchanged.
+func TestConfig_TUIKeysRoundTrip(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	contents := "[tui]\nmotion = \"reduced\"\nsmooth_streaming = false\n"
+	if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.TUI.Motion != TUIMotionReduced {
+		t.Errorf("motion = %q, want %q", loaded.TUI.Motion, TUIMotionReduced)
+	}
+	if loaded.TUI.SmoothStreaming {
+		t.Error("smooth_streaming = false was not applied")
+	}
+
+	outFile := filepath.Join(t.TempDir(), "roundtrip.toml")
+	if err := SaveToPath(loaded, outFile); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	again, err := LoadFromPath(outFile)
+	if err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	if again.TUI.Motion != TUIMotionReduced || again.TUI.SmoothStreaming {
+		t.Fatalf("tui keys did not round-trip: %+v", again.TUI)
+	}
+}
+
+func TestConfig_TUIDefaultsSurviveUnrelatedFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[provider]\ndefault = \"openai\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	loaded, err := LoadFromPath(tmpFile)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.TUI.Motion != TUIMotionAuto || loaded.TUI.SmoothStreaming {
+		t.Fatalf("tui defaults lost: %+v", loaded.TUI)
+	}
+}
+
+func TestConfig_TUIUnknownKeyRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[tui]\nmotionn = \"off\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("misspelled [tui] key must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown keys") || !strings.Contains(err.Error(), "motionn") {
+		t.Fatalf("error does not name the unknown key: %v", err)
+	}
+}
+
+// A wrong value is the same class of mistake as a wrong key: it would silently
+// do nothing, so it is an error rather than a fallback.
+func TestConfig_TUIMotionValueRejected(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(tmpFile, []byte("[tui]\nmotion = \"wobbly\"\n"), 0o644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, err := LoadFromPath(tmpFile)
+	if err == nil {
+		t.Fatal("an unknown motion mode must be rejected")
+	}
+	if !strings.Contains(err.Error(), "tui.motion") {
+		t.Fatalf("error does not name the key: %v", err)
+	}
+	for _, want := range []string{TUIMotionAuto, TUIMotionReduced, TUIMotionOff} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not list %q among the accepted values: %v", want, err)
+		}
+	}
+}
+
+// Every accepted spelling normalizes to one of the three modes, so the TUI
+// never has to guess.
+func TestConfig_TUIMotionValues(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", TUIMotionAuto},
+		{"auto", TUIMotionAuto},
+		{" AUTO ", TUIMotionAuto},
+		{"reduced", TUIMotionReduced},
+		{"Reduced", TUIMotionReduced},
+		{"off", TUIMotionOff},
+		{"OFF", TUIMotionOff},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			tmpFile := filepath.Join(t.TempDir(), "config.toml")
+			contents := "[tui]\nmotion = \"" + tc.in + "\"\n"
+			if err := os.WriteFile(tmpFile, []byte(contents), 0o644); err != nil {
+				t.Fatalf("write failed: %v", err)
+			}
+			loaded, err := LoadFromPath(tmpFile)
+			if err != nil {
+				t.Fatalf("load failed: %v", err)
+			}
+			if loaded.TUI.Motion != tc.want {
+				t.Errorf("motion %q loaded as %q, want %q", tc.in, loaded.TUI.Motion, tc.want)
+			}
+		})
+	}
+}

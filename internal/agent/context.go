@@ -18,9 +18,38 @@ type ContextManager struct {
 	// ConfiguredMaxTokens is the budget the caller asked for. Zero means the
 	// budget is resolved from the active model's context window each round.
 	ConfiguredMaxTokens int
+	// ProviderReportedContext is the last provider-reported prompt+completion
+	// token count. A local estimate can undercount the same window (framing,
+	// tokenizer differences, provider-side rewriting), so accounting uses the
+	// larger of the two; see EffectiveTokens.
+	ProviderReportedContext int
+	// AutoCompact enables automatic compaction when the effective context
+	// crosses AutoCompactThreshold. The zero value is off so tests and older
+	// callers keep explicit-only behavior; the application wires it from
+	// [context] auto_compact (on by default).
+	AutoCompact bool
+	// KeepRecentTokens is the approximate verbatim tail automatic compaction
+	// preserves. Zero or negative means DefaultKeepRecentTokens.
+	KeepRecentTokens int
 	// Compactions counts every compacted history, so a turn's metrics can
 	// report the delta without threading a counter through commands.
 	Compactions atomic.Int64
+	// PreCompact, when set, is consulted before a compaction summary request
+	// Returning blocked=true aborts compaction entirely —
+	// callers must not fall back to placeholder compaction. The trigger is
+	// "auto" or "manual". Nil means no hook.
+	PreCompact func(ctx context.Context, trigger string) (blocked bool, reason string)
+	// PostCompact, when set, runs after a compaction summary was persisted
+	// Nil means no hook.
+	PostCompact func(ctx context.Context, trigger string)
+	// LastSummary holds the model-written summary text from the most recent
+	// successful CompactWithSummary. The loop persists it as the replay
+	// anchor. Placeholder compaction clears it. Empty when no summary ran.
+	LastSummary string
+	// PlanSnapshot, when set, returns the current plan/todo text to restate in
+	// the compaction summary prompt so the resuming assistant keeps tracking
+	// it. Nil or empty means no plan block.
+	PlanSnapshot func() string
 }
 
 // NewContextManager creates a ContextManager with the specified max tokens limit.
@@ -72,6 +101,34 @@ func (cm *ContextManager) ResolveBudget(reg *provider.Registry, model string) in
 	}
 	cm.MaxTokens = budget
 	return budget
+}
+
+// ObserveProviderUsage records the provider's own token count for the request
+// it just answered. Non-positive counts are ignored: many providers omit usage,
+// and keeping the previous observation beats replacing it with a wrong zero.
+func (cm *ContextManager) ObserveProviderUsage(promptTokens, completionTokens int) {
+	if cm == nil {
+		return
+	}
+	total := promptTokens + completionTokens
+	if total <= 0 {
+		return
+	}
+	cm.ProviderReportedContext = total
+}
+
+// EffectiveTokens returns the effective context size for a local estimate: the
+// larger of that estimate and the last provider report. Provider-side
+// compression can make a window look smaller than it is; taking the maximum
+// means growth cannot hide behind it.
+func (cm *ContextManager) EffectiveTokens(local int) int {
+	if cm == nil {
+		return local
+	}
+	if cm.ProviderReportedContext > local {
+		return cm.ProviderReportedContext
+	}
+	return local
 }
 
 // estimateTextTokens approximates the token count of text without a tokenizer.
@@ -194,6 +251,19 @@ func groupIntoTurns(messages []provider.Message) []Turn {
 // the window any more (truncation or compaction cut it out).
 const syntheticToolResult = "Error: result missing (history truncated)"
 
+// isErrorResult reports whether a tool result is an error or an interruption
+// placeholder rather than real output. dedupe prefers a real result over
+// these when both exist for the same call.
+func isErrorResult(content string) bool {
+	if content == syntheticToolResult {
+		return true
+	}
+	if strings.HasPrefix(content, "Error:") {
+		return true
+	}
+	return strings.Contains(content, "[interrupted")
+}
+
 // splitSystemMessages separates system messages from history, merging them in
 // order into one message. Providers accept at most one system prompt and only
 // at the front, so callers group and trim only conversational turns.
@@ -219,14 +289,14 @@ func splitSystemMessages(history []provider.Message) (*provider.Message, []provi
 // EnsureToolPairing repairs history so it satisfies the provider wire
 // invariant. OpenAI-shaped and Anthropic APIs reject histories that violate it:
 //
-//  1. at most one system message, and it is at index 0; any further system
-//     messages are merged into it rather than dropped;
-//  2. every tool message directly follows an assistant tool_calls message that
-//     declares its ToolCallID, and every assistant tool_calls message is
-//     followed by exactly one tool result per declared call, in call order;
-//  3. tool messages no assistant declares are dropped, and calls without a
-//     result get a synthetic result at the call's position, so results always
-//     follow the declared call order.
+// 1. at most one system message, and it is at index 0; any further system
+// messages are merged into it rather than dropped;
+// 2. every tool message directly follows an assistant tool_calls message that
+// declares its ToolCallID, and every assistant tool_calls message is
+// followed by exactly one tool result per declared call, in call order;
+// 3. tool messages no assistant declares are dropped, and calls without a
+// result get a synthetic result at the call's position, so results always
+// follow the declared call order.
 //
 // Assistant text content is never dropped. The returned slice is new; the
 // input is not modified.
@@ -245,6 +315,13 @@ func EnsureToolPairing(history []provider.Message) []provider.Message {
 	for i := 0; i < len(rest); i++ {
 		msg := rest[i]
 
+		// an assistant message with no text, no reasoning and no tool
+		// calls was cancelled before producing anything; it carries no
+		// information and is skipped.
+		if msg.Role == "assistant" && msg.Content == "" && msg.ReasoningContent == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			// Results for a call are the contiguous run of tool messages after
 			// the assistant message; that is where providers require them.
@@ -261,12 +338,26 @@ func EnsureToolPairing(history []provider.Message) []provider.Message {
 			// whose result was cut out gets a synthetic result in its place.
 			used := make([]bool, len(results))
 			for _, call := range msg.ToolCalls {
+				// dedupe per call preferring a real result over an
+				// error/interrupted one ("interrupted" then the real output).
+				// The first real match wins; if only error results exist, the
+				// first of those stands in.
 				found := -1
+				fallback := -1
 				for k := range results {
-					if !used[k] && results[k].ToolCallID == call.ID {
+					if used[k] || results[k].ToolCallID != call.ID {
+						continue
+					}
+					if fallback < 0 {
+						fallback = k
+					}
+					if !isErrorResult(results[k].Content) {
 						found = k
 						break
 					}
+				}
+				if found < 0 {
+					found = fallback
 				}
 				if found < 0 {
 					out = append(out, provider.Message{
@@ -402,29 +493,54 @@ func trimHistory(messages []provider.Message, keepTurns int) []provider.Message 
 // It always returns history satisfying EnsureToolPairing's invariant: resumed
 // transcripts and compaction can leave orphaned calls or results behind.
 func (cm *ContextManager) Truncate(history []provider.Message) []provider.Message {
+	out, _ := cm.TruncateReport(history)
+	return out
+}
+
+// TruncateReport is Truncate plus the number of whole turns it dropped, so the
+// agent loop can report a silent last-resort drop instead of hiding it. A
+// history that already fits reports zero.
+func (cm *ContextManager) TruncateReport(history []provider.Message) ([]provider.Message, int) {
 	if len(history) == 0 {
-		return history
+		return history, 0
 	}
 
 	// Pairing is a wire requirement, so repair even when the budget already fits.
-	if cm.estimateHistoryTokens(history) <= cm.MaxTokens {
-		return EnsureToolPairing(history)
+	local := cm.estimateHistoryTokens(history)
+	budget := cm.MaxTokens
+	if effective := cm.EffectiveTokens(local); effective > budget && local > 0 {
+		// The provider counted more tokens than the estimate for the same
+		// window, so the estimate understates what will be billed. Scale the
+		// trimming target by the observed ratio: dropping local tokens worth
+		// budget/effective of themselves brings the provider's count down to
+		// the budget. A floor keeps one wild report from emptying the window.
+		scaled := int(float64(local) * float64(budget) / float64(effective))
+		if floor := budget / 4; scaled < floor {
+			scaled = floor
+		}
+		if scaled < 1 {
+			scaled = 1
+		}
+		budget = scaled
+	}
+	if local <= budget {
+		return EnsureToolPairing(history), 0
 	}
 
 	systemMsg, nonSystem := splitSystemMessages(history)
 	if len(nonSystem) == 0 {
 		if systemMsg != nil {
-			return []provider.Message{*systemMsg}
+			return []provider.Message{*systemMsg}, 0
 		}
-		return nil
+		return nil, 0
 	}
 
 	turns := groupIntoTurns(nonSystem)
 	if len(turns) == 0 {
 		if systemMsg != nil {
-			return []provider.Message{*systemMsg}
+			return []provider.Message{*systemMsg}, 0
 		}
-		return nil
+		return nil, 0
 	}
 
 	sysTokens := 0
@@ -432,12 +548,13 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		sysTokens = cm.EstimateTokens(*systemMsg)
 	}
 
+	originalTurns := len(turns)
 	for len(turns) > 1 {
 		totalTokens := sysTokens
 		for _, t := range turns {
 			totalTokens += t.Tokens(cm)
 		}
-		if totalTokens <= cm.MaxTokens {
+		if totalTokens <= budget {
 			break
 		}
 		turns = turns[1:]
@@ -451,7 +568,7 @@ func (cm *ContextManager) Truncate(history []provider.Message) []provider.Messag
 		result = append(result, t.Messages...)
 	}
 
-	return EnsureToolPairing(result)
+	return EnsureToolPairing(result), originalTurns - len(turns)
 }
 
 // Compact retains the system prompt, a summary of omitted turns, and the last N turns.
@@ -473,6 +590,11 @@ func (cm *ContextManager) Compact(history []provider.Message, keepLastTurns int)
 	}
 
 	cm.Compactions.Add(1)
+	// The window just shrank; the last provider report describes content that
+	// is no longer in it, so it must not keep scaling the trimming target.
+	cm.ProviderReportedContext = 0
+	// placeholder compaction has no model summary to anchor replay on.
+	cm.LastSummary = ""
 
 	omittedTurns := len(turns) - keepLastTurns
 	omittedMsgCount := 0
@@ -551,8 +673,25 @@ func (cm *ContextManager) CompactWithSummary(ctx context.Context, p provider.Pro
 		return nil, fmt.Errorf("compact: no provider available for summary")
 	}
 
+	// PreCompact: a deny BLOCKS compaction. The sentinel tells callers not
+	// to fall back to placeholder compaction — the hook refused the whole
+	// operation, not just the model-written summary.
+	if cm.PreCompact != nil {
+		if blocked, reason := cm.PreCompact(ctx, compactTriggerFrom(ctx)); blocked {
+			return nil, fmt.Errorf("%w: %s", ErrCompactBlockedByHook, reason)
+		}
+	}
+
 	omitted := turns[:len(turns)-keepLastTurns]
 	prompt := compactionSummaryPrompt + boundCompactionTranscript(buildCompactionTranscript(omitted))
+	// restate the current plan/todo list so the resuming assistant keeps
+	// tracking it. Todos survive by restatement, not state hand-off.
+	if cm.PlanSnapshot != nil {
+		if plan := strings.TrimSpace(cm.PlanSnapshot()); plan != "" {
+			prompt += "\n## Current Todo List\n" + plan +
+				"\n\nKeep tracking these items in your summary and continue them after resuming.\n"
+		}
+	}
 
 	sctx, cancel := context.WithTimeout(ctx, compactionSummaryTimeout)
 	defer cancel()
@@ -579,7 +718,14 @@ func (cm *ContextManager) CompactWithSummary(ctx context.Context, p provider.Pro
 		return nil, fmt.Errorf("compact: provider returned an empty summary")
 	}
 
+	// expose the summary text so the loop can persist it as the replay
+	// anchor (SummaryMessageID).
+	cm.LastSummary = summary
+
 	cm.Compactions.Add(1)
+	// The window just shrank; the last provider report describes content that
+	// is no longer in it.
+	cm.ProviderReportedContext = 0
 
 	result := make([]provider.Message, 0, len(history))
 	if systemMsg != nil {
@@ -656,7 +802,9 @@ func boundCompactionTranscript(transcript string) string {
 
 // FormatContextStats returns a formatted status string of token usage.
 func (cm *ContextManager) FormatContextStats(history []provider.Message) string {
-	tokens := cm.estimateHistoryTokens(history)
+	// Effective, not raw: the provider's own count supersedes the estimate
+	// when it is larger, so the user sees the window the model actually has.
+	tokens := cm.EffectiveTokens(cm.estimateHistoryTokens(history))
 	pct := float64(tokens) / float64(cm.MaxTokens) * 100.0
 	return fmt.Sprintf("Context: %d / %d tokens (%.1f%%) | %d messages",
 		tokens, cm.MaxTokens, pct, len(history))

@@ -55,9 +55,9 @@ func (s *PlanStore) Items() []PlanItem {
 
 // Render returns the checklist in a stable, plain-text form:
 //
-//   - [x] (1) Write the parser
-//   - [~] (2) Add tests
-//   - [ ] (3) Update docs
+// - [x] (1) Write the parser
+// - [~] (2) Add tests
+// - [ ] (3) Update docs
 //
 // An empty plan renders as the empty string.
 func (s *PlanStore) Render() string {

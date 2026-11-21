@@ -23,6 +23,10 @@ type GatewayProxyProvider struct {
 	name   string
 	cfg    config.GatewayConfig
 	client *http.Client
+	// streamUsage asks an OpenAI-compatible gateway to include token usage on
+	// the final stream chunk. It is opt-in because gateways that reject
+	// unknown body fields would otherwise fail the whole request.
+	streamUsage bool
 }
 
 func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProxyProvider {
@@ -43,6 +47,13 @@ func NewGatewayProxyProvider(name string, cfg config.GatewayConfig) *GatewayProx
 
 func (p *GatewayProxyProvider) Name() string {
 	return p.name
+}
+
+// WithStreamUsage turns on stream_options.include_usage for this provider.
+// Parsing usage needs no switch; only the request opt-in does.
+func (p *GatewayProxyProvider) WithStreamUsage(enabled bool) *GatewayProxyProvider {
+	p.streamUsage = enabled
+	return p
 }
 
 func (p *GatewayProxyProvider) getAPIKey() string {
@@ -145,6 +156,12 @@ type openAIStreamChunk struct {
 		Type    string `json:"type"`
 		Code    string `json:"code"`
 	} `json:"error"`
+	// Usage arrives on the final chunk when the caller opted in with
+	// stream_options.include_usage (or when a gateway always reports it).
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
@@ -175,6 +192,13 @@ func (p *GatewayProxyProvider) Stream(ctx context.Context, model string, history
 
 	if len(tools) > 0 {
 		payload["tools"] = buildOpenAITools(tools)
+	}
+
+	if p.streamUsage {
+		// OpenAI-compatible opt-in: without it most gateways omit usage from
+		// the stream entirely. Sent only when configured, because strict
+		// gateways reject unknown body fields.
+		payload["stream_options"] = map[string]bool{"include_usage": true}
 	}
 
 	bodyBytes, err := json.Marshal(payload)

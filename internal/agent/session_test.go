@@ -107,6 +107,8 @@ func TestSession_WithStore(t *testing.T) {
 	}
 
 	s.AddMessage(provider.Message{Role: "user", Content: "persist this"})
+	// persistence is debounced; a terminal/explicit flush lands it.
+	s.FlushMessages()
 
 	loaded, err := st.GetSession("sess-agent")
 	if err != nil {
@@ -175,6 +177,8 @@ func TestSession_AddMessagePersistsRedactedToolArgs(t *testing.T) {
 		t.Error("caller's args slice was mutated by AddMessage")
 	}
 
+	// persistence is debounced; flush before reading the transcript.
+	s.FlushMessages()
 	loaded, err := st.GetSession("sess-redact")
 	if err != nil {
 		t.Fatalf("failed to load session: %v", err)

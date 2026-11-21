@@ -3,7 +3,10 @@ package agent
 import (
 	"bytes"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/session"
@@ -19,8 +22,18 @@ type Session struct {
 	// scratchpad is agent-maintained working state that must survive history
 	// compaction. It is rendered into the system prompt.
 	scratchpad string
-	mu         sync.RWMutex
+	// persistence is debounced. persistQueue holds messages awaiting a
+	// coalesced write; persistTimer schedules the flush. Both are guarded by
+	// mu so queue order matches in-memory append order. Terminal transitions
+	// (tool results, turn end, abort) flush synchronously via FlushMessages.
+	persistQueue []provider.Message
+	persistTimer *time.Timer
+	mu           sync.RWMutex
 }
+
+// persistDebounce coalesces a burst of message appends into one write batch
+// Terminal transitions bypass it.
+const persistDebounce = 33 * time.Millisecond
 
 func NewSession(model string) *Session {
 	return &Session{
@@ -96,12 +109,108 @@ func (s *Session) AddMessage(msg provider.Message) {
 
 	st := s.store
 	id := s.id
+	// queue the write under the same lock as the append so persisted
+	// order matches in-memory order. The flush itself runs outside the lock.
+	if st != nil && id != "" {
+		s.persistQueue = append(s.persistQueue, redactedForPersistence(msg))
+		if s.persistTimer == nil {
+			s.persistTimer = time.AfterFunc(persistDebounce, s.flushPersist)
+		}
+	}
 	s.mu.Unlock()
 
-	if st != nil && id != "" {
-		if err := st.AppendMessage(id, redactedForPersistence(msg)); err != nil {
+	// A tool result is a terminal transition: it must land before the turn
+	// can finish, so flush the whole queue synchronously.
+	if st != nil && id != "" && msg.Role == "tool" {
+		s.FlushMessages()
+	}
+}
+
+// flushPersist drains the queued messages to the store in order. It is called
+// by the debounce timer and by FlushMessages; the queue swap under mu means
+// concurrent callers never double-write or reorder. DB writes run unlocked.
+func (s *Session) flushPersist() {
+	s.mu.Lock()
+	queue := s.persistQueue
+	s.persistQueue = nil
+	if s.persistTimer != nil {
+		s.persistTimer.Stop()
+		s.persistTimer = nil
+	}
+	st := s.store
+	id := s.id
+	s.mu.Unlock()
+
+	if st == nil || id == "" || len(queue) == 0 {
+		return
+	}
+	for _, msg := range queue {
+		if err := st.AppendMessage(id, msg); err != nil {
 			slog.Warn("failed to persist message", "session", id, "error", err)
 		}
+	}
+}
+
+// FlushMessages synchronously persists every queued message. The loop
+// calls it on terminal transitions — turn end, abort, exit — so no message is
+// lost when a turn is cut short. Writes are bounded by the store's busy
+// timeout; this is the FlushAll contract non-interactive clients rely on.
+func (s *Session) FlushMessages() {
+	s.flushPersist()
+}
+
+// RecordSummaryAnchor persists a compaction as a flagged summary message plus
+// the retained tail, and anchors replay at the summary row.
+// compacted is the live compacted window ([system?, user-summary, ack,...tail]).
+// The summary and tail are appended AFTER the existing transcript so replay
+// from the anchor reproduces the live window; pre-anchor rows are never
+// deleted. The summary row is relabelled to a user turn on replay.
+func (s *Session) RecordSummaryAnchor(compacted []provider.Message) {
+	s.mu.RLock()
+	st := s.store
+	id := s.id
+	s.mu.RUnlock()
+	if st == nil || id == "" {
+		return
+	}
+
+	sumIdx := -1
+	for i, m := range compacted {
+		if m.Role == "user" && strings.HasPrefix(m.Content, compactionSummaryHeading) {
+			sumIdx = i
+			break
+		}
+	}
+	if sumIdx < 0 {
+		return
+	}
+	summaryContent := compacted[sumIdx].Content
+	tailStart := sumIdx + 1
+	if tailStart < len(compacted) && compacted[tailStart].Role == "assistant" && compacted[tailStart].Content == compactionSummaryAck {
+		tailStart++
+	}
+
+	// Land any queued messages first so the summary follows them in the DB.
+	s.FlushMessages()
+
+	rowID, err := st.AppendSummaryMessage(id, provider.Message{Role: "assistant", Content: summaryContent})
+	if err != nil {
+		slog.Warn("failed to persist summary anchor", "session", id, "error", err)
+		return
+	}
+	if err := st.AppendMessage(id, provider.Message{Role: "assistant", Content: compactionSummaryAck}); err != nil {
+		slog.Warn("failed to persist summary ack", "session", id, "error", err)
+	}
+	for _, m := range compacted[tailStart:] {
+		if m.Role == "system" {
+			continue
+		}
+		if err := st.AppendMessage(id, redactedForPersistence(m)); err != nil {
+			slog.Warn("failed to persist compacted tail", "session", id, "error", err)
+		}
+	}
+	if err := st.SetSummaryAnchor(id, strconv.FormatInt(rowID, 10)); err != nil {
+		slog.Warn("failed to set summary anchor", "session", id, "error", err)
 	}
 }
 

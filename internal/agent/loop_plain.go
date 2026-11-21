@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mevarx/GoCode/internal/safetext"
 )
@@ -127,6 +128,59 @@ func (a *AgentLoop) renderPlain(ev LoopEvent) {
 		} else {
 			fmt.Println(text)
 		}
+	case EventTurnEnd:
+		// One line per model turn; command turns have nothing to report.
+		if line := turnSummaryLine(ev.Metrics); line != "" {
+			fmt.Printf("\n[%s]\n", line)
+		}
+	}
+}
+
+// turnSummaryLine renders the plain REPL's per-turn summary, or "" when the
+// turn produced no measurements worth printing.
+func turnSummaryLine(m *TurnMetrics) string {
+	if m == nil {
+		return ""
+	}
+	if m.PromptTokens == 0 && m.CompletionTokens == 0 && m.ToolCalls == 0 {
+		return ""
+	}
+	parts := []string{formatSeconds(m.Elapsed)}
+	parts = append(parts, fmt.Sprintf("%s prompt / %s completion tokens",
+		formatCount(m.PromptTokens), formatCount(m.CompletionTokens)))
+	if m.ToolCalls > 0 {
+		noun := "calls"
+		if m.ToolCalls == 1 {
+			noun = "call"
+		}
+		parts = append(parts, fmt.Sprintf("%d tool %s", m.ToolCalls, noun))
+	}
+	if pct, ok := m.ContextPercent(); ok {
+		parts = append(parts, fmt.Sprintf("ctx %d%%", int(pct+0.5)))
+	}
+	return "turn: " + strings.Join(parts, " · ")
+}
+
+// formatSeconds keeps the summary short: 850ms, 3.2s, 1m04s.
+func formatSeconds(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return fmt.Sprintf("%dm%02ds", int(d/time.Minute), int(d/time.Second)%60)
+}
+
+// formatCount abbreviates token counts so the line stays on one row.
+func formatCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
 	}
 }
 

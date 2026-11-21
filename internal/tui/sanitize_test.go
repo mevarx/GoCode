@@ -34,7 +34,7 @@ func TestApprovalRequestFieldsDropsEscapeSequences(t *testing.T) {
 	updated, _ = m.Update(approvalRequestMsg{req: req})
 	m = updated.(Model)
 
-	if !m.approvalActive {
+	if !m.overlays.has(overlayApproval) {
 		t.Fatal("approval modal did not open")
 	}
 	view := m.View().Content

@@ -8,24 +8,24 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// Stale frames must not re-arm the ticker or chains accumulate.
+// Stale ticks must not re-arm the clock or chains accumulate.
 func TestStaleFrameDoesNotRearmTicker(t *testing.T) {
 	m := newTestModel(make(chan struct{}, 1))
 
-	// Turn 1 starts, then ends while a frame is still in flight.
+	// Turn 1 starts, then ends while a tick is still in flight.
 	m.animating = true
 	m.animEpoch = 1
 	m.animating = false
 
-	// Turn 2 starts before that stale frame lands.
+	// Turn 2 starts before that stale tick lands.
 	m.animating = true
 	m.animEpoch = 2
 
-	stale := frameMsg{at: time.Now(), epoch: 1}
+	stale := animTickMsg{at: time.Now(), epoch: 1, seq: m.clockSeq}
 	_, cmd := m.Update(stale)
 
 	if cmd != nil {
-		t.Error("a frame from a previous turn re-armed the ticker; chains would accumulate")
+		t.Error("a tick from a previous turn re-armed the clock; chains would accumulate")
 	}
 }
 
@@ -34,9 +34,9 @@ func TestCurrentFrameRearmsTicker(t *testing.T) {
 	m.animating = true
 	m.animEpoch = 7
 
-	_, cmd := m.Update(frameMsg{at: time.Now(), epoch: 7})
+	_, cmd := m.Update(animTickMsg{at: time.Now(), epoch: 7, seq: m.clockSeq})
 	if cmd == nil {
-		t.Error("the current turn's frame must re-arm the ticker or the mascot freezes mid-stream")
+		t.Error("the current turn's tick must re-arm the clock or the mascot freezes mid-stream")
 	}
 }
 
@@ -46,9 +46,9 @@ func TestIdleFrameDoesNotRearmTicker(t *testing.T) {
 	m.animating = false
 	m.animEpoch = 3
 
-	_, cmd := m.Update(frameMsg{at: time.Now(), epoch: 3})
+	_, cmd := m.Update(animTickMsg{at: time.Now(), epoch: 3, seq: m.clockSeq})
 	if cmd != nil {
-		t.Error("an idle session re-armed the ticker; it would redraw forever")
+		t.Error("an idle session re-armed the clock; it would redraw forever")
 	}
 }
 

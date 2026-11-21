@@ -46,7 +46,7 @@ var credentialEnvPatterns = []string{
 	"*_CREDENTIALS",
 }
 
-// ScrubbedEnv returns os.Environ() minus credential-shaped variables and any
+// ScrubbedEnv returns os.Environ minus credential-shaped variables and any
 // names or patterns in extra. Essential variables always survive. Child
 // processes therefore never inherit provider API keys by default.
 func ScrubbedEnv(extra []string) []string {

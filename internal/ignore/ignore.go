@@ -29,7 +29,7 @@ type gitIgnoreMatcher struct {
 	root    string
 }
 
-// LoadMatcher searches for .gocodeignore (or .gitignore as fallback) starting from dir.
+// LoadMatcher searches for.gocodeignore (or.gitignore as fallback) starting from dir.
 func LoadMatcher(dir string) Matcher {
 	if dir == "" {
 		dir, _ = os.Getwd()

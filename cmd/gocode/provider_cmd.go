@@ -151,6 +151,21 @@ func isBuiltInProvider(name string) bool {
 	return false
 }
 
+// applyStreamUsage turns on the stream_options include_usage opt-in for every
+// OpenAI-compatible gateway in the registry, built-in or custom. The native
+// Anthropic, Copilot and Ollama dialects report usage without it, so they are
+// left alone; disabled means every provider keeps its defaults.
+func applyStreamUsage(registry *provider.Registry, enabled bool) {
+	if !enabled {
+		return
+	}
+	for _, name := range registry.List() {
+		if gw, ok := registry.Get(name).(*provider.GatewayProxyProvider); ok {
+			gw.WithStreamUsage(true)
+		}
+	}
+}
+
 func registerCustomProviders(registry *provider.Registry, configured map[string]config.GatewayConfig) error {
 	names := make([]string, 0, len(configured))
 	for name := range configured {

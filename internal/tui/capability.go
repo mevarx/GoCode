@@ -67,3 +67,67 @@ func isTerminal(f *os.File) bool {
 	}
 	return info.Mode()&os.ModeCharDevice != 0
 }
+
+// motionLevel is the resolved animation policy: config intent combined with
+// the terminal's own reduced-motion signal.
+type motionLevel int
+
+const (
+	// motionFull: everything animates.
+	motionFull motionLevel = iota
+	// motionReduced: decorative motion stops; functional indicators stay.
+	motionReduced
+	// motionOff: as reduced, and the user asked for it explicitly.
+	motionOff
+)
+
+// Motion settings accepted by [tui] motion.
+const (
+	MotionAuto    = "auto"
+	MotionReduced = "reduced"
+	MotionOff     = "off"
+)
+
+// MotionSettings is the [tui] animation configuration handed to the UI.
+type MotionSettings struct {
+	// Mode is "auto", "reduced" or "off"; empty behaves as "auto".
+	Mode string
+	// SmoothStreaming paces streamed text and tool-argument previews into the
+	// transcript instead of rendering them on arrival. Opt-in; the default
+	// renders text as it arrives.
+	SmoothStreaming bool
+}
+
+// resolve folds the capability probe into the configured mode. Precedence is
+// off > reduced > auto: an explicit "off" wins over a capable terminal, and a
+// terminal that asks for less motion always wins over "auto".
+func (s MotionSettings) resolve(reducedBySystem bool) motionLevel {
+	switch strings.ToLower(strings.TrimSpace(s.Mode)) {
+	case MotionOff:
+		return motionOff
+	case MotionReduced:
+		return motionReduced
+	default:
+		if reducedBySystem {
+			return motionReduced
+		}
+		return motionFull
+	}
+}
+
+// animMode is the live policy: read per call so a capability flip is honoured
+// without rebuilding the model.
+func (m *Model) animMode() motionLevel {
+	return m.motion.resolve(capabilities.ReducedMotion)
+}
+
+// decorativeMotion gates effects that exist only to look alive — the shimmer
+// band and the mascot's springs. Functional indicators use spinnerAnimated
+// instead, which degrades them rather than removing them.
+func (m *Model) decorativeMotion() bool { return m.animMode() == motionFull }
+
+// smoothActive reports whether streamed text is paced this instant. Pacing is
+// decorative: under reduced or off motion the text snaps to full.
+func (m *Model) smoothActive() bool {
+	return m.animMode() == motionFull && m.motion.SmoothStreaming && m.streaming
+}

@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/mevarx/GoCode/internal/hooks"
 )
 
 // Config represents top-level configuration options.
@@ -18,33 +20,91 @@ type Config struct {
 	Permissions PermissionsConfig `toml:"permissions"`
 	Session     SessionConfig     `toml:"session"`
 	Tools       ToolsConfig       `toml:"tools"`
+	Context     ContextConfig     `toml:"context"`
+	TUI         TUIConfig         `toml:"tui"`
 	MCP         MCPConfig         `toml:"mcp"`
+	// Hooks configures the hook engine: [[hooks.PreToolUse]] etc. with
+	// name/matcher/command/timeout. Event names normalize case-insensitively
+	// with underscores stripped; unknown events and keys are rejected at
+	// load, matchers must compile, and hooks dedup by command per event.
+	Hooks hooks.Config `toml:"hooks"`
+}
+
+// TUI motion modes, in decreasing order of movement.
+const (
+	// TUIMotionAuto follows the terminal's own reduced-motion signal.
+	TUIMotionAuto = "auto"
+	// TUIMotionReduced stops decorative motion but keeps functional
+	// indicators, which degrade to static glyphs.
+	TUIMotionReduced = "reduced"
+	// TUIMotionOff is the strictest setting: no decoration at all.
+	TUIMotionOff = "off"
+)
+
+// TUIDefaultTheme is the built-in theme a fresh config selects. The UI owns the
+// theme registry; config only owns the default name.
+const TUIDefaultTheme = "gocode-dark"
+
+// TUIConfig controls the rich TUI's animation and input behaviour.
+type TUIConfig struct {
+	// Motion gates animation: "auto" honours the terminal's reduced-motion
+	// signal, while "reduced" and "off" force it down. Decorative motion
+	// (shimmer, mascot springs) stops; functional indicators (the spinner
+	// glyph, elapsed badges) become static rather than disappearing.
+	Motion string `toml:"motion"`
+	// SmoothStreaming paces streamed text and tool-argument previews into the
+	// transcript instead of rendering them on arrival. Off by default
+	// (render-on-arrival parity); opt in with smooth_streaming = true.
+	SmoothStreaming bool `toml:"smooth_streaming"`
+	// ActiveTheme names a built-in or user theme. Matching is
+	// case-insensitive; an unknown name falls back to the default with a
+	// logged warning at startup.
+	ActiveTheme string `toml:"active_theme"`
+	// Transparent skips painting the app background, so the terminal's own
+	// background shows through.
+	Transparent bool `toml:"transparent"`
+}
+
+// ContextConfig specifies automatic context management.
+type ContextConfig struct {
+	// AutoCompact summarizes older turns before the provider window overflows.
+	// Truncation remains the last resort. On by default.
+	AutoCompact bool `toml:"auto_compact"`
+	// KeepRecentTokens is the approximate verbatim tail automatic compaction
+	// preserves. Zero or negative uses the built-in default of 20000; it does
+	// not affect manual /compact, which stays at two turns.
+	KeepRecentTokens int `toml:"keep_recent_tokens"`
 }
 
 // ProviderConfig specifies provider settings.
 type ProviderConfig struct {
-	Default    string                   `toml:"default"`
-	Ollama     OllamaConfig             `toml:"ollama"`
-	OmniRoute  GatewayConfig            `toml:"omniroute"`
-	OpenAI     GatewayConfig            `toml:"openai"`
-	Gemini     GatewayConfig            `toml:"gemini"`
-	Groq       GatewayConfig            `toml:"groq"`
-	OpenRouter GatewayConfig            `toml:"openrouter"`
-	Anthropic  GatewayConfig            `toml:"anthropic"`
-	Qwen       GatewayConfig            `toml:"qwen"`
-	Kimi       GatewayConfig            `toml:"kimi"`
-	Hermes     GatewayConfig            `toml:"hermes"`
-	XAI        GatewayConfig            `toml:"xai"`
-	Mistral    GatewayConfig            `toml:"mistral"`
-	MiniMax    GatewayConfig            `toml:"minimax"`
-	DeepSeek   GatewayConfig            `toml:"deepseek"`
-	Together   GatewayConfig            `toml:"together"`
-	Fireworks  GatewayConfig            `toml:"fireworks"`
-	Cerebras   GatewayConfig            `toml:"cerebras"`
-	Zhipu      GatewayConfig            `toml:"zhipu"`
-	Nvidia     GatewayConfig            `toml:"nvidia"`
-	Copilot    CopilotConfig            `toml:"copilot"`
-	Custom     map[string]GatewayConfig `toml:"custom"`
+	Default string `toml:"default"`
+	// StreamUsage asks OpenAI-compatible gateways to report token usage on the
+	// final stream chunk (stream_options.include_usage). Parsing usage is
+	// always on; this only makes providers that hide it by default send it.
+	// Off by default because some gateways reject unknown request fields.
+	StreamUsage bool                     `toml:"stream_usage"`
+	Ollama      OllamaConfig             `toml:"ollama"`
+	OmniRoute   GatewayConfig            `toml:"omniroute"`
+	OpenAI      GatewayConfig            `toml:"openai"`
+	Gemini      GatewayConfig            `toml:"gemini"`
+	Groq        GatewayConfig            `toml:"groq"`
+	OpenRouter  GatewayConfig            `toml:"openrouter"`
+	Anthropic   GatewayConfig            `toml:"anthropic"`
+	Qwen        GatewayConfig            `toml:"qwen"`
+	Kimi        GatewayConfig            `toml:"kimi"`
+	Hermes      GatewayConfig            `toml:"hermes"`
+	XAI         GatewayConfig            `toml:"xai"`
+	Mistral     GatewayConfig            `toml:"mistral"`
+	MiniMax     GatewayConfig            `toml:"minimax"`
+	DeepSeek    GatewayConfig            `toml:"deepseek"`
+	Together    GatewayConfig            `toml:"together"`
+	Fireworks   GatewayConfig            `toml:"fireworks"`
+	Cerebras    GatewayConfig            `toml:"cerebras"`
+	Zhipu       GatewayConfig            `toml:"zhipu"`
+	Nvidia      GatewayConfig            `toml:"nvidia"`
+	Copilot     CopilotConfig            `toml:"copilot"`
+	Custom      map[string]GatewayConfig `toml:"custom"`
 }
 
 // CopilotConfig configures GitHub Copilot.
@@ -77,6 +137,14 @@ type PermissionsConfig struct {
 	AutoApprove       []string `toml:"auto_approve"`
 	Deny              []string `toml:"deny"`
 	SensitivePatterns []string `toml:"sensitive_patterns"`
+	// Mode selects the prompt policy: "normal" (default, prompt for gated
+	// calls) or "yolo" (skip prompts for safe calls; dangerous calls are
+	// refused without asking). The deny-list and redaction stay unconditional
+	// in every mode; sysadmin is deliberately not offered.
+	Mode string `toml:"mode"`
+	// DangerousTools lists tool names always classified dangerous, on top of
+	// the built-in classifier rules.
+	DangerousTools []string `toml:"dangerous_tools"`
 }
 
 // MCPConfig specifies Model Context Protocol server configurations.
@@ -137,6 +205,8 @@ func DefaultConfig() Config {
 	return Config{
 		Provider: ProviderConfig{
 			Default: "ollama",
+			// Opt-in: parsing usage is always on, requesting it is not.
+			StreamUsage: false,
 			Ollama: OllamaConfig{
 				Host:         "http://127.0.0.1:11434",
 				DefaultModel: "",
@@ -243,9 +313,26 @@ func DefaultConfig() Config {
 			AutoApprove:       []string{"file_read"},
 			Deny:              []string{},
 			SensitivePatterns: []string{},
+			Mode:              "normal",
+			DangerousTools:    []string{},
 		},
 		Session: SessionConfig{
 			Persist: true,
+		},
+		Context: ContextConfig{
+			AutoCompact: true,
+			// Mirrors agent.DefaultKeepRecentTokens; config cannot import the
+			// agent package without a cycle, so the value is repeated here.
+			KeepRecentTokens: 20000,
+		},
+		TUI: TUIConfig{
+			Motion: TUIMotionAuto,
+			// Render-on-arrival parity: streamed
+			// text lands as it arrives. Pacing bursts into the transcript is
+			// opt-in via smooth_streaming = true.
+			SmoothStreaming: false,
+			ActiveTheme:     TUIDefaultTheme,
+			Transparent:     false,
 		},
 		Tools: ToolsConfig{
 			Shell: ShellConfig{
@@ -452,6 +539,89 @@ func decodeConfig(data []byte, cfg *Config, path string) error {
 			keys = append(keys, k.String())
 		}
 		return fmt.Errorf("config file %s contains unknown keys: %s", path, strings.Join(keys, ", "))
+	}
+	if err := normalizeTUIMotion(cfg); err != nil {
+		return fmt.Errorf("config file %s: %w", path, err)
+	}
+	if err := normalizeTUITheme(cfg); err != nil {
+		return fmt.Errorf("config file %s: %w", path, err)
+	}
+	if err := normalizePermissionMode(cfg); err != nil {
+		return fmt.Errorf("config file %s: %w", path, err)
+	}
+	normalizedHooks, err := hooks.NormalizeConfig(cfg.Hooks)
+	if err != nil {
+		return fmt.Errorf("config file %s: %w", path, err)
+	}
+	cfg.Hooks = normalizedHooks
+	return nil
+}
+
+// normalizePermissionMode fills the default mode and rejects unknown values:
+// a misspelled mode must not silently fall back to prompting (or worse, to
+// skipping prompts). Only normal and yolo exist; sysadmin is omitted because
+// a nothing-blocked mode contradicts the unconditional deny-list invariant.
+func normalizePermissionMode(cfg *Config) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Permissions.Mode))
+	switch mode {
+	case "":
+		cfg.Permissions.Mode = "normal"
+	case "normal", "yolo":
+		cfg.Permissions.Mode = mode
+	default:
+		return fmt.Errorf("permissions.mode %q is not valid (want normal or yolo)", cfg.Permissions.Mode)
+	}
+	return nil
+}
+
+// normalizeTUITheme fills the default theme name and rejects names that could
+// not possibly resolve: the theme registry only matches sane stems, so a
+// broken value is better reported at load than logged at startup.
+func normalizeTUITheme(cfg *Config) error {
+	name := strings.TrimSpace(cfg.TUI.ActiveTheme)
+	if name == "" {
+		cfg.TUI.ActiveTheme = TUIDefaultTheme
+		return nil
+	}
+	if !validThemeName(name) {
+		return fmt.Errorf("tui.active_theme %q is not a valid theme name (letters, digits, '-', '_' or '.')", cfg.TUI.ActiveTheme)
+	}
+	cfg.TUI.ActiveTheme = name
+	return nil
+}
+
+// validThemeName mirrors the UI's theme-name contract. User theme files use
+// the same shape as their file stem, so a name that resolves to a built-in and
+// a name that resolves to a file are validated identically.
+func validThemeName(name string) bool {
+	if name == "" || len(name) > 64 || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeTUIMotion validates the [tui] motion mode and fills an empty value
+// with the default. Strict config rejects unknown keys so a typo cannot
+// silently do nothing; a wrong value deserves the same treatment.
+func normalizeTUIMotion(cfg *Config) error {
+	switch mode := strings.ToLower(strings.TrimSpace(cfg.TUI.Motion)); mode {
+	case "", TUIMotionAuto:
+		cfg.TUI.Motion = TUIMotionAuto
+	case TUIMotionReduced:
+		cfg.TUI.Motion = TUIMotionReduced
+	case TUIMotionOff:
+		cfg.TUI.Motion = TUIMotionOff
+	default:
+		return fmt.Errorf("tui.motion must be %q, %q or %q, got %q",
+			TUIMotionAuto, TUIMotionReduced, TUIMotionOff, cfg.TUI.Motion)
 	}
 	return nil
 }

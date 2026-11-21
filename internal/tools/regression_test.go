@@ -298,7 +298,7 @@ func TestShellExecTimeoutEnforced(t *testing.T) {
 	tool := &ShellExecTool{Timeout: time.Second, MaxOutputBytes: 4096}
 	var cmdStr string
 	if runtime.GOOS == "windows" {
-		// ping orphans the pipe, which hangs Wait() without WaitDelay.
+		// ping orphans the pipe, which hangs Wait without WaitDelay.
 		cmdStr = "ping -n 30 127.0.0.1"
 	} else {
 		cmdStr = "sleep 30"

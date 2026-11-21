@@ -136,12 +136,15 @@ func TestLoopGuardCanonicalisesArguments(t *testing.T) {
 	}
 }
 
-// Repeats count only when consecutive; the old cumulative counter aborted real work.
+// Repeats count only when consecutive; the old cumulative counter aborted real
+// work. adds a separate signature-window stop for heavy interleaved
+// repetition (TestLoopGuardSignatureWindowStop); here the interleaved count
+// stays at/below that window so only the consecutive streak is exercised.
 func TestLoopGuardCountsConsecutiveRepeatsOnly(t *testing.T) {
+	// Interleaved repeats reset the consecutive streak: four identical calls
+	// separated by distinct work must not trip (a cumulative counter would).
 	g := NewLoopGuard()
-	// Interleave the repeated call with distinct calls, well past the limit:
-	// the streak resets on every interleaved call, so this must never stop.
-	for i := 0; i < DefaultMaxRepeatedToolCalls+3; i++ {
+	for i := 0; i < DefaultMaxRepeatedToolCalls+1; i++ {
 		if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err != nil {
 			t.Fatalf("interleaved repeat %d should be allowed: %v", i+1, err)
 		}
@@ -149,13 +152,46 @@ func TestLoopGuardCountsConsecutiveRepeatsOnly(t *testing.T) {
 			t.Fatalf("distinct call %d should be allowed: %v", i+1, err)
 		}
 	}
+
+	// A fresh guard isolates the consecutive streak from the window count:
+	// pure consecutive repeats trip at the consecutive limit, not the window.
+	c := NewLoopGuard()
 	for i := 0; i < DefaultMaxRepeatedToolCalls; i++ {
-		if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err != nil {
+		if err := c.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err != nil {
 			t.Fatalf("consecutive repeat %d of %d should be allowed: %v", i+1, DefaultMaxRepeatedToolCalls, err)
 		}
 	}
-	if err := g.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err == nil {
+	if err := c.CheckCall(call("shell_exec", `{"command":"go test ./..."}`)); err == nil {
 		t.Fatal("consecutive streak beyond the limit should trip the guard")
+	}
+}
+
+// the same signature in more than 5 of the last 10 steps is a runaway even
+// when interleaved (which resets the consecutive streak). This pattern keeps
+// the consecutive streak below its limit so only the window guard can fire.
+func TestLoopGuardSignatureWindowStop(t *testing.T) {
+	g := NewLoopGuard()
+	shell := call("shell_exec", `{"command":"go test ./..."}`)
+	distinct := func(i int) []provider.ToolCall {
+		return call("file_read", `{"path":"f`+strings.Repeat("x", i)+`"}`)
+	}
+	// 6 identical shell signatures across 10 steps, never 3 consecutive.
+	seq := [][]provider.ToolCall{
+		shell, distinct(1), shell, distinct(2), shell,
+		distinct(3), shell, distinct(4), shell, shell,
+	}
+	var lastErr error
+	for i, batch := range seq {
+		lastErr = g.CheckCall(batch)
+		if i < len(seq)-1 && lastErr != nil {
+			t.Fatalf("step %d should be allowed: %v", i+1, lastErr)
+		}
+	}
+	if lastErr == nil {
+		t.Fatal("6 identical signatures in 10 steps should trip the window guard")
+	}
+	if !strings.Contains(lastErr.Error(), "in the last") {
+		t.Errorf("expected the signature-window stop, got: %v", lastErr)
 	}
 }
 

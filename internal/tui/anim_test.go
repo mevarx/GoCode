@@ -519,7 +519,7 @@ func TestMascotDoesNotBlinkWhileWorking(t *testing.T) {
 // Pinned so glyph swaps must update test deliberately.
 const animInlineWidth = 8
 
-// inline() must hold fixed width across states, blinks, and styles.
+// inline must hold fixed width across states, blinks, and styles.
 func TestMascotInlineWidthIsConstant(t *testing.T) {
 	start := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	styles := []struct {
@@ -692,30 +692,50 @@ func TestStripANSIRemovesEscapeSequences(t *testing.T) {
 	}
 }
 
-// --- frames ---------------------------------------------------------------
+// --- the shared clock tick --------------------------------------------------
 
-func TestTickUntilEmitsFrameMsg(t *testing.T) {
-	cmd := tickUntil(time.Millisecond, 3)
+func TestArmClockTickEmitsAnimTickMsg(t *testing.T) {
+	orig := msgNow
+	defer func() { msgNow = orig }()
+	base := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	msgNow = func() time.Time { return base }
+
+	m := newTestModel(nil)
+	m.streaming = true // clockLive: a streaming turn owns the clock
+	m.animEpoch = 3
+
+	cmd := m.armClockTick()
 	if cmd == nil {
-		t.Fatal("tickUntil returned a nil command")
+		t.Fatal("armClockTick returned a nil command for a live turn")
 	}
 	msg := cmd()
-	fm, ok := msg.(frameMsg)
+	tick, ok := msg.(animTickMsg)
 	if !ok {
-		t.Fatalf("tickUntil produced %T, want frameMsg", msg)
+		t.Fatalf("armClockTick produced %T, want animTickMsg", msg)
 	}
-	if fm.epoch != 3 {
-		t.Errorf("frameMsg.epoch = %d, want 3: a frame that loses its turn tag can "+
-			"re-arm a finished turn's ticker", fm.epoch)
+	if tick.epoch != 3 {
+		t.Errorf("animTickMsg.epoch = %d, want 3: a tick that loses its turn tag can "+
+			"re-arm a finished turn's clock", tick.epoch)
 	}
-	if fm.at.IsZero() {
-		t.Error("frameMsg carries a zero timestamp")
+	if tick.seq != m.clockSeq {
+		t.Errorf("animTickMsg.seq = %d, want %d: lost-tick recovery could not supersede it",
+			tick.seq, m.clockSeq)
+	}
+	if tick.at.IsZero() {
+		t.Error("animTickMsg carries a zero timestamp")
+	}
+
+	// The stale-turn-tag property: once the turn advances its epoch, the
+	// in-flight tick can no longer be accepted, so it can never re-arm.
+	m.animEpoch = 4
+	if m.acceptClockTick(tick) {
+		t.Error("a tick from a finished turn was accepted; it would re-arm the clock")
 	}
 }
 
-func TestFrameMsgCarriesItsTimestamp(t *testing.T) {
+func TestAnimTickMsgCarriesItsTimestamp(t *testing.T) {
 	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
-	if got := (frameMsg{at: at}).at; !got.Equal(at) {
-		t.Errorf("frameMsg.at = %v, want %v", got, at)
+	if got := (animTickMsg{at: at}).at; !got.Equal(at) {
+		t.Errorf("animTickMsg.at = %v, want %v", got, at)
 	}
 }

@@ -16,6 +16,15 @@ const DefaultMaxToolIterations = 50
 // call after the same result makes no progress.
 const DefaultMaxRepeatedToolCalls = 3
 
+// signature-window stop: the same tool+args signature appearing
+// in more than signatureRepeatLimit of the last signatureWindow steps is a
+// runaway even when interleaved with other calls (which reset the consecutive
+// streak). This catches loops the consecutive-repeat guard cannot.
+const (
+	signatureWindow      = 10
+	signatureRepeatLimit = 5
+)
+
 // LoopGuardConfig carries user-configurable limits. Zero values mean "use the
 // built-in default", so an empty config block behaves identically to no block.
 type LoopGuardConfig struct {
@@ -44,6 +53,9 @@ type LoopGuard struct {
 	lastKeys map[string]bool
 	// consecutiveRep counts consecutive batches repeating the preceding batch.
 	consecutiveRep int
+	// recentBatches holds the canonical keys of the last signatureWindow
+	// batches, for the interleaved-repeat signature stop.
+	recentBatches [][]string
 }
 
 // NewLoopGuard returns a guard with defaults applied.
@@ -115,6 +127,34 @@ func (g *LoopGuard) CheckCall(toolCalls []provider.ToolCall) error {
 			g.consecutiveRep = 0
 		}
 		g.lastKeys = current
+
+		// record this batch's signatures and stop if any one appears in
+		// more than signatureRepeatLimit of the last signatureWindow steps.
+		batchKeys := make([]string, 0, len(current))
+		keyName := make(map[string]string, len(current))
+		for _, tc := range toolCalls {
+			key := canonicalCallKey(tc)
+			if _, seen := keyName[key]; !seen {
+				keyName[key] = tc.Name
+				batchKeys = append(batchKeys, key)
+			}
+		}
+		g.recentBatches = append(g.recentBatches, batchKeys)
+		if len(g.recentBatches) > signatureWindow {
+			g.recentBatches = g.recentBatches[len(g.recentBatches)-signatureWindow:]
+		}
+		counts := make(map[string]int)
+		for _, batch := range g.recentBatches {
+			for _, key := range batch {
+				counts[key]++
+			}
+		}
+		for key, n := range counts {
+			if n > signatureRepeatLimit {
+				return fmt.Errorf("stopped: tool %q was called %d times in the last %d steps with identical arguments; repeating the same call cannot change the outcome — adjust the approach or the arguments",
+					keyName[key], n, len(g.recentBatches))
+			}
+		}
 	}
 
 	return nil

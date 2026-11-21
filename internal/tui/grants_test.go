@@ -19,7 +19,7 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 	m = updated.(Model)
 
 	choiceCh := make(chan tools.ApprovalChoice, 1)
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "shell_exec",
 		Args:     json.RawMessage(`{"command":"ls"}`),
@@ -28,16 +28,16 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 	}
 
 	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "allow exact args this session") {
+	if !strings.Contains(view, "grant session") {
 		t.Fatalf("modal footer missing the allow-exact hint:\n%s", view)
 	}
-	if !strings.Contains(view, "read-only tools this turn") {
+	if !strings.Contains(view, "read-only turn") {
 		t.Fatalf("modal footer missing the read-only hint:\n%s", view)
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'a'})
 	m = updated.(Model)
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		t.Fatal("modal stayed open after 'a'")
 	}
 	if !m.sessionGrants["shell_exec"] {
@@ -54,7 +54,7 @@ func TestApprovalModalAllowExactKey(t *testing.T) {
 	}
 
 	// Reopening the modal shows the used grant in the footer.
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "file_write",
 		Args:     json.RawMessage(`{"path":"a.go"}`),
@@ -75,7 +75,7 @@ func TestApprovalModalReadOnlyKey(t *testing.T) {
 	m = updated.(Model)
 
 	choiceCh := make(chan tools.ApprovalChoice, 1)
-	m.approvalActive = true
+	m.overlays.push(overlayApproval)
 	m.approvalReq = ApprovalRequest{
 		ToolName: "mcp_search",
 		Args:     json.RawMessage(`{"query":"x"}`),
@@ -85,7 +85,7 @@ func TestApprovalModalReadOnlyKey(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'r'})
 	m = updated.(Model)
-	if m.approvalActive {
+	if m.overlays.has(overlayApproval) {
 		t.Fatal("modal stayed open after 'r'")
 	}
 
@@ -120,9 +120,10 @@ func TestApprovalChoiceBridgeRoundTrip(t *testing.T) {
 	msg := pollApproval(bridge)()
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
-	if !m.approvalActive {
+	if !m.overlays.has(overlayApproval) {
 		t.Fatal("choice request did not open the modal")
 	}
+	m.grace.skip() // decision-flow test; grace timing has dedicated tests
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
