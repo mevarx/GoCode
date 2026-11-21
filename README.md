@@ -31,7 +31,9 @@ GoCode helps you explore, write, refactor, and debug code from your command line
 
 - **Native Go CLI**: a self-contained executable with no separate Python or Node.js runtime required.
 - **Your choice of models**: 20 built-in provider gateways, any OpenAI-compatible endpoint, or a local backend such as Ollama or llama.cpp.
-- **Controlled execution**: review diffs and approve commands before they run.
+- **Controlled execution**: review diffs and approve commands before they run, with `normal` and `yolo` permission modes.
+- **A real terminal UI**: six built-in themes plus your own, sidebar layout, markdown rendering, live tool cards and tinted diffs.
+- **Hooks**: run your own scripts at 13 lifecycle events with a Claude Code-compatible contract.
 - **Persistent sessions**: SQLite-backed history that resumes where you left off.
 - **Extensible**: add external tools through the Model Context Protocol (MCP).
 
@@ -64,7 +66,7 @@ go build -o gocode ./cmd/gocode/
 
 Pre-built binaries are available on the [Releases page](https://github.com/mevarx/GoCode/releases).
 
-Building from source requires Go 1.26.8 or newer (see `go.mod`).
+Building from source uses the Go version pinned in `go.mod` (1.26.11); an older installed toolchain downloads it automatically (`GOTOOLCHAIN=auto`).
 
 </details>
 
@@ -100,6 +102,7 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `gocode --new` | Start a fresh session |
 | `gocode --provider <name> --model <id>` | Pick a provider and model for this run |
 | `gocode --tui=false` | Plain terminal mode, no TUI |
+| `gocode --yolo` | Skip prompts for safe calls; dangerous calls are refused (deny-list still applies) |
 | `gocode doctor` | Health-check configured providers |
 | `gocode logs --follow` | Follow live logs |
 | `gocode session export` | Export a session transcript to Markdown or JSON |
@@ -110,7 +113,7 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
 | `/help` | Show all in-session commands |
 
-TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
+TUI keys: `Ctrl+P` opens the command palette (`Ctrl+K` still works), `Ctrl+L` the model picker, `Ctrl+T` the theme picker, `Tab` completes slash commands, their arguments and `@file` mentions, `Alt+P`/`Alt+N` recall prompt history (saved per workspace), and the mouse wheel scrolls the transcript. `Tab`/`h`/`l` move focus between prompt, chat and sidebar; in chat, `space` expands an item and `c`/`y` copy it. `Enter` while the agent is streaming queues a steering message instead of interrupting; `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
 
 ---
 
@@ -130,6 +133,41 @@ TUI keys: `Ctrl+L` opens the model picker, `Esc` stops a running turn or clears 
 
 Change which tools need approval with the `[permissions]` section of `config.toml`. See [Security](#security) before auto-approving anything.
 
+### Context that manages itself
+
+Long sessions stay usable without manual housekeeping:
+
+- **Automatic compaction** summarizes earlier turns before the context window fills, cutting only at turn boundaries so a tool result never separates from its call. Old tool output is elided to token-count placeholders, and a provider context-overflow error triggers compaction and one retry instead of silently dropping history. Tune it with `[context]` in `config.toml`; `/compact` still works on demand.
+- **Mid-turn steering**: press `Enter` while the agent is working to queue guidance; it is applied at the next model round — no cancel needed. Prompts submitted while a turn runs are queued and run as their own turns, in order; cancelling settles everything queued.
+- **Transcript repair and anchored compaction**: history is repaired so every tool call stays paired with its result, and each compaction is saved as a summary anchor — a resumed session replays exactly the compacted window.
+- **Provider-reported usage**: token counts come from the provider when it reports them (opt-in `stream_usage` for OpenAI-compatible gateways), and the status line shows context usage, last-turn tokens and elapsed time.
+
+### A terminal UI that keeps up
+
+- Sidebar layout with a gradient logo and session/model/workspace/MCP sections; below 120×30 it folds into a compact one-row header. Chat uses a clean gutter rhythm instead of card borders.
+- Assistant text renders as markdown with syntax highlighting; tool calls render as live cards (arguments stream in as the model writes them, with spinner, elapsed time and pending/running/done/error states); diffs render as tinted two-band rows.
+- Six built-in themes plus user themes you can edit in-app: `Ctrl+T` previews live and saves, `Ctrl+E` opens the palette editor. See [docs/themes.md](docs/themes.md).
+- Rounded dialogs with badges and toasts; the permission dialog defaults to Deny for dangerous calls and absorbs reflexive keystrokes for a moment so a prompt never eats your typing.
+- One shared 50 ms clock drives every animation, including the scramble spinner; text renders on arrival by default, with opt-in smooth pacing (`smooth_streaming = true`).
+- `Ctrl+P` command palette, `Tab` and `@file` completion, per-workspace prompt history, a session picker (`/sessions`) and a model picker that refreshes when opened.
+- Motion is configurable (`[tui] motion = "auto" | "reduced" | "off"`), and terminal reduced-motion preferences are honored — functional indicators degrade to static glyphs, never disappear.
+
+### Permission modes
+
+`normal` (default) prompts before gated calls. `yolo` (`[permissions] mode = "yolo"` or `gocode --yolo`) skips prompts for non-dangerous calls and **refuses dangerous calls without asking** — a conservative classifier flags destructive shell commands and file mutations. In every mode the deny-list and secret redaction stay unconditional, and session grants (`a`) remember exact commands/arguments only.
+
+### Hooks
+
+Run your own scripts at 13 lifecycle events — before/after tool calls, around turns, sessions and compaction, and at permission prompts. Hooks speak a Claude Code-compatible JSON contract on stdin/stdout with exit-code semantics (0 = ok, 2 = deny, 49 = deny + halt), run in parallel with per-hook timeouts, and aggregate in config order. A hook can block a call, rewrite its input or output, add context, or halt a turn — but it can never bypass the deny-list or redaction.
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "^shell_exec$"
+command = "echo 'shell is disabled here' >&2; exit 2"
+```
+
+Full reference: [docs/hooks.md](docs/hooks.md).
+
 ### Providers
 
 Switch providers and models at any time with `/provider` and `/model`. GoCode ships with gateways for:
@@ -141,7 +179,7 @@ Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, M
 | Google Gemini | `gemini` | `GEMINI_API_KEY` |
 | Anthropic Claude | `anthropic` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai` | `OPENAI_API_KEY` |
-| GitHub Copilot | `copilot` | `GITHUB_COPILOT_TOKEN` (or `gocode auth copilot`) |
+| GitHub Copilot | `copilot` | `GITHUB_COPILOT_TOKEN` (or `gocode auth copilot --client-id <oauth-app-id>`) |
 | xAI | `xai` | `XAI_API_KEY` |
 | Mistral | `mistral` | `MISTRAL_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
@@ -156,10 +194,10 @@ Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, M
 | Qwen (DashScope) | `qwen` | `DASHSCOPE_API_KEY` |
 | Kimi (Moonshot) | `kimi` | `MOONSHOT_API_KEY` |
 | Hermes Agent | `hermes` | `HERMES_API_SERVER_KEY` |
-| OmniRoute | `omniroute` | `OMNIROUTE_API_KEY` |
+| OmniRoute | `omniroute` | none (local gateway at `127.0.0.1:20128`) |
 | Ollama (local) | `ollama` | none |
 
-Model catalogs change often. Use `/providers` to list the models a provider currently exposes and `/model <id>` to select one. Availability still depends on your account, region, and plan.
+Model catalogs change often. Use `/providers` to list all providers plus the active provider's current models, and `/model <id>` to select one. Availability still depends on your account, region, and plan.
 
 **Add any OpenAI-compatible endpoint** (company gateways, llama.cpp, OpenCode Zen, and others):
 
@@ -188,6 +226,8 @@ Conversations are saved to SQLite and the last session resumes automatically.
 /sessions <id>       # switch to a session (alias: /resume <id>)
 /new                 # start fresh
 ```
+
+In the TUI, `/sessions` opens an interactive picker (type to filter, arrows to move, Enter to resume); the plain terminal keeps the text list.
 
 #### Exporting sessions
 
@@ -259,7 +299,7 @@ gocode mcp add filesystem npx -y @scope/server . -- --config /path/to/config.tom
 
 ## Security
 
-GoCode is built around human-in-the-loop approval: the agent cannot write files or run commands without your confirmation unless you explicitly auto-approve a tool.
+GoCode is built around human-in-the-loop approval: the agent cannot write files or run commands without your confirmation unless you explicitly auto-approve a tool. `yolo` mode skips prompts for safe calls but refuses dangerous ones, and the deny-list plus secret redaction apply unconditionally in every mode — including over hook allows.
 
 **File tools are confined.** `file_read`, `file_write`, `file_patch`, and `code_search` resolve every path through the workspace root, reject traversal, and re-check after resolving symlinks. Sensitive files (`.env*`, SSH keys, certificates, cloud credentials) and anything matched by your ignore rules are blocked.
 
@@ -300,18 +340,30 @@ A minimal example:
 ```toml
 [provider]
 default = "gemini"
+# stream_usage = true       # ask OpenAI-compatible gateways for token usage
 
 [provider.gemini]
 api_key_env = "GEMINI_API_KEY"   # preferred: the key stays in the environment, not in this file
 default_model = "gemini-3.8-flash"
 
 [permissions]
+mode = "normal"                              # normal | yolo (or gocode --yolo)
 auto_approve = ["file_read", "code_search"]  # run without confirmation
 deny = []                                    # permanently blocked
 sensitive_patterns = ["*.vault"]             # extra patterns hidden from the AI
 
 [session]
 persist = true
+
+[context]
+auto_compact = true         # summarize earlier turns before the window fills
+keep_recent_tokens = 20000  # verbatim tail automatic compaction keeps
+
+[tui]
+motion = "auto"             # auto | reduced | off (decorative motion)
+smooth_streaming = false    # opt-in pacing; default renders text on arrival
+active_theme = "gocode-dark"  # six built-ins + user themes; Ctrl+T to pick
+transparent = false         # true: let the terminal background show through
 
 [tools]
 max_tool_iterations = 50      # provider round-trips per turn
@@ -326,7 +378,7 @@ redact_secrets = true         # mask shell_exec output; transcript/export redact
 env_scrub = ["MY_GATEWAY_KEY", "TEAM_*_CREDENTIALS"]
 ```
 
-Only the sections you change need to appear; everything else comes from defaults. The full reference, including MCP servers, custom providers, and Copilot settings, is in [docs/configuration.md](docs/configuration.md).
+Only the sections you change need to appear; everything else comes from defaults. The full reference — every config key and CLI flag, MCP servers, custom providers, hooks and Copilot settings — is in [docs/configuration.md](docs/configuration.md). Themes: [docs/themes.md](docs/themes.md). Hooks: [docs/hooks.md](docs/hooks.md).
 
 ---
 
@@ -340,14 +392,19 @@ Release builds are configured with GoReleaser for Linux, macOS, and Windows on A
 
 ```
 cmd/gocode/        CLI entry point, flags, subcommands
-internal/agent/    agent loop, session memory, slash commands
-internal/config/   platform directories, TOML parsing
+internal/agent/    agent loop, dispatch, context management, slash commands
+internal/config/   platform directories, strict TOML parsing
+internal/hooks/    hook engine (13 events, Claude Code-compatible contract)
+internal/pubsub/   in-process event bus (lossy / must-deliver / coalescing)
 internal/provider/ provider registry (Ollama, OpenAI-compatible, Anthropic)
 internal/tools/    tool registry, shell execution, patch engine, approval gates
 internal/session/  SQLite session persistence
 internal/mcp/      MCP stdio client
 internal/ignore/   .gocodeignore / .gitignore matching
-internal/tui/      Bubble Tea interface
+internal/safetext/ terminal text sanitization
+internal/eval/     deterministic eval suite (make eval)
+internal/version/  build version metadata
+internal/tui/      Bubble Tea interface (render cache, overlays, animation)
 ```
 
 A deeper walkthrough is in [docs/architecture.md](docs/architecture.md).
