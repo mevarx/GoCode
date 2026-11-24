@@ -130,8 +130,8 @@ func main() {
 // gatewayProviderNames lists built-in OpenAI-compatible providers served by GatewayProxyProvider.
 var gatewayProviderNames = []string{
 	"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi",
-	"hermes", "xai", "mistral", "minimax", "deepseek", "together",
-	"fireworks", "cerebras", "zhipu", "nvidia",
+	"hermes", "xai", "mistral", "mistral-vibe", "minimax", "deepseek", "together",
+	"fireworks", "cerebras", "zhipu", "nvidia", "opencode-go",
 }
 
 // gatewayConfigFor resolves a provider name; an explicit custom entry wins over the built-in.
@@ -160,6 +160,8 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 		return cfg.XAI
 	case "mistral":
 		return cfg.Mistral
+	case "mistral-vibe":
+		return cfg.MistralVibe
 	case "minimax":
 		return cfg.MiniMax
 	case "deepseek":
@@ -174,6 +176,8 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 		return cfg.Zhipu
 	case "nvidia":
 		return cfg.Nvidia
+	case "opencode-go":
+		return cfg.OpenCodeGo
 	case "anthropic":
 		return cfg.Anthropic
 	default:

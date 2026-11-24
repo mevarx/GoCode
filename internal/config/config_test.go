@@ -166,14 +166,16 @@ func TestConfig_ShellKeysRoundTrip(t *testing.T) {
 func TestDefaultConfig_BuiltinProviders(t *testing.T) {
 	cfg := DefaultConfig()
 	checks := map[string]GatewayConfig{
-		"openai":     cfg.Provider.OpenAI,
-		"gemini":     cfg.Provider.Gemini,
-		"groq":       cfg.Provider.Groq,
-		"openrouter": cfg.Provider.OpenRouter,
-		"anthropic":  cfg.Provider.Anthropic,
-		"qwen":       cfg.Provider.Qwen,
-		"kimi":       cfg.Provider.Kimi,
-		"omniroute":  cfg.Provider.OmniRoute,
+		"openai":       cfg.Provider.OpenAI,
+		"gemini":       cfg.Provider.Gemini,
+		"groq":         cfg.Provider.Groq,
+		"openrouter":   cfg.Provider.OpenRouter,
+		"anthropic":    cfg.Provider.Anthropic,
+		"qwen":         cfg.Provider.Qwen,
+		"kimi":         cfg.Provider.Kimi,
+		"omniroute":    cfg.Provider.OmniRoute,
+		"mistral-vibe": cfg.Provider.MistralVibe,
+		"opencode-go":  cfg.Provider.OpenCodeGo,
 	}
 	for name, gw := range checks {
 		if gw.BaseURL == "" {
@@ -182,6 +184,15 @@ func TestDefaultConfig_BuiltinProviders(t *testing.T) {
 		if gw.APIKeyEnv == "" && name != "omniroute" {
 			t.Errorf("provider %q has no APIKeyEnv", name)
 		}
+	}
+	if cfg.Provider.OpenCodeGo.BaseURL != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("opencode-go base URL = %q", cfg.Provider.OpenCodeGo.BaseURL)
+	}
+	if cfg.Provider.OpenCodeGo.APIKeyEnv != "OPENCODE_API_KEY" {
+		t.Errorf("opencode-go APIKeyEnv = %q", cfg.Provider.OpenCodeGo.APIKeyEnv)
+	}
+	if cfg.Provider.MistralVibe.BaseURL != "https://api.mistral.ai/v1" || cfg.Provider.MistralVibe.DefaultModel == "" {
+		t.Errorf("mistral-vibe default is incomplete: %+v", cfg.Provider.MistralVibe)
 	}
 	if cfg.Provider.Ollama.Host == "" {
 		t.Error("ollama host is empty")

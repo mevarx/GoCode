@@ -1,5 +1,9 @@
 # GoCode Changelog
 
+### Unreleased
+
+- **OpenCode Go and Mistral Vibe providers** — two new built-in gateway presets. `opencode-go` targets OpenCode's subscription gateway (`https://opencode.ai/zen/go/v1`, `OPENCODE_API_KEY`, curated coding models); `mistral-vibe` targets Mistral's Vibe coding model on la Plateforme (`MISTRAL_API_KEY`, default `mistral-large-4-0`). Both are overridable like any gateway via `[provider.opencode_go]` / `[provider.mistral_vibe]` (or a `custom` entry). Also fixes a docs typo that mangled the default MiniMax model id.
+
 ### v0.8.0 — 2026-11-21
 
 A major upgrade to the terminal UI and agent harness. Full notes: `docs/releases/v0.8.0.md`.

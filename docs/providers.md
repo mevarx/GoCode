@@ -30,7 +30,7 @@ There are three implementation dialects behind the names:
 
 | Dialect | Used by | What it speaks |
 | :-- | :-- | :-- |
-| OpenAI-compatible gateway proxy | 17 built-ins + every custom endpoint | `POST {base_url}/chat/completions`, `GET {base_url}/models`, SSE |
+| OpenAI-compatible gateway proxy | 19 built-ins + every custom endpoint | `POST {base_url}/chat/completions`, `GET {base_url}/models`, SSE |
 | Native Anthropic | `anthropic` | `POST {base_url}/messages`, SSE, `x-api-key` + `anthropic-version` |
 | GitHub Copilot | `copilot` | OpenAI-compatible chat at the API base returned by a GitHub token exchange |
 | Ollama | `ollama` | `POST /api/chat` (NDJSON), `GET /api/tags` |
@@ -40,9 +40,9 @@ keys under `[provider.anthropic]`, Copilot has its own OAuth/editor settings, an
 Ollama has a host plus an optional default model. `[provider] stream_usage`
 applies only to the gateway proxy.
 
-## The 20 built-in providers
+## The 22 built-in providers
 
-### OpenAI-compatible gateways (17)
+### OpenAI-compatible gateways (19)
 
 | Provider | `--provider` | Default base URL | Default model | API key variable |
 | :-- | :-- | :-- | :-- | :-- |
@@ -63,6 +63,8 @@ applies only to the gateway proxy.
 | Cerebras | `cerebras` | `https://api.cerebras.ai/v1` | `qwen-3-coder-480b` | `CEREBRAS_API_KEY` |
 | Zhipu (GLM) | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.6` | `ZHIPU_API_KEY` |
 | NVIDIA NIM | `nvidia` | `https://integrate.api.nvidia.com/v1` | `qwen/qwen3-coder-480b-a35b-instruct` | `NVIDIA_API_KEY` |
+| Mistral Vibe | `mistral-vibe` | `https://api.mistral.ai/v1` | `mistral-large-4-0` | `MISTRAL_API_KEY` |
+| OpenCode Go | `opencode-go` | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash` | `OPENCODE_API_KEY` |
 
 Notes:
 
@@ -70,6 +72,15 @@ Notes:
   OmniRoute ships with no key variable at all. Plain HTTP is accepted only for
   loopback, which is why they work without TLS.
 - **OpenRouter** additionally sends `HTTP-Referer` and `X-Title` headers.
+- **OpenCode Go** is the subscription tier of OpenCode's gateway
+  (`opencode.ai/zen/go`); it speaks the same OpenAI-compatible surface as the
+  pay-as-you-go Zen tier and serves a curated coding subset. Use
+  `OPENCODE_API_KEY`; override `base_url` in `[provider.opencode_go]` if Zen's
+  path changes.
+- **Mistral Vibe** is Mistral's coding model on la Plateforme (Vibe defaults to
+  Mistral Large 4); it shares `MISTRAL_API_KEY` with `mistral`. Set
+  `default_model` to `devstral-medium-latest` or `mistral-medium-latest` for the
+  coding-tuned variants.
 - Every key variable can be renamed per provider with `api_key_env`, and an
   inline `api_key` is accepted but warned about.
 

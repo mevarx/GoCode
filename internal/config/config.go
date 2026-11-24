@@ -96,6 +96,7 @@ type ProviderConfig struct {
 	Hermes      GatewayConfig            `toml:"hermes"`
 	XAI         GatewayConfig            `toml:"xai"`
 	Mistral     GatewayConfig            `toml:"mistral"`
+	MistralVibe GatewayConfig            `toml:"mistral_vibe"`
 	MiniMax     GatewayConfig            `toml:"minimax"`
 	DeepSeek    GatewayConfig            `toml:"deepseek"`
 	Together    GatewayConfig            `toml:"together"`
@@ -103,6 +104,7 @@ type ProviderConfig struct {
 	Cerebras    GatewayConfig            `toml:"cerebras"`
 	Zhipu       GatewayConfig            `toml:"zhipu"`
 	Nvidia      GatewayConfig            `toml:"nvidia"`
+	OpenCodeGo  GatewayConfig            `toml:"opencode_go"`
 	Copilot     CopilotConfig            `toml:"copilot"`
 	Custom      map[string]GatewayConfig `toml:"custom"`
 }
@@ -266,6 +268,14 @@ func DefaultConfig() Config {
 				APIKeyEnv:    "MISTRAL_API_KEY",
 				DefaultModel: "mistral-large-latest",
 			},
+			// Mistral Vibe's coding model on la Plateforme (Vibe defaults to
+			// Mistral Large 4; switch to devstral-medium-latest or
+			// mistral-medium-latest for the coding-tuned variants).
+			MistralVibe: GatewayConfig{
+				BaseURL:      "https://api.mistral.ai/v1",
+				APIKeyEnv:    "MISTRAL_API_KEY",
+				DefaultModel: "mistral-large-4-0",
+			},
 			MiniMax: GatewayConfig{
 				BaseURL:      "https://api.minimax.io/v1",
 				APIKeyEnv:    "MINIMAX_API_KEY",
@@ -300,6 +310,13 @@ func DefaultConfig() Config {
 				BaseURL:      "https://integrate.api.nvidia.com/v1",
 				APIKeyEnv:    "NVIDIA_API_KEY",
 				DefaultModel: "qwen/qwen3-coder-480b-a35b-instruct",
+			},
+			// OpenCode Go: the subscription tier of OpenCode's OpenAI-compatible
+			// gateway (curated coding models; /zen/v1 is the pay-as-you-go Zen).
+			OpenCodeGo: GatewayConfig{
+				BaseURL:      "https://opencode.ai/zen/go/v1",
+				APIKeyEnv:    "OPENCODE_API_KEY",
+				DefaultModel: "deepseek-v4-flash",
 			},
 			Copilot: CopilotConfig{
 				OAuthTokenEnv:       "GITHUB_COPILOT_TOKEN",

@@ -117,13 +117,15 @@ Built-in defaults:
 | `hermes` | `http://127.0.0.1:8642/v1` | `HERMES_API_SERVER_KEY` | `hermes-agent` |
 | `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-code-fast-1` |
 | `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `mistral-large-latest` |
-| `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-Unreleased.5` |
+| `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-M2.5` |
 | `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `together` | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` | `Qwen/Qwen3-Coder-480B-A35B-Instruct` |
 | `fireworks` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` | `accounts/fireworks/models/kimi-k2-thinking` |
 | `cerebras` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `qwen-3-coder-480b` |
 | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` | `glm-4.6` |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `qwen/qwen3-coder-480b-a35b-instruct` |
+| `mistral_vibe` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `mistral-large-4-0` |
+| `opencode_go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` | `deepseek-v4-flash` |
 
 `[provider.ollama]` is different (v0.7.5):
 
@@ -187,7 +189,7 @@ process and never widen to different arguments or commands.
 | Key | Type | Default | Added | Meaning |
 | :-- | :-- | :-- | :-- | :-- |
 | `max_tool_iterations` | int | `0` → 50 | v0.7.5 | Provider round-trips allowed per user turn. Zero or negative uses 50. |
-| `max_repeated_tool_calls` | int | `0` → 3 | v0.7.5 | Maximum consecutive batches repeating identical tool calls (same name, same canonical arguments). Zero or negative uses 3. Independently, Unreleased's signature stop ends a turn when one tool+args signature appears in more than 5 of the last 10 batches, even interleaved. |
+| `max_repeated_tool_calls` | int | `0` → 3 | v0.7.5 | Maximum consecutive batches repeating identical tool calls (same name, same canonical arguments). Zero or negative uses 3. Independently, a signature stop ends a turn when one tool+args signature appears in more than 5 of the last 10 batches, even interleaved. |
 | `max_context_tokens` | int | `0` | v0.7.5 | Overrides the per-model token budget. Zero or negative derives it as 80% of the active model's window. (This key lives under `[tools]`, not `[context]`.) |
 | `verify_command` | string | `""` | v0.7.5 | Command run once after any provider round that executed a tool able to modify the workspace. Empty disables auto-verify. Runs in the workspace **without** an approval prompt. |
 | `verify_timeout_seconds` | int | `120` | v0.7.5 | Bound on one auto-verify run. Zero or negative uses 120. Only consulted when `verify_command` is set. |
