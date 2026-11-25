@@ -131,7 +131,7 @@ func main() {
 var gatewayProviderNames = []string{
 	"omniroute", "openai", "gemini", "groq", "openrouter", "qwen", "kimi",
 	"hermes", "xai", "mistral", "mistral-vibe", "minimax", "deepseek", "together",
-	"fireworks", "cerebras", "zhipu", "nvidia", "opencode-go",
+	"fireworks", "cerebras", "zhipu", "nvidia", "opencode-go", "commandcode",
 }
 
 // gatewayConfigFor resolves a provider name; an explicit custom entry wins over the built-in.
@@ -178,6 +178,8 @@ func gatewayConfigFor(cfg config.ProviderConfig, name string) config.GatewayConf
 		return cfg.Nvidia
 	case "opencode-go":
 		return cfg.OpenCodeGo
+	case "commandcode":
+		return cfg.CommandCode
 	case "anthropic":
 		return cfg.Anthropic
 	default:

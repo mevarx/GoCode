@@ -30,7 +30,7 @@ There are three implementation dialects behind the names:
 
 | Dialect | Used by | What it speaks |
 | :-- | :-- | :-- |
-| OpenAI-compatible gateway proxy | 19 built-ins + every custom endpoint | `POST {base_url}/chat/completions`, `GET {base_url}/models`, SSE |
+| OpenAI-compatible gateway proxy | 20 built-ins + every custom endpoint | `POST {base_url}/chat/completions`, `GET {base_url}/models`, SSE |
 | Native Anthropic | `anthropic` | `POST {base_url}/messages`, SSE, `x-api-key` + `anthropic-version` |
 | GitHub Copilot | `copilot` | OpenAI-compatible chat at the API base returned by a GitHub token exchange |
 | Ollama | `ollama` | `POST /api/chat` (NDJSON), `GET /api/tags` |
@@ -40,31 +40,32 @@ keys under `[provider.anthropic]`, Copilot has its own OAuth/editor settings, an
 Ollama has a host plus an optional default model. `[provider] stream_usage`
 applies only to the gateway proxy.
 
-## The 22 built-in providers
+## The 23 built-in providers
 
-### OpenAI-compatible gateways (19)
+### OpenAI-compatible gateways (20)
 
 | Provider | `--provider` | Default base URL | Default model | API key variable |
 | :-- | :-- | :-- | :-- | :-- |
 | OmniRoute (local) | `omniroute` | `http://127.0.0.1:20128/v1` | `auto` | — |
-| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-4o` | `OPENAI_API_KEY` |
-| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | `GEMINI_API_KEY` |
-| Groq | `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| OpenAI | `openai` | `https://api.openai.com/v1` | `gpt-6.2-sol` | `OPENAI_API_KEY` |
+| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-3.5-flash` | `GEMINI_API_KEY` |
+| Groq | `groq` | `https://api.groq.com/openai/v1` | `openai/gpt-oss-120b` | `GROQ_API_KEY` |
 | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4.5` | `OPENROUTER_API_KEY` |
-| Qwen (DashScope) | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-max` | `DASHSCOPE_API_KEY` |
-| Kimi (Moonshot) | `kimi` | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | `MOONSHOT_API_KEY` |
+| Qwen (DashScope) | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-max` | `DASHSCOPE_API_KEY` |
+| Kimi (Moonshot) | `kimi` | `https://api.moonshot.ai/v1` | `kimi-k3.1-pro` | `MOONSHOT_API_KEY` |
 | Hermes Agent (local) | `hermes` | `http://127.0.0.1:8642/v1` | `hermes-agent` | `HERMES_API_SERVER_KEY` |
-| xAI | `xai` | `https://api.x.ai/v1` | `grok-code-fast-1` | `XAI_API_KEY` |
+| xAI | `xai` | `https://api.x.ai/v1` | `grok-4.7` | `XAI_API_KEY` |
 | Mistral | `mistral` | `https://api.mistral.ai/v1` | `mistral-large-latest` | `MISTRAL_API_KEY` |
-| MiniMax | `minimax` | `https://api.minimax.io/v1` | `MiniMax-M2.5` | `MINIMAX_API_KEY` |
-| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-chat` | `DEEPSEEK_API_KEY` |
+| MiniMax | `minimax` | `https://api.minimax.io/v1` | `MiniMax-M3.1-Flash` | `MINIMAX_API_KEY` |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | `deepseek-flash` | `DEEPSEEK_API_KEY` |
 | Together | `together` | `https://api.together.xyz/v1` | `Qwen/Qwen3-Coder-480B-A35B-Instruct` | `TOGETHER_API_KEY` |
 | Fireworks | `fireworks` | `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/kimi-k2-thinking` | `FIREWORKS_API_KEY` |
-| Cerebras | `cerebras` | `https://api.cerebras.ai/v1` | `qwen-3-coder-480b` | `CEREBRAS_API_KEY` |
-| Zhipu (GLM) | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.6` | `ZHIPU_API_KEY` |
-| NVIDIA NIM | `nvidia` | `https://integrate.api.nvidia.com/v1` | `qwen/qwen3-coder-480b-a35b-instruct` | `NVIDIA_API_KEY` |
+| Cerebras | `cerebras` | `https://api.cerebras.ai/v1` | `qwen-3.8-27b` | `CEREBRAS_API_KEY` |
+| Zhipu (GLM) | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.2` | `ZHIPU_API_KEY` |
+| NVIDIA NIM | `nvidia` | `https://integrate.api.nvidia.com/v1` | `qwen/qwen3-next-80b-a3b-instruct` | `NVIDIA_API_KEY` |
 | Mistral Vibe | `mistral-vibe` | `https://api.mistral.ai/v1` | `mistral-large-4-0` | `MISTRAL_API_KEY` |
 | OpenCode Go | `opencode-go` | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash` | `OPENCODE_API_KEY` |
+| Command Code | `commandcode` | `https://api.commandcode.ai/provider/v1` | `deepseek/deepseek-v4-flash` | `CMD_API_KEY` |
 
 Notes:
 
@@ -81,6 +82,17 @@ Notes:
   Mistral Large 4); it shares `MISTRAL_API_KEY` with `mistral`. Set
   `default_model` to `devstral-medium-latest` or `mistral-medium-latest` for the
   coding-tuned variants.
+- **Command Code** exposes the Provider API at
+  `https://api.commandcode.ai/provider/v1` (OpenAI Chat Completions and
+  `/models`, Bearer `CMD_API_KEY`). API access is included on every plan except
+  the $1 **Go** plan — GOAT, Pro, Max, Team and Provider all work, and one key
+  serves both the CLI and the API.
+- **Regional hosts.** Kimi defaults to the international `api.moonshot.ai`;
+  mainland-China keys use `api.moonshot.cn`. Zhipu defaults to `open.bigmodel.cn`
+  (mainland China); the international platform is `https://api.z.ai/api/paas/v4`.
+  Qwen's `dashscope.aliyuncs.com` is the Beijing region — use
+  `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` for international
+  accounts.
 - Every key variable can be renamed per provider with `api_key_env`, and an
   inline `api_key` is accepted but warned about.
 
@@ -88,7 +100,7 @@ Notes:
 
 | Provider | `--provider` | Endpoint | Default model | Credential |
 | :-- | :-- | :-- | :-- | :-- |
-| Anthropic Claude | `anthropic` | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
+| Anthropic Claude | `anthropic` | `https://api.anthropic.com/v1/messages` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
 | GitHub Copilot | `copilot` | API base from token exchange (normally `https://api.githubcopilot.com`) | `gpt-4.1` | GitHub OAuth token (`GITHUB_COPILOT_TOKEN` or `gocode auth copilot`) |
 | Ollama (local) | `ollama` | `http://127.0.0.1:11434` | first installed model, else `codellama` | none |
 

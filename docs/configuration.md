@@ -107,25 +107,26 @@ Built-in defaults:
 | Section | `base_url` | `api_key_env` | `default_model` |
 | :-- | :-- | :-- | :-- |
 | `omniroute` | `http://127.0.0.1:20128/v1` | — | `auto` |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o` |
-| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-6.2-sol` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` | `gemini-3.5-flash` |
+| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `openai/gpt-oss-120b` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` |
-| `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
-| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | `qwen-max` |
-| `kimi` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` | `moonshot-v1-8k` |
+| `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
+| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | `qwen3.8-max` |
+| `kimi` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | `kimi-k3.1-pro` |
 | `hermes` | `http://127.0.0.1:8642/v1` | `HERMES_API_SERVER_KEY` | `hermes-agent` |
-| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-code-fast-1` |
+| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-4.7` |
 | `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `mistral-large-latest` |
-| `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-M2.5` |
-| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `minimax` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MiniMax-M3.1-Flash` |
+| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `deepseek-flash` |
 | `together` | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` | `Qwen/Qwen3-Coder-480B-A35B-Instruct` |
 | `fireworks` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` | `accounts/fireworks/models/kimi-k2-thinking` |
-| `cerebras` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `qwen-3-coder-480b` |
-| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` | `glm-4.6` |
-| `nvidia` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `qwen/qwen3-coder-480b-a35b-instruct` |
+| `cerebras` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `qwen-3.8-27b` |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY` | `glm-5.2` |
+| `nvidia` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `qwen/qwen3-next-80b-a3b-instruct` |
 | `mistral_vibe` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `mistral-large-4-0` |
 | `opencode_go` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` | `deepseek-v4-flash` |
+| `commandcode` | `https://api.commandcode.ai/provider/v1` | `CMD_API_KEY` | `deepseek/deepseek-v4-flash` |
 
 `[provider.ollama]` is different (v0.7.5):
 
@@ -365,12 +366,12 @@ default_model = ""        # empty: first model the server reports
 [provider.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"   # preferred: the key stays in the environment
-default_model = "gemini-2.5-flash"
+default_model = "gemini-3.5-flash"
 # api_key = ""            # inline key: plaintext on disk, doctor warns
 
 [provider.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
-default_model = "claude-sonnet-4-20250514"
+default_model = "claude-sonnet-5-5"
 
 [provider.copilot]
 oauth_token_env = "GITHUB_COPILOT_TOKEN"

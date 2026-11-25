@@ -176,6 +176,7 @@ func TestDefaultConfig_BuiltinProviders(t *testing.T) {
 		"omniroute":    cfg.Provider.OmniRoute,
 		"mistral-vibe": cfg.Provider.MistralVibe,
 		"opencode-go":  cfg.Provider.OpenCodeGo,
+		"commandcode":  cfg.Provider.CommandCode,
 	}
 	for name, gw := range checks {
 		if gw.BaseURL == "" {

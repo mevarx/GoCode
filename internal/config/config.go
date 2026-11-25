@@ -105,6 +105,7 @@ type ProviderConfig struct {
 	Zhipu       GatewayConfig            `toml:"zhipu"`
 	Nvidia      GatewayConfig            `toml:"nvidia"`
 	OpenCodeGo  GatewayConfig            `toml:"opencode_go"`
+	CommandCode GatewayConfig            `toml:"commandcode"`
 	Copilot     CopilotConfig            `toml:"copilot"`
 	Custom      map[string]GatewayConfig `toml:"custom"`
 }
@@ -220,17 +221,17 @@ func DefaultConfig() Config {
 			OpenAI: GatewayConfig{
 				BaseURL:      "https://api.openai.com/v1",
 				APIKeyEnv:    "OPENAI_API_KEY",
-				DefaultModel: "gpt-4o",
+				DefaultModel: "gpt-6.2-sol",
 			},
 			Gemini: GatewayConfig{
 				BaseURL:      "https://generativelanguage.googleapis.com/v1beta/openai",
 				APIKeyEnv:    "GEMINI_API_KEY",
-				DefaultModel: "gemini-2.5-flash",
+				DefaultModel: "gemini-3.5-flash",
 			},
 			Groq: GatewayConfig{
 				BaseURL:      "https://api.groq.com/openai/v1",
 				APIKeyEnv:    "GROQ_API_KEY",
-				DefaultModel: "llama-3.3-70b-versatile",
+				DefaultModel: "openai/gpt-oss-120b",
 			},
 			OpenRouter: GatewayConfig{
 				BaseURL:      "https://openrouter.ai/api/v1",
@@ -240,17 +241,17 @@ func DefaultConfig() Config {
 			Anthropic: GatewayConfig{
 				BaseURL:      "https://api.anthropic.com/v1",
 				APIKeyEnv:    "ANTHROPIC_API_KEY",
-				DefaultModel: "claude-sonnet-4-20250514",
+				DefaultModel: "claude-sonnet-5-5",
 			},
 			Qwen: GatewayConfig{
 				BaseURL:      "https://dashscope.aliyuncs.com/compatible-mode/v1",
 				APIKeyEnv:    "DASHSCOPE_API_KEY",
-				DefaultModel: "qwen-max",
+				DefaultModel: "qwen3.8-max",
 			},
 			Kimi: GatewayConfig{
-				BaseURL:      "https://api.moonshot.cn/v1",
+				BaseURL:      "https://api.moonshot.ai/v1",
 				APIKeyEnv:    "MOONSHOT_API_KEY",
-				DefaultModel: "moonshot-v1-8k",
+				DefaultModel: "kimi-k3.1-pro",
 			},
 			// Hermes gateway on 127.0.0.1:8642, gated by API_SERVER_KEY.
 			Hermes: GatewayConfig{
@@ -261,7 +262,7 @@ func DefaultConfig() Config {
 			XAI: GatewayConfig{
 				BaseURL:      "https://api.x.ai/v1",
 				APIKeyEnv:    "XAI_API_KEY",
-				DefaultModel: "grok-code-fast-1",
+				DefaultModel: "grok-4.7",
 			},
 			Mistral: GatewayConfig{
 				BaseURL:      "https://api.mistral.ai/v1",
@@ -279,12 +280,12 @@ func DefaultConfig() Config {
 			MiniMax: GatewayConfig{
 				BaseURL:      "https://api.minimax.io/v1",
 				APIKeyEnv:    "MINIMAX_API_KEY",
-				DefaultModel: "MiniMax-M2.5",
+				DefaultModel: "MiniMax-M3.1-Flash",
 			},
 			DeepSeek: GatewayConfig{
 				BaseURL:      "https://api.deepseek.com/v1",
 				APIKeyEnv:    "DEEPSEEK_API_KEY",
-				DefaultModel: "deepseek-chat",
+				DefaultModel: "deepseek-flash",
 			},
 			Together: GatewayConfig{
 				BaseURL:      "https://api.together.xyz/v1",
@@ -299,17 +300,17 @@ func DefaultConfig() Config {
 			Cerebras: GatewayConfig{
 				BaseURL:      "https://api.cerebras.ai/v1",
 				APIKeyEnv:    "CEREBRAS_API_KEY",
-				DefaultModel: "qwen-3-coder-480b",
+				DefaultModel: "qwen-3.8-27b",
 			},
 			Zhipu: GatewayConfig{
 				BaseURL:      "https://open.bigmodel.cn/api/paas/v4",
 				APIKeyEnv:    "ZHIPU_API_KEY",
-				DefaultModel: "glm-4.6",
+				DefaultModel: "glm-5.2",
 			},
 			Nvidia: GatewayConfig{
 				BaseURL:      "https://integrate.api.nvidia.com/v1",
 				APIKeyEnv:    "NVIDIA_API_KEY",
-				DefaultModel: "qwen/qwen3-coder-480b-a35b-instruct",
+				DefaultModel: "qwen/qwen3-next-80b-a3b-instruct",
 			},
 			// OpenCode Go: the subscription tier of OpenCode's OpenAI-compatible
 			// gateway (curated coding models; /zen/v1 is the pay-as-you-go Zen).
@@ -317,6 +318,15 @@ func DefaultConfig() Config {
 				BaseURL:      "https://opencode.ai/zen/go/v1",
 				APIKeyEnv:    "OPENCODE_API_KEY",
 				DefaultModel: "deepseek-v4-flash",
+			},
+			// Command Code Provider API: OpenAI-compatible at /provider/v1.
+			// API access is included on every plan except the $1 Go plan
+			// (GOAT, Pro, Max, Team and Provider all work); one key serves the
+			// CLI and the API.
+			CommandCode: GatewayConfig{
+				BaseURL:      "https://api.commandcode.ai/provider/v1",
+				APIKeyEnv:    "CMD_API_KEY",
+				DefaultModel: "deepseek/deepseek-v4-flash",
 			},
 			Copilot: CopilotConfig{
 				OAuthTokenEnv:       "GITHUB_COPILOT_TOKEN",

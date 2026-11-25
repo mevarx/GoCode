@@ -30,7 +30,7 @@
 GoCode helps you explore, write, refactor, and debug code from your command line. Connect your preferred AI provider, use a local model, and keep control over file changes and shell commands through explicit approval.
 
 - **Native Go CLI**: a self-contained executable with no separate Python or Node.js runtime required.
-- **Your choice of models**: 22 built-in provider gateways, any OpenAI-compatible endpoint, or a local backend such as Ollama or llama.cpp.
+- **Your choice of models**: 23 built-in provider gateways, any OpenAI-compatible endpoint, or a local backend such as Ollama or llama.cpp.
 - **Controlled execution**: review diffs and approve commands before they run, with `normal` and `yolo` permission modes.
 - **A real terminal UI**: six built-in themes plus your own, sidebar layout, markdown rendering, live tool cards and tinted diffs.
 - **Hooks**: run your own scripts at 13 lifecycle events with a Claude Code-compatible contract.
@@ -172,7 +172,7 @@ Full reference: [docs/hooks.md](docs/hooks.md).
 
 Switch providers and models at any time with `/provider` and `/model`. GoCode ships with gateways for:
 
-Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, Mistral Vibe, MiniMax, DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, OpenCode Go, Qwen, Kimi, Hermes Agent, and OmniRoute.
+Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, Mistral Vibe, MiniMax, DeepSeek, Groq, OpenRouter, Together, Fireworks, Cerebras, Zhipu, NVIDIA NIM, OpenCode Go, Command Code, Qwen, Kimi, Hermes Agent, and OmniRoute.
 
 | Provider | `--provider` | API key variable |
 | :-- | :-- | :-- |
@@ -193,6 +193,7 @@ Ollama, OpenAI, Anthropic Claude, Google Gemini, GitHub Copilot, xAI, Mistral, M
 | Zhipu (GLM) | `zhipu` | `ZHIPU_API_KEY` |
 | NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_API_KEY` |
+| Command Code | `commandcode` | `CMD_API_KEY` |
 | Qwen (DashScope) | `qwen` | `DASHSCOPE_API_KEY` |
 | Kimi (Moonshot) | `kimi` | `MOONSHOT_API_KEY` |
 | Hermes Agent | `hermes` | `HERMES_API_SERVER_KEY` |

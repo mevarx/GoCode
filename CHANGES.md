@@ -2,6 +2,8 @@
 
 ### Unreleased
 
+- **Command Code provider** — `commandcode` targets the Command Code Provider API (`https://api.commandcode.ai/provider/v1`, `CMD_API_KEY`, OpenAI Chat Completions + `/models`). API access is included on every plan except the $1 Go plan (GOAT, Pro, Max, Team and Provider). Overridable via `[provider.commandcode]` like any gateway.
+- **Provider audit (current catalogs)** — refreshed stale default models: OpenAI `gpt-6.2-sol`, Anthropic `claude-sonnet-5-5`, Gemini `gemini-3.5-flash`, Groq `openai/gpt-oss-120b` (Llama 3.3 was shut down in Aug 2026), Qwen `qwen3.8-max`, Kimi `api.moonshot.ai` + `kimi-k3.1-pro` (the moonshot-v1 series retired), xAI `grok-4.7`, MiniMax `MiniMax-M3.1-Flash` (M2.5 retired), DeepSeek `deepseek-flash` (deepseek-chat retired), Cerebras `qwen-3.8-27b`, Zhipu `glm-5.2`, NVIDIA `qwen/qwen3-next-80b-a3b-instruct`. Aggregator defaults (OpenRouter/Together/Fireworks) are left to `/models` since those catalogs rotate. Docs note the regional endpoints (Kimi, Zhipu, Qwen).
 - **OpenCode Go and Mistral Vibe providers** — two new built-in gateway presets. `opencode-go` targets OpenCode's subscription gateway (`https://opencode.ai/zen/go/v1`, `OPENCODE_API_KEY`, curated coding models); `mistral-vibe` targets Mistral's Vibe coding model on la Plateforme (`MISTRAL_API_KEY`, default `mistral-large-4-0`). Both are overridable like any gateway via `[provider.opencode_go]` / `[provider.mistral_vibe]` (or a `custom` entry). Also fixes a docs typo that mangled the default MiniMax model id.
 
 ### v0.8.0 — 2026-11-21
