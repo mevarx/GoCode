@@ -25,6 +25,17 @@ if (!fs.existsSync(bin)) {
   process.exit(1);
 }
 
+// The executable bit can be lost when the package is packed on a non-unix
+// host; restore it so the binary launches after `npx`/`npm i -g` on Linux
+// and macOS.
+if (process.platform !== 'win32') {
+  try {
+    fs.chmodSync(bin, 0o755);
+  } catch (err) {
+    // Best effort: fall through and let spawnSync report a real failure.
+  }
+}
+
 const res = spawnSync(bin, process.argv.slice(2), { stdio: 'inherit' });
 if (res.error) {
   console.error(`gocode: failed to launch: ${res.error.message}`);

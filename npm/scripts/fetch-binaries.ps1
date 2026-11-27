@@ -81,8 +81,16 @@ try {
     if ($asset.EndsWith('.zip')) {
         Expand-Archive $tmp -DestinationPath $dest -Force
     } else {
-        & $tarPath -xzf $tmp -C $dest $binName 2>$null
-        if (-not (Test-Path $binPath)) { & $tarPath -xzf $tmp -C $dest }
+        # bsdtar on Windows treats the "C:" of an absolute path as a remote
+        # host ("Cannot connect to C:"); extract from a relative copy instead.
+        $rel = ".\\" + $asset
+        Copy-Item -LiteralPath $tmp -Destination $rel -Force
+        try {
+            & $tarPath -xzf $rel -C $dest $binName 2>$null
+            if (-not (Test-Path $binPath)) { & $tarPath -xzf $rel -C $dest }
+        } finally {
+            Remove-Item -LiteralPath $rel -Force -ErrorAction SilentlyContinue
+        }
     }
   }
   Write-Host "binaries ready in $vendor"
