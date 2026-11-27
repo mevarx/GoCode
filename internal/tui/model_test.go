@@ -111,8 +111,9 @@ func TestStatusBarShowsWorkspace(t *testing.T) {
 	if got := m.renderStatusBar(); !strings.Contains(got, "my-project") {
 		t.Fatalf("expected workspace name in status bar, got %q", got)
 	}
-	if got := lipgloss.Width(m.renderStatusBar()); got != 100 {
-		t.Fatalf("expected status bar width 100, got %d", got)
+	// The status bar lives inside the frame's one-cell side margins.
+	if got, want := lipgloss.Width(m.renderStatusBar()), m.width-2; got != want {
+		t.Fatalf("expected status bar width %d, got %d", want, got)
 	}
 }
 

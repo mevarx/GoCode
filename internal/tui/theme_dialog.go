@@ -88,17 +88,11 @@ func (m *Model) closeThemePicker() {
 	m.overlays.pop(overlayTheme)
 }
 
-// previewTheme applies a theme for live preview; unknown names are ignored so
-// a broken user file cannot blank the UI mid-navigation.
-func previewTheme(name string) {
-	_, _ = ActivateTheme(name)
-}
-
 func (m Model) updateThemePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		// Revert to the theme that was active when the picker opened.
-		previewTheme(m.themeBaseName)
+		_ = m.ApplyTheme(m.themeBaseName)
 		m.closeThemePicker()
 		return m, nil
 	case "enter":
@@ -134,7 +128,7 @@ func (m Model) updateThemePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 
 func (m *Model) previewThemeSelection() {
 	if sel, ok := m.themePicker.SelectedItem().(themeItem); ok {
-		previewTheme(sel.name)
+		_ = m.ApplyTheme(sel.name)
 	}
 }
 
@@ -230,12 +224,13 @@ func (m *Model) previewEditor() {
 		return
 	}
 	activateTheme(th)
+	m.refreshThemeView(th)
 }
 
 func (m Model) updateThemeEditor(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		previewTheme(m.editor.revertTo)
+		_ = m.ApplyTheme(m.editor.revertTo)
 		m.overlays.pop(overlayThemeEditor)
 		return m, nil
 	case "enter", "ctrl+s":
@@ -245,7 +240,7 @@ func (m Model) updateThemeEditor(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		// The file is on disk; only now commit the UI to the saved theme.
-		previewTheme(m.editor.name)
+		_ = m.ApplyTheme(m.editor.name)
 		m.themeItems = themeListItems()
 		m.themePicker.SetItems(m.themeItems)
 		m.overlays.pop(overlayThemeEditor)

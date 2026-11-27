@@ -1,5 +1,11 @@
 # GoCode Changelog
 
+### Unreleased
+
+- **Terminal scrollback** — wheel and Page Up/Down keep their position through tool updates and turn completion. The visible selection follows scrolling, and expanding a long item no longer jumps to its end.
+- **Terminal rendering** — provider lists and command errors wrap without leaking ANSI styles. The status bar shows navigation and completion hints, and theme previews recolor the prompt and transcript together.
+- **Stream ordering** — the TUI uses one event reader and finalizes assistant text before the next tool card, preventing out-of-order updates and repeated text.
+
 ### v0.8.1 — 2026-11-27
 
 New providers and a current model catalog. Full notes: `docs/releases/v0.8.1.md`.

@@ -104,7 +104,7 @@ func (m *Model) renderMessages() string {
 	start := 0
 	for i, msg := range m.messages {
 		focused := i == focus
-		expanded := m.expanded[i]
+		expanded := m.expanded[i] || m.liveTail(i, msg)
 		off := m.hOffset[i]
 		var rendered string
 		if r, ok := m.cache.lookup(i, msg, m.width, focused, expanded, off); ok {
@@ -132,15 +132,15 @@ func (m *Model) markDirty() {
 	m.dirty = true
 }
 
-// flushTranscript applies the cached transcript to the viewport. follow keeps
+// flushTranscript applies the cached transcript to the viewport. It preserves
 // the original autoscroll contract: only a viewport already at the bottom
 // moves, so a user who scrolled up stays where they are.
-func (m *Model) flushTranscript(follow bool) {
+func (m *Model) flushTranscript() {
 	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(m.renderMessages())
 	m.dirty = false
 	m.viewportFlushes++
-	if follow && atBottom {
+	if atBottom {
 		m.viewport.GotoBottom()
 	}
 }
@@ -149,5 +149,5 @@ func (m *Model) flushTranscript(follow bool) {
 // tool result, notices, turn end): they belong to the next frame, not the one
 // after that. A pending coalescing tick still fires and finds nothing to do.
 func (m *Model) flushNow() {
-	m.flushTranscript(false)
+	m.flushTranscript()
 }

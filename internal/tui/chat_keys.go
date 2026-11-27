@@ -26,13 +26,14 @@ type itemSpan struct {
 	lines int
 }
 
-// chatSpans returns the current item geometry, refreshing the render cache (and
-// the spans) first so a just-appended message is measurable.
+// chatSpans returns the geometry actually installed in the viewport.
 func (m *Model) chatSpans() []itemSpan {
 	if len(m.messages) == 0 {
 		return nil
 	}
-	m.renderMessages()
+	if m.dirty || len(m.spans) != len(m.messages) {
+		m.flushNow()
+	}
 	return m.spans
 }
 
@@ -87,9 +88,9 @@ func (m *Model) clampSelectionToView() {
 	s := m.spans[m.focusedItem]
 	switch {
 	case s.start+s.lines <= top:
-		m.focusedItem = m.firstVisibleItem()
+		m.selectChatItem(m.firstVisibleItem())
 	case s.start >= bottom:
-		m.focusedItem = m.lastVisibleItem()
+		m.selectChatItem(m.lastVisibleItem())
 	}
 }
 
@@ -109,14 +110,20 @@ func (m *Model) scrollItemIntoView(i int) {
 	}
 }
 
-func (m *Model) chatLineScroll(dir int) {
-	if m.chatSpans() == nil {
-		return
+// selectChatItem keeps the actual highlight in sync with the selection used
+// for expanding and copying. A selection change invalidates only two blocks.
+func (m *Model) selectChatItem(i int) {
+	if m.focusedItem != i {
+		m.focusedItem = i
+		m.flushNow()
 	}
-	if dir < 0 {
-		m.viewport.ScrollUp(1)
+}
+
+func (m *Model) scrollTranscript(delta int) {
+	if delta < 0 {
+		m.viewport.ScrollUp(-delta)
 	} else {
-		m.viewport.ScrollDown(1)
+		m.viewport.ScrollDown(delta)
 	}
 	m.clampSelectionToView()
 }
@@ -135,8 +142,8 @@ func (m *Model) chatSelectItem(dir int) {
 		}
 	}
 	next := min(len(spans)-1, max(0, cur+dir))
-	m.focusedItem = next
 	m.scrollItemIntoView(next)
+	m.selectChatItem(next)
 }
 
 func (m *Model) chatHalfPage(dir int) {
@@ -145,10 +152,10 @@ func (m *Model) chatHalfPage(dir int) {
 	}
 	if dir < 0 {
 		m.viewport.HalfPageUp()
-		m.focusedItem = m.firstVisibleItem()
+		m.selectChatItem(m.firstVisibleItem())
 	} else {
 		m.viewport.HalfPageDown()
-		m.focusedItem = m.lastVisibleItem()
+		m.selectChatItem(m.lastVisibleItem())
 	}
 }
 
@@ -169,7 +176,7 @@ func (m *Model) chatTop() {
 		return
 	}
 	m.viewport.GotoTop()
-	m.focusedItem = 0
+	m.selectChatItem(0)
 }
 
 func (m *Model) chatBottom() {
@@ -178,30 +185,26 @@ func (m *Model) chatBottom() {
 		return
 	}
 	m.viewport.GotoBottom()
-	m.focusedItem = len(spans) - 1
+	m.selectChatItem(len(spans) - 1)
 }
 
-// chatExpand toggles the selected item's collapsed/expanded state. Expanding
-// while following re-pins the bottom so the revealed lines are not lost.
+// chatExpand toggles the selected item's height without paging past its start.
 func (m *Model) chatExpand() {
 	if m.focusedItem < 0 || m.focusedItem >= len(m.messages) {
 		return
 	}
-	atBottom := m.viewport.AtBottom()
+	top := m.viewport.YOffset()
 	if m.expanded == nil {
 		m.expanded = make(map[int]bool)
 	}
 	m.expanded[m.focusedItem] = !m.expanded[m.focusedItem]
 	m.flushNow()
-	if atBottom {
-		m.viewport.GotoBottom()
-	}
+	m.viewport.SetYOffset(top)
 }
 
 // chatClearSelection clears the highlight (esc clears the selection).
 func (m *Model) chatClearSelection() {
-	m.focusedItem = -1
-	m.flushNow()
+	m.selectChatItem(-1)
 }
 
 // chatHoriz scrolls the focused item horizontally by five cells, clamped to the
@@ -222,7 +225,7 @@ func (m *Model) chatHoriz(dir int) {
 // itemMaxHorizOffset is how far the item can scroll: the longest line minus the
 // visible content width, never negative.
 func (m *Model) itemMaxHorizOffset(msg ChatMessage) int {
-	capWidth := min(120, max(1, m.chatContentWidth()-2))
+	capWidth := m.chatLineWidth()
 	longest := 0
 	for _, line := range strings.Split(strings.TrimRight(m.renderMessage(msg), "\n"), "\n") {
 		if w := lipgloss.Width(line); w > longest {

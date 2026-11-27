@@ -151,7 +151,7 @@ func (m *Model) handleEditorKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 				m.handleTabCompletion()
 				return *m, nil
 			}
-			m.setFocus(focusMain)
+			m.focusTranscript()
 			return *m, nil
 		case actHistoryPrev:
 			m.recallHistory(true)
@@ -191,16 +191,16 @@ func (m *Model) handleEditorKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			m.steerPrompt()
 			return *m, nil
 		case actScrollPageUp:
-			m.viewport.ScrollUp(m.viewport.Height() / 2)
+			m.scrollTranscript(-max(1, m.viewport.Height()/2))
 			return *m, nil
 		case actScrollPageDn:
-			m.viewport.ScrollDown(m.viewport.Height() / 2)
+			m.scrollTranscript(max(1, m.viewport.Height()/2))
 			return *m, nil
 		case actScrollUp:
-			m.viewport.ScrollUp(3)
+			m.scrollTranscript(-3)
 			return *m, nil
 		case actScrollDown:
-			m.viewport.ScrollDown(3)
+			m.scrollTranscript(3)
 			return *m, nil
 		}
 	}
@@ -236,12 +236,24 @@ func (m *Model) caretAtEnd() bool {
 	return m.textarea.Line() == last && m.textarea.Column() == len([]rune(lines[last]))
 }
 
+func (m *Model) focusTranscript() {
+	m.setFocus(focusMain)
+	if len(m.spans) == 0 {
+		return
+	}
+	if m.focusedItem < 0 {
+		m.selectChatItem(m.lastVisibleItem())
+	} else {
+		m.clampSelectionToView()
+	}
+}
+
 // followBottom scrolls to the transcript bottom, selects the last item and
 // re-arms follow (a viewport at the bottom follows subsequent growth).
 func (m *Model) followBottom() {
 	m.viewport.GotoBottom()
 	if n := len(m.messages); n > 0 {
-		m.focusedItem = n - 1
+		m.selectChatItem(n - 1)
 	}
 }
 
@@ -253,10 +265,10 @@ func (m *Model) handleChatKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if b, ok := lookupBinding(keyCtxChat, key); ok {
 		switch b.Action {
 		case actChatLineUp:
-			m.chatLineScroll(-1)
+			m.scrollTranscript(-1)
 			return *m, nil
 		case actChatLineDown:
-			m.chatLineScroll(1)
+			m.scrollTranscript(1)
 			return *m, nil
 		case actChatItemPrev:
 			m.chatSelectItem(-1)
@@ -350,7 +362,7 @@ func (m *Model) handleSidebarKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			m.sidebarOffset = m.sidebarMaxOffset()
 			return *m, nil
 		case actFocusMain:
-			m.setFocus(focusMain)
+			m.focusTranscript()
 			return *m, nil
 		case actFocusEditor:
 			m.setFocus(focusEditor)
@@ -369,6 +381,12 @@ func (m *Model) handleSidebarKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return *m, nil
 		case actFollowBottom:
 			m.followBottom()
+			return *m, nil
+		case actScrollPageUp:
+			m.chatPage(-1)
+			return *m, nil
+		case actScrollPageDn:
+			m.chatPage(1)
 			return *m, nil
 		}
 	}

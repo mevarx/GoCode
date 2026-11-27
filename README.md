@@ -113,7 +113,7 @@ Then ask for something concrete, such as *"Find where config is loaded and expla
 | `/commit [message]` | Commit modified files with an `Assisted-by:` trailer |
 | `/help` | Show all in-session commands |
 
-TUI keys: `Ctrl+P` opens the command palette (`Ctrl+K` still works), `Ctrl+L` the model picker, `Ctrl+T` the theme picker, `Tab` completes slash commands, their arguments and `@file` mentions, `Alt+P`/`Alt+N` recall prompt history (saved per workspace), and the mouse wheel scrolls the transcript. `Tab`/`h`/`l` move focus between prompt, chat and sidebar; in chat, `space` expands an item and `c`/`y` copy it. `Enter` while the agent is streaming queues a steering message instead of interrupting; `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
+TUI keys: `Ctrl+P` opens the command palette (`Ctrl+K` still works), `Ctrl+L` the model picker, `Ctrl+T` the theme picker, `Tab` completes slash commands, their arguments and `@file` mentions, `Alt+P`/`Alt+N` recall prompt history (saved per workspace), and the mouse wheel or `PgUp`/`PgDn` scrolls the transcript. Tool output does not pull you out of scrollback; `Ctrl+End` jumps back to the latest output. `Tab` moves between the prompt and chat, and `h`/`l` move between chat and the sidebar. In chat, `Shift+↑`/`Shift+↓` select a message, `Space` expands it, and `c`/`y` copy it. `Enter` while the agent is streaming queues a steering message instead of interrupting; `Esc` stops a running turn or clears input, and `Ctrl+C` stops a turn (press again to quit).
 
 ---
 

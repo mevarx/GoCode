@@ -19,6 +19,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mevarx/GoCode/internal/agent"
 	"github.com/mevarx/GoCode/internal/provider"
 	"github.com/mevarx/GoCode/internal/safetext"
@@ -43,6 +44,8 @@ type ChatMessage struct {
 	// Done marks a successful tool result, so its settled label uses the
 	// success style. RoleError already carries failure styling.
 	Done bool
+	// wrap marks prose reports from GoCode, rather than fixed-column tool output.
+	wrap bool
 }
 
 type agentChunkMsg struct{ delta string }
@@ -247,8 +250,25 @@ type Model struct {
 	cancelRequested bool
 }
 
+func promptTextareaStyles() textarea.Styles {
+	t := activeTheme.Tokens
+	state := textarea.StyleState{
+		Text:        lipgloss.NewStyle().Foreground(t.FgBase),
+		Placeholder: lipgloss.NewStyle().Foreground(t.FgSubtle),
+		Selection:   lipgloss.NewStyle().Background(t.BgLessVisible),
+	}
+	blurred := state
+	blurred.Text = lipgloss.NewStyle().Foreground(t.FgSubtle)
+	return textarea.Styles{
+		Focused: state, Blurred: blurred,
+		Cursor: textarea.CursorStyle{Color: t.Primary, Shape: tea.CursorBlock, Blink: true},
+	}
+}
+
 func NewModel(providerName, modelName, version, workspaceRoot string, bridge *ApprovalBridge, inputCh chan string, steerCh chan string, outputCh chan tea.Msg, cancelCh chan struct{}, pickerItems []list.Item, motion MotionSettings) Model {
 	ta := textarea.New()
+	ta.SetStyles(promptTextareaStyles())
+	ta.Prompt = "" // GoCode renders its own prompt column.
 	ta.Placeholder = "Type your message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
 	ta.CharLimit = 0
@@ -340,7 +360,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setFocus(focusEditor)
 		}
 		m.sidebarOffset = min(m.sidebarOffset, m.sidebarMaxOffset())
-		m.textarea.SetWidth(max(1, g.chatWidth-6))
+		m.textarea.SetWidth(max(1, g.chatWidth-cellWidth(promptColumn(false))))
 		vpH := m.viewportHeight()
 
 		atBottom := m.ready && m.viewport.AtBottom()
@@ -400,11 +420,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A turn end snaps the reveal: the last frame of the turn shows the
 		// whole answer, not whatever the pacer had reached.
-		if m.streamBuf.Len() > 0 {
-			m.updateStreamingTail(m.streamBuf.String())
-		}
-		m.streamBuf.Reset()
-		m.revealShown = 0
+		m.finalizeStreamingMessage()
 		// Cancelled turn is user action, not failure: relax to idle.
 		switch {
 		case msg.err != nil && !errors.Is(msg.err, context.Canceled):
@@ -443,7 +459,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dirty {
 			m.flushNow()
 		}
-		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
 	case agentToolStartMsg:
@@ -456,7 +471,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.upsertPendingToolCard(msg.name, msg.args, msg.toolCallID, toolCardRunning)
 		// Tool start is discrete: show it now rather than on the next tick.
 		m.flushNow()
-		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
 	case agentToolDeltaMsg:
@@ -508,19 +522,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A finished card is discrete: its result is visible immediately.
 			m.flushNow()
 		} else {
-			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff, Done: done})
+			m.addMessage(ChatMessage{Role: role, Label: label, Content: result, Diff: diff, Done: done,
+				wrap: toolName == "GoCode" && msg.toolCallID == ""})
 		}
 		if msg.isError {
 			// Errors toast alongside the transcript entry.
 			cmds = append(cmds, m.showToast(toastError, toolName+": "+result))
 		}
-		m.viewport.GotoBottom()
 		cmds = append(cmds, m.listenOutput())
 
 	case agentExitMsg:
 		if msg.notice != "" {
 			m.addMessage(ChatMessage{Role: RoleSystem, Label: "GoCode", Content: safetext.Sanitize(msg.notice)})
-			m.viewport.GotoBottom()
 		}
 		m.streaming = false
 		return m, tea.Quit
@@ -572,7 +585,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markDirty()
 		}
 		if m.dirty {
-			m.flushTranscript(true)
+			m.flushTranscript()
 		}
 		// The mascot rides the same clock; its springs keep their fps20 math
 		// and slower states step on whole-frame multiples of their cadence.
@@ -619,17 +632,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
-	case tea.MouseMsg:
-		// MouseModeCellMotion is declared on every frame, so wheel events do
-		// arrive. The transcript owns them: three lines per notch, exactly like
-		// Up/Down, and a user parked in scrollback stays there because the
-		// autoscroll contract only follows a viewport already at the bottom.
-		switch msg.Mouse().Button {
-		case tea.MouseWheelUp:
-			m.viewport.ScrollUp(mouseWheelLines)
-		case tea.MouseWheelDown:
-			m.viewport.ScrollDown(mouseWheelLines)
+	case tea.MouseWheelMsg:
+		// Modal input must not change the transcript behind the dialog.
+		if m.ready && m.overlays.empty() {
+			switch msg.Mouse().Button {
+			case tea.MouseWheelUp:
+				m.scrollTranscript(-mouseWheelLines)
+			case tea.MouseWheelDown:
+				m.scrollTranscript(mouseWheelLines)
+			}
 		}
+		return m, nil
 	}
 
 	// Keys are fully owned by handleKey; pastes only reach the prompt when it
@@ -733,7 +746,7 @@ func (m *Model) updatePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 						inputCh <- "/provider " + item.Provider
 						inputCh <- "/model " + item.Model
 					}()
-					return *m, m.listenOutput()
+					return *m, nil
 				}
 			}
 		}
@@ -768,6 +781,8 @@ func (m *Model) submitPrompt() tea.Cmd {
 		return m.openSessionPicker()
 	}
 
+	// Sending a new prompt explicitly returns to the live conversation.
+	m.followBottom()
 	m.addMessage(ChatMessage{Role: RoleUser, Label: "You", Content: input})
 	m.textarea.Reset()
 	m.streaming = true
@@ -782,10 +797,7 @@ func (m *Model) submitPrompt() tea.Cmd {
 	m.animating = m.decorativeMotion()
 	inputCh := m.inputCh
 	go func() { inputCh <- input }()
-	return tea.Batch(
-		m.listenOutput(),
-		m.armClockTick(),
-	)
+	return m.armClockTick()
 }
 
 // steerPrompt queues mid-turn input as steering: it is applied at the next
@@ -837,7 +849,6 @@ func (m Model) resolveApproval(choice tools.ApprovalChoice, label string, role C
 		m.readOnlyTurn = true
 	}
 	m.addMessage(ChatMessage{Role: role, Label: label, Content: req.ToolName})
-	m.viewport.GotoBottom()
 	m.sendApprovalReply(req, choice)
 	var cmd tea.Cmd
 	if choice == tools.ApprovalGrantExact {
@@ -927,17 +938,17 @@ func (m *Model) ApplyTheme(name string) error {
 	if err != nil {
 		return err
 	}
+	m.refreshThemeView(th)
+	return nil
+}
+
+func (m *Model) refreshThemeView(th Theme) {
 	m.themeName = th.Name
+	m.textarea.SetStyles(promptTextareaStyles())
 	m.cache.invalidate()
 	if m.ready {
-		atBottom := m.viewport.AtBottom()
-		m.viewport.SetContent(m.renderMessages())
-		m.dirty = false
-		if atBottom {
-			m.viewport.GotoBottom()
-		}
+		m.flushNow()
 	}
-	return nil
 }
 
 func (m Model) render() string {
@@ -958,7 +969,7 @@ func (m Model) render() string {
 	} else {
 		chat = lipgloss.JoinVertical(lipgloss.Left, m.renderCompactHeader(g.chatWidth), "", chat)
 	}
-	status := truncateToWidth(m.renderStatusBar()+"  "+m.renderHelpLine(), max(1, m.width-2))
+	status := truncateToWidth(m.renderStatusBar(), max(1, m.width-2))
 	if m.toastActive(msgNow()) {
 		// A transient toast replaces the whole status/help row.
 		status = m.renderToast(max(1, m.width-2))
@@ -1015,19 +1026,25 @@ func (m *Model) renderStatusBar() string {
 		metrics = m.renderTurnMetrics()
 	}
 
+	hint := m.renderHelpLine()
+	// Keep the first shortcuts (or completion) readable beside long model IDs.
+	hintRoom := min(32, cellWidth(hint)+2)
+	fixed := cellWidth(head) + cellWidth(suffix) + cellWidth(statusSeparator)
+	if contentWidth-fixed-minModelWidth < hintRoom {
+		hintRoom = 0 // on narrow terminals, provider/working state win
+	}
+
 	// When tight, drop workspace path first, model id second.
 	var right string
 	if path := workspaceShortName(m.workspaceRoot); path != "" {
-		needed := lipgloss.Width(path) + lipgloss.Width(statusSeparator)
-		fixed := lipgloss.Width(head) + lipgloss.Width(suffix)
-		if fixed+needed+minModelWidth+lipgloss.Width(statusSeparator) <= contentWidth {
-			right = statusPathStyle.Render(path)
+		styledPath := statusPathStyle.Render(path)
+		if fixed+cellWidth(styledPath)+minModelWidth+hintRoom <= contentWidth {
+			right = styledPath
 		}
 	}
 
 	left := head
-	room := contentWidth - lipgloss.Width(head) - lipgloss.Width(suffix) -
-		lipgloss.Width(right) - lipgloss.Width(statusSeparator)
+	room := contentWidth - fixed - cellWidth(right) - hintRoom
 	if room >= minModelWidth {
 		left += statusSeparator + statusModelStyle.Render(truncateToWidth(m.modelName, room))
 	}
@@ -1035,15 +1052,20 @@ func (m *Model) renderStatusBar() string {
 		// The suffix is appended after this, so its width is part of the price:
 		// otherwise the cluster can push the bar past contentWidth.
 		needed := lipgloss.Width(metrics) + lipgloss.Width(statusSeparator) + lipgloss.Width(suffix)
-		if contentWidth-lipgloss.Width(left)-lipgloss.Width(right) >= needed {
+		if contentWidth-cellWidth(left)-cellWidth(right)-hintRoom >= needed {
 			left += statusSeparator + statusMetricsStyle.Render(metrics)
 		}
 	}
 	left += suffix
 
 	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap >= 8 {
+		hint := truncateToWidth(hint, gap-2)
+		left += statusBarStyle.UnsetPadding().Render(" ") + hint
+		gap -= 1 + lipgloss.Width(hint)
+	}
 	if gap > 0 {
-		left += statusBarStyle.Render(strings.Repeat(" ", gap))
+		left += statusBarStyle.UnsetPadding().Render(strings.Repeat(" ", gap))
 	}
 	return left + right
 }
@@ -1209,7 +1231,7 @@ func (m *Model) reflow() {
 // text is rendered from the keymap table, so it cannot drift from dispatch.
 func (m *Model) renderHelpLine() string {
 	if m.completionHint != "" {
-		return inputHintStyle.Render(truncateToWidth(m.completionHint, m.width))
+		return inputHintStyle.Render(m.completionHint)
 	}
 
 	var text string
@@ -1226,11 +1248,11 @@ func (m *Model) renderHelpLine() string {
 	case m.width < 48:
 		text = helpFor(actSubmit, actClearInput, actQuit)
 	case m.width < 72:
-		text = helpFor(actSubmit, actNewline, actClearInput, actQuit)
+		text = helpFor(actScrollPageUp, actComplete, actSubmit, actNewline, actClearInput, actQuit)
 	default:
-		text = helpFor(actSubmit, actNewline, actPaletteOpen, actOpenPicker, actClearInput, actQuit, actScrollPageUp)
+		text = helpFor(actScrollPageUp, actComplete, actSubmit, actNewline, actPaletteOpen, actOpenPicker, actClearInput, actQuit)
 	}
-	return inputHintStyle.Render(truncateToWidth(text, m.width))
+	return inputHintStyle.Render(text)
 }
 
 func workspaceShortName(root string) string {
@@ -1247,18 +1269,7 @@ func truncateToWidth(text string, width int) string {
 	if lipgloss.Width(text) <= width {
 		return text
 	}
-	if width == 1 {
-		return "…"
-	}
-	var result strings.Builder
-	for _, r := range text {
-		next := result.String() + string(r)
-		if lipgloss.Width(next)+lipgloss.Width("…") > width {
-			break
-		}
-		result.WriteRune(r)
-	}
-	return result.String() + "…"
+	return ansi.Truncate(text, width, "…")
 }
 
 func (m *Model) renderMessage(msg ChatMessage) string {
@@ -1274,14 +1285,23 @@ func (m *Model) renderMessage(msg ChatMessage) string {
 		}
 		body := labelStyle.Render(msg.Label)
 		if msg.Content != "" {
-			body += "\n" + toolCardLines(msg.Content)
+			content := msg.Content
+			if msg.wrap {
+				// Leave room for the indented body style before measuring rows.
+				content = ansi.Wrap(content, max(1, m.chatLineWidth()-toolBodyStyle.GetHorizontalFrameSize()), "")
+			}
+			body += "\n" + toolCardLines(content)
 		}
 		if msg.Diff != "" {
 			body += "\n" + renderDiffView(msg.Diff, max(2, m.chatContentWidth()-2))
 		}
 		return body
 	case RoleError:
-		return errorStyle.Render(toolErrorGlyph + " " + msg.Label + ": " + msg.Content)
+		line := toolErrorGlyph + " " + msg.Label + ": " + msg.Content
+		if msg.wrap {
+			line = ansi.Wrap(line, m.chatLineWidth(), "")
+		}
+		return errorStyle.Render(line)
 	case RoleSystem:
 		return systemStyle.Render(msg.Label + " " + msg.Content)
 	}
@@ -1380,7 +1400,9 @@ func (m *Model) addMessage(msg ChatMessage) {
 		m.finalizeStreamingMessage()
 	}
 	m.messages = append(m.messages, msg)
-	m.focusedItem = len(m.messages) - 1
+	if len(m.messages) == 1 || m.viewport.AtBottom() {
+		m.focusedItem = len(m.messages) - 1
+	}
 	// A message append is discrete: it appears in this frame, not the next.
 	m.flushNow()
 }
@@ -1481,6 +1503,7 @@ func (m *Model) upsertPendingToolCard(name, args, toolCallID string, status tool
 	args = safetext.Sanitize(args)
 	now := msgNow()
 	if toolCallID == "" {
+		m.finalizeStreamingMessage()
 		// Without an id the card cannot be reused or refreshed, so it shows the
 		// whole preview at once instead of a reveal that would never advance.
 		m.messages = append(m.messages, ChatMessage{
@@ -1506,6 +1529,7 @@ func (m *Model) upsertPendingToolCard(name, args, toolCallID string, status tool
 		m.pendingTools[toolCallID] = card
 		return
 	}
+	m.finalizeStreamingMessage()
 	prefix, shown := m.revealPrefix(args, 0, false)
 	m.messages = append(m.messages, ChatMessage{
 		Role:    RoleTool,
@@ -1542,21 +1566,30 @@ func (m *Model) updateStreamingTail(content string) bool {
 		Label:   "GoCode",
 		Content: content,
 	})
-	m.focusedItem = len(m.messages) - 1
+	if len(m.messages) == 1 || m.viewport.AtBottom() {
+		m.focusedItem = len(m.messages) - 1
+	}
 	return true
 }
 
 func (m *Model) finalizeStreamingMessage() {
-	if m.streamBuf.Len() > 0 {
-		content := m.streamBuf.String()
-		m.streamBuf.Reset()
-		// The buffer restarts at zero for the next assistant block, so the
-		// reveal offset has to restart with it.
-		m.revealShown = 0
-		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == RoleAssistant {
-			m.messages[len(m.messages)-1].Content = content
-		}
+	if m.streamBuf.Len() == 0 {
+		return
 	}
+	// Snap any unrevealed text into place before appending a tool or notice.
+	// A paced stream may not have created its assistant item yet.
+	m.updateStreamingTail(m.streamBuf.String())
+	m.streamBuf.Reset()
+	m.revealShown = 0
+	// Do not collapse a long answer while the user is reading inside it.
+	i := len(m.messages) - 1
+	if !m.viewport.AtBottom() && i < len(m.spans) && m.spans[i].lines > collapseLines && m.itemVisible(i) {
+		if m.expanded == nil {
+			m.expanded = make(map[int]bool)
+		}
+		m.expanded[i] = true
+	}
+	m.markDirty()
 }
 
 // forwardToTextarea reports whether a message can affect the input box. Agent
@@ -1576,6 +1609,7 @@ func forwardToTextarea(msg tea.Msg) bool {
 }
 
 func (m Model) listenOutput() tea.Cmd {
+	// Init starts the only reader; only consumption of an engine event re-arms it.
 	// Capture the channel, not the model: a closure over the receiver copies
 	// the whole ~96 KB Model, and this runs once per streamed chunk.
 	ch := m.outputCh

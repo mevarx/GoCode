@@ -121,7 +121,7 @@ var keyBindings = []keyBinding{
 	{Keys: []string{"ctrl+c"}, Context: keyCtxIdle, Action: actQuit, Help: "Ctrl+C quit"},
 	{Keys: []string{"esc"}, Context: keyCtxIdle, Action: actClearInput, Help: "Esc clear"},
 	{Keys: []string{"enter"}, Context: keyCtxIdle, Action: actSubmit, Help: "Enter send"},
-	{Keys: []string{"tab"}, Context: keyCtxIdle, Action: actComplete, Help: ""},
+	{Keys: []string{"tab"}, Context: keyCtxIdle, Action: actComplete, Help: "Tab chat"},
 	{Keys: []string{"alt+p"}, Context: keyCtxIdle, Action: actHistoryPrev, Help: ""},
 	{Keys: []string{"alt+n"}, Context: keyCtxIdle, Action: actHistoryNext, Help: ""},
 	{Keys: []string{"up"}, Context: keyCtxIdle, Action: actRecallPrev, Help: ""},

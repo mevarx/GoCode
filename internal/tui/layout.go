@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mevarx/GoCode/internal/tools"
 )
 
@@ -58,26 +59,12 @@ func gradientWordmark(width int) string {
 	return b.String()
 }
 
-func (m *Model) renderLogo(rows, width int) string {
-	if rows <= 0 || width <= 0 {
-		return ""
+func sidebarWordmark(width int) []string {
+	if width <= 0 {
+		return nil
 	}
-	parts := make([]string, rows)
-	logo := gradientWordmark(max(1, min(width, 6)))
-	field := strings.Repeat("╱", max(1, width-cellWidth(logo)-1))
-	for i := range parts {
-		switch i {
-		case 0, 1, rows - 2:
-			parts[i] = lipgloss.NewStyle().Foreground(activeTheme.Tokens.Primary).Render(truncateToWidth(field, width))
-		case 2:
-			parts[i] = truncateToWidth(" GoCode", width)
-		case 3, 4, 5:
-			parts[i] = truncateToWidth(" "+logo, width)
-		default:
-			parts[i] = ""
-		}
-	}
-	return strings.Join(parts, "\n")
+	rule := lipgloss.NewStyle().Foreground(activeTheme.Tokens.Primary).Render(strings.Repeat("╱", width))
+	return []string{rule, truncateToWidth(" "+gradientWordmark(width), width), rule}
 }
 
 // sidebarScrollStep is the sidebar's scroll granularity (:
@@ -88,8 +75,7 @@ const sidebarScrollStep = 4
 // width truncation or the scroll window, so render and max-offset agree.
 func (m *Model) sidebarLines() []string {
 	width := calculateLayout(m.width, m.height).sidebarWidth - 1
-	height := max(1, m.height-7)
-	lines := strings.Split(m.renderLogo(min(8, height), width), "\n")
+	lines := sidebarWordmark(width)
 	sections := []string{"", m.modelName + " via " + m.providerName, filepath.Base(m.workspaceRoot)}
 	if m.lastTurn.PromptTokens > 0 {
 		sections = append(sections, m.renderTurnMetrics())
@@ -198,7 +184,7 @@ func (m *Model) renderChatItem(msg ChatMessage, focused bool) string {
 func (m *Model) renderChatItemView(i int, msg ChatMessage, focused bool) string {
 	body := m.renderMessage(msg)
 	body = strings.TrimRight(body, "\n")
-	capWidth := min(120, max(1, m.chatContentWidth()-2))
+	capWidth := m.chatLineWidth()
 	lines := strings.Split(body, "\n")
 	if i >= 0 && !m.expanded[i] && len(lines) > collapseLines && !m.liveTail(i, msg) {
 		hidden := len(lines) - collapseLines
@@ -212,7 +198,7 @@ func (m *Model) renderChatItemView(i int, msg ChatMessage, focused bool) string 
 	out := make([]string, len(lines))
 	for j, line := range lines {
 		if off > 0 {
-			line = sliceRunesFrom(line, off)
+			line = ansi.TruncateLeft(line, off, "")
 		}
 		line = truncateToWidth(line, capWidth)
 		out[j] = prefix + line
@@ -226,12 +212,7 @@ func (m *Model) liveTail(i int, msg ChatMessage) bool {
 	return m.streaming && i == len(m.messages)-1 && msg.Role == RoleAssistant
 }
 
-func sliceRunesFrom(s string, off int) string {
-	r := []rune(s)
-	if off >= len(r) {
-		return ""
-	}
-	return string(r[off:])
-}
-
 func (m *Model) chatContentWidth() int { return calculateLayout(m.width, m.height).chatWidth }
+
+// chatLineWidth leaves two cells for the per-line transcript gutter.
+func (m *Model) chatLineWidth() int { return min(120, max(1, m.chatContentWidth()-2)) }

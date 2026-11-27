@@ -441,7 +441,6 @@ func (m *Model) updateSessionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 				if inputCh := m.inputCh; inputCh != nil {
 					go func() { inputCh <- "/resume " + sel.ID }()
 				}
-				return *m, m.listenOutput()
 			}
 			return *m, nil
 		}
@@ -519,5 +518,5 @@ func (m *Model) runPaletteSelection() (Model, tea.Cmd) {
 	if inputCh := m.inputCh; inputCh != nil {
 		go func() { inputCh <- item.Name }()
 	}
-	return *m, m.listenOutput()
+	return *m, nil
 }
