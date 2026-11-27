@@ -1,6 +1,8 @@
 # GoCode Changelog
 
-### Unreleased
+### v0.8.1 — 2026-11-27
+
+New providers and a current model catalog. Full notes: `docs/releases/v0.8.1.md`.
 
 - **Command Code provider** — `commandcode` targets the Command Code Provider API (`https://api.commandcode.ai/provider/v1`, `CMD_API_KEY`, OpenAI Chat Completions + `/models`). API access is included on every plan except the $1 Go plan (GOAT, Pro, Max, Team and Provider). Overridable via `[provider.commandcode]` like any gateway.
 - **Provider audit (current catalogs)** — refreshed stale default models: OpenAI `gpt-6.2-sol`, Anthropic `claude-sonnet-5-5`, Gemini `gemini-3.5-flash`, Groq `openai/gpt-oss-120b` (Llama 3.3 was shut down in Aug 2026), Qwen `qwen3.8-max`, Kimi `api.moonshot.ai` + `kimi-k3.1-pro` (the moonshot-v1 series retired), xAI `grok-4.7`, MiniMax `MiniMax-M3.1-Flash` (M2.5 retired), DeepSeek `deepseek-flash` (deepseek-chat retired), Cerebras `qwen-3.8-27b`, Zhipu `glm-5.2`, NVIDIA `qwen/qwen3-next-80b-a3b-instruct`. Aggregator defaults (OpenRouter/Together/Fireworks) are left to `/models` since those catalogs rotate. Docs note the regional endpoints (Kimi, Zhipu, Qwen).
